@@ -1,0 +1,290 @@
+/* ============================================================
+   MIXING DESK
+   ============================================================ */
+.desk .d-body{background:linear-gradient(180deg,rgb(var(--ink-rgb) / .022),transparent 45%);}
+.desk-strip{padding:20px 26px 4px;}
+.tape{
+  display:flex;align-items:center;gap:14px;width:100%;
+  padding:13px 16px;border:1px solid var(--line-2);
+  background:linear-gradient(180deg,rgb(var(--ink-rgb) / .05),rgb(var(--ink-rgb) / .012));
+  transition:border-color .3s ease,background .3s ease;
+}
+.tape:hover{border-color:rgb(var(--accent-rgb) / .4);background:rgb(var(--accent-rgb) / .04);}
+.tape-reel{
+  position:relative;flex:none;width:22px;height:22px;border-radius:50%;
+  border:1px solid rgb(var(--ink-rgb) / .22);
+}
+.tape-reel::before{content:'';position:absolute;left:50%;top:3px;bottom:3px;width:1px;background:rgb(var(--ink-rgb) / .18);}
+.tape-reel::after{
+  content:'';position:absolute;inset:5px;border-radius:50%;
+  border:1px solid rgb(var(--accent-rgb) / .45);
+  animation:reel 7s linear infinite;
+}
+.tape-label{flex:1;text-align:left;}
+.tape-label b{display:block;font-size:15px;font-weight:400;color:var(--ink);letter-spacing:.01em;}
+.tape-label i{
+  display:block;margin-top:4px;font-family:var(--mono);font-size:9px;
+  letter-spacing:.16em;text-transform:uppercase;color:var(--ink-4);font-style:normal;
+}
+.num{display:grid;grid-template-columns:104px 1fr;align-items:center;gap:14px;padding:9px 0;}
+.num-name{font-size:12px;color:var(--ink-3);letter-spacing:.01em;}
+.num-in{font-family:var(--mono);font-size:11px;color:var(--ink-2);background:none;border:none;border-bottom:1px solid rgb(var(--ink-rgb) / .18);padding:4px 0;text-align:right;outline:none;width:100%;transition:border-color .3s ease,color .3s ease;}
+.num-in:focus{border-bottom-color:rgb(var(--accent-rgb) / .55);color:var(--ink);}
+/* The OS stepper is the only native control left in these flat fields: two grey
+   arrows inside a mono number that already sits on a hairline. Removed here, not
+   per panel, so every numeric field in the desk looks the same. */
+.num-in::-webkit-outer-spin-button,
+.num-in::-webkit-inner-spin-button{
+  -webkit-appearance:none;margin:0;
+}
+.num-in[type='number']{appearance:textfield;-moz-appearance:textfield;}
+.sl{display:grid;grid-template-columns:104px 1fr 50px;align-items:center;gap:14px;padding:9px 0;}
+.sl-name{font-size:12px;color:var(--ink-3);letter-spacing:.01em;}
+.sl-track{position:relative;height:14px;cursor:pointer;background:rgb(var(--ink-rgb) / .17);-webkit-mask-image:url("data:image/svg+xml,%3Csvg%20xmlns%3D%27http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%27%20width%3D%27200%27%20height%3D%2714%27%20preserveAspectRatio%3D%27none%27%3E%3Cpath%20d%3D%27M1%207.3%20C%2018%206.4%2C%2034%207.8%2C%2052%207%20C%2070%206.2%2C%2086%207.7%2C%20104%207.1%20C%20122%206.5%2C%20140%207.7%2C%20158%207%20C%20176%206.4%2C%20190%207.5%2C%20199%207%27%20stroke%3D%27white%27%20stroke-width%3D%271.15%27%20fill%3D%27none%27%20stroke-linecap%3D%27round%27%2F%3E%3C%2Fsvg%3E");mask-image:url("data:image/svg+xml,%3Csvg%20xmlns%3D%27http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%27%20width%3D%27200%27%20height%3D%2714%27%20preserveAspectRatio%3D%27none%27%3E%3Cpath%20d%3D%27M1%207.3%20C%2018%206.4%2C%2034%207.8%2C%2052%207%20C%2070%206.2%2C%2086%207.7%2C%20104%207.1%20C%20122%206.5%2C%20140%207.7%2C%20158%207%20C%20176%206.4%2C%20190%207.5%2C%20199%207%27%20stroke%3D%27white%27%20stroke-width%3D%271.15%27%20fill%3D%27none%27%20stroke-linecap%3D%27round%27%2F%3E%3C%2Fsvg%3E");-webkit-mask-size:100% 100%;mask-size:100% 100%;-webkit-mask-repeat:no-repeat;mask-repeat:no-repeat;}
+.sl-fill{position:absolute;left:0;top:50%;height:1px;margin-top:-.5px;width:calc(var(--v) * 100%);background:var(--accent);border-radius:1px;}
+.sl-knob{position:absolute;top:50%;left:calc(var(--v) * 100%);width:7px;height:7px;margin:-3.5px 0 0 -3.5px;border-radius:50%;background:var(--accent);box-shadow:0 0 0 3px rgb(var(--accent-rgb) / .13);transition:box-shadow .3s ease;}
+.sl:hover .sl-knob{box-shadow:0 0 0 5px rgb(var(--accent-rgb) / .16);}
+.sl-val{font-family:var(--mono);font-size:10px;color:var(--ink-2);text-align:right;}
+.faders{display:flex;flex-direction:column;gap:0;padding:8px 26px 6px;}
+
+.fader{display:flex;flex-direction:column;align-items:center;gap:12px;flex:1;min-width:0;}
+.fader-track{position:relative;width:3px;height:112px;background:rgb(var(--ink-rgb) / .1);cursor:ns-resize;}
+.fader-track::before{content:'';position:absolute;left:-10px;right:-10px;top:-8px;bottom:-8px;}
+.fader-fill{
+  position:absolute;left:0;right:0;bottom:0;pointer-events:none;
+  height:calc(var(--v,.5) * 100%);
+  background:linear-gradient(180deg,rgb(var(--accent-rgb) / .85),rgb(var(--accent-rgb) / .16));
+}
+.fader-cap{
+  position:absolute;left:50%;width:22px;height:8px;margin-left:-11px;pointer-events:none;
+  bottom:calc(var(--v,.5) * 100% - 4px);
+  background:var(--ink);
+  box-shadow:0 2px 8px rgb(var(--shadow-rgb) / .7),0 0 0 1px rgb(var(--ink-rgb) / .08);
+  transition:bottom .08s linear;
+}
+.fader-name{
+  font-family:var(--mono);font-size:8px;letter-spacing:.1em;text-transform:uppercase;
+  color:var(--ink-4);text-align:center;line-height:1.45;max-width:64px;
+}
+.fader-val{font-family:var(--mono);font-size:11px;color:var(--accent);letter-spacing:.04em;}
+.desk-foot{display:flex;align-items:center;gap:28px;padding:16px 26px 24px;border-top:1px solid var(--line);margin-top:6px;}
+/* Result line for the unload button: releasing VRAM has no other visible
+   effect, so the click has to report what happened. */
+.unload-note{
+  font-family:var(--mono);font-size:8.5px;letter-spacing:.14em;text-transform:uppercase;
+  color:var(--ink-4);
+  animation:unloadNote .3s var(--ease) both;
+}
+@keyframes unloadNote{
+  from{opacity:0;transform:translateY(3px);}
+  to{opacity:1;transform:none;}
+}
+.lever{
+  display:flex;align-items:center;gap:11px;padding:7px 0;
+  font-size:12px;color:var(--ink-3);transition:color .3s ease;
+}
+.lever i{position:relative;width:32px;height:1px;flex:none;background:rgb(var(--ink-rgb) / .24);}
+.lever i::after{
+  content:'';position:absolute;left:0;top:-4px;width:9px;height:9px;border-radius:50%;
+  background:var(--ink-4);transition:left .38s var(--ease),background .3s ease,box-shadow .3s ease;
+}
+.lever.on{color:var(--ink-2);}
+
+.lever.on i::after{left:23px;background:var(--accent);box-shadow:0 0 8px rgb(var(--accent-rgb) / .55);}
+
+/* models + jacks */
+.models{display:flex;flex-wrap:wrap;gap:6px;padding:2px 26px 8px;}
+.mdl{font-family:var(--mono);font-size:8.5px;letter-spacing:.06em;padding:6px 9px;border:1px solid var(--line-2);color:var(--ink-4);transition:color .3s ease,border-color .3s ease,background .3s ease;}
+.mdl:hover{color:var(--ink-2);border-color:rgb(var(--ink-rgb) / .2);}
+.mdl.on{color:var(--bg);border-color:var(--accent);background:var(--accent);box-shadow:0 0 10px rgb(var(--accent-rgb) / .28);}
+.mdl:active{transform:translateY(1px);}
+.mdl:disabled{opacity:.34;cursor:not-allowed;text-decoration:line-through;}
+.mdl:disabled:hover{color:var(--ink-4);border-color:var(--line-2);}
+.mdl.add{color:var(--ink-3);font-size:10px;padding:4px 9px;}
+.jacks{display:grid;grid-template-columns:1fr 1fr;gap:14px 22px;padding:16px 26px 8px;border-top:1px solid var(--line);margin-top:12px;}
+.jack{display:flex;align-items:center;gap:10px;min-width:0;}
+.jack.full{grid-column:1 / -1;}
+.jack-port{
+  position:relative;flex:none;width:14px;height:14px;border-radius:50%;
+  background:rgb(var(--shadow-rgb) / .45);
+  box-shadow:inset 0 1px 2px rgb(var(--shadow-rgb) / .8),0 0 0 1px rgb(var(--ink-rgb) / .12);
+}
+.jack-port::after{content:'';position:absolute;inset:4px;border-radius:50%;background:rgb(var(--accent-rgb) / .45);}
+.jack-label{flex:none;font-family:var(--mono);font-size:8px;letter-spacing:.14em;text-transform:uppercase;color:var(--ink-4);}
+.jack-val{font-family:var(--mono);font-size:10px;color:var(--ink-2);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+
+
+
+
+/* ---- STT engine picker: no parameters, only which engine is live ---- */
+.stt-head{display:flex;flex-direction:column;gap:5px;padding:20px 0 16px;border-bottom:1px solid var(--line);}
+.stt-kicker{font-family:var(--mono);font-size:8px;letter-spacing:.16em;text-transform:uppercase;color:var(--ink-4);}
+.stt-current{font-family:var(--serif);font-size:19px;color:var(--ink);}
+.stt-title-row{display:flex;align-items:center;gap:10px;}
+.stt-desc{font-size:11.5px;line-height:1.6;color:var(--ink-4);}
+.stt-list{display:flex;flex-direction:column;}
+.stt-row{
+  display:flex;align-items:center;gap:12px;width:100%;text-align:left;
+  padding:15px 2px;border-bottom:1px solid var(--line);
+  transition:background .3s ease,padding-left .3s ease;
+}
+.stt-row:hover{background:rgb(var(--accent-rgb) / .05);padding-left:6px;}
+.stt-dot{flex:none;width:7px;height:7px;border-radius:50%;background:var(--ink-4);opacity:.5;transition:all .3s ease;}
+.stt-dot.ok{background:var(--accent);opacity:1;box-shadow:0 0 0 3px rgb(var(--accent-rgb) / .14);}
+.stt-dot.err{background:var(--ember);opacity:1;}
+.stt-main{flex:1;min-width:0;display:flex;flex-direction:column;gap:3px;}
+.stt-name{font-size:14px;color:var(--ink-2);transition:color .3s ease;}
+.stt-row.on .stt-name{color:var(--accent);}
+.stt-sub{font-size:11px;line-height:1.5;color:var(--ink-4);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+.stt-state{
+  flex:none;font-family:var(--mono);font-size:8px;letter-spacing:.1em;text-transform:uppercase;
+  padding:3px 7px;border-radius:5px;border:1px solid var(--line-2);color:var(--ink-4);
+}
+.stt-state.ok{color:var(--accent);border-color:rgb(var(--accent-rgb) / .4);background:rgb(var(--accent-rgb) / .07);}
+.stt-state.err{color:var(--ember);border-color:rgb(var(--ember-rgb) / .45);}
+/* Manual ASR stop. The idle timer is the only other way those weights come
+   off the card, and it leaves the process holding its port. */
+.stt-foot{display:flex;align-items:center;gap:16px;padding:20px 2px 0;}
+.stt-note{padding:18px 2px 0;font-size:10.5px;line-height:1.7;color:var(--ink-4);}
+
+/* ---- provider tabs ---- */
+.pv-tabs{display:flex;flex-wrap:wrap;gap:6px;padding:18px 0 10px;}
+.pv-tab{
+  font-family:var(--mono);font-size:9px;letter-spacing:.1em;text-transform:uppercase;
+  padding:5px 9px;border:1px solid var(--line-2);border-radius:3px;
+  color:var(--ink-3);transition:color .25s,border-color .25s,background .25s;
+}
+.pv-tab:hover{color:var(--ink);border-color:rgb(var(--ink-rgb) / .3);}
+.pv-tab.on{color:var(--bg);border-color:var(--accent);background:var(--accent);box-shadow:0 0 10px rgb(var(--accent-rgb) / .28);}
+.pv-tab:active{transform:translateY(1px);}
+.pv-tab.add{font-size:12px;line-height:1;padding:4px 8px;}
+
+.pv-menu{display:flex;flex-wrap:wrap;gap:5px;padding:0 0 12px;}
+.pv-group{
+  flex:0 0 100%;
+  font-family:var(--mono);font-size:8px;letter-spacing:.16em;text-transform:uppercase;
+  color:var(--ink-4);
+  margin-top:2px;
+}
+.pv-opt{
+  font-family:var(--mono);font-size:9px;letter-spacing:.08em;text-transform:uppercase;
+  padding:4px 8px;border:1px solid var(--line);border-radius:3px;color:var(--ink-4);
+}
+.pv-opt:hover{color:var(--accent);border-color:rgb(var(--accent-rgb) / .4);}
+
+/* ---- local llama.cpp bar ---- */
+.local-bar{
+  display:flex;align-items:center;gap:10px;
+  padding:11px 12px;margin:0 0 4px;
+  border:1px solid var(--line);border-radius:4px;
+  background:rgb(var(--ink-rgb) / .02);
+}
+.lb-dot{width:6px;height:6px;border-radius:50%;background:var(--ink-4);flex:none;}
+.lb-dot.on{background:var(--accent);box-shadow:0 0 0 3px rgb(var(--accent-rgb) / .14);}
+.lb-state{font-family:var(--mono);font-size:9px;letter-spacing:.1em;text-transform:uppercase;color:var(--ink-3);}
+/* Says which weight is loaded when it differs from the selected one. */
+.lb-note{font-family:var(--mono);font-size:9px;letter-spacing:.04em;color:var(--ink-4);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:170px;}
+.lb-btn{
+  margin-left:auto;font-family:var(--mono);font-size:9px;letter-spacing:.08em;
+  text-transform:uppercase;color:var(--ink-3);padding:3px 7px;border-radius:3px;
+  border:1px solid var(--line-2);
+}
+.lb-btn + .lb-btn{margin-left:6px;}
+.lb-btn:hover{color:var(--accent);border-color:rgb(var(--accent-rgb) / .4);}
+.lb-btn:disabled{opacity:.4;cursor:default;}
+.lb-btn.ghost{border-color:transparent;}
+
+/* ---- editable jacks and model chips ---- */
+.jack-in{
+  background:none;border:none;border-bottom:1px solid var(--line-2);
+  font-family:var(--mono);font-size:10px;color:var(--ink-2);
+  padding:2px 0;width:100%;outline:none;
+}
+.jack-in:focus{border-bottom-color:var(--accent);}
+.mdl-in{
+  background:none;border:1px dashed var(--line-2);border-radius:3px;
+  font-family:var(--mono);font-size:9px;color:var(--ink-2);
+  padding:5px 8px;min-width:70px;outline:none;
+}
+.mdl-in:focus{border-color:var(--accent);}
+.mdl-in::placeholder{color:var(--ink-4);}
+
+/* Voice preview: type a line, hear it in the selected voice. Sits above the
+   footer so it reads as part of the config, not as a global action. */
+.audition{display:flex;gap:8px;padding:0 0 12px;}
+.audition-in{
+  flex:1;min-width:0;
+  font-family:var(--mono);font-size:10px;letter-spacing:.04em;
+  padding:7px 9px;
+  border:1px solid var(--line-2);background:transparent;color:var(--ink-2);
+  transition:border-color .25s ease;
+}
+.audition-in::placeholder{color:var(--ink-4);}
+.audition-in:focus{border-color:var(--accent);outline:none;}
+.audition-btn{
+  flex:none;
+  font-family:var(--mono);font-size:9px;letter-spacing:.1em;text-transform:uppercase;
+  padding:7px 13px;border:1px solid var(--line-2);color:var(--ink-3);
+  transition:color .25s ease,border-color .25s ease,background .25s ease;
+}
+.audition-btn:hover{color:var(--ink);border-color:rgb(var(--ink-rgb) / .3);}
+.audition-btn.on{color:var(--bg);border-color:var(--accent);background:var(--accent);}
+
+.num.wide{grid-column:span 2;}
+
+/* raw compacted messages, shown under the history list */
+.raw-list{display:flex;flex-direction:column;gap:12px;padding:14px 0 18px;border-top:1px solid var(--line);}
+.raw-row{display:flex;gap:10px;align-items:flex-start;}
+.raw-role{
+  flex:none;font-family:var(--mono);font-size:8px;letter-spacing:.12em;text-transform:uppercase;
+  color:var(--ink-4);padding-top:3px;min-width:34px;
+}
+.raw-text{margin:0;font-size:11.5px;line-height:1.7;color:var(--ink-3);white-space:pre-wrap;}
+
+/* ---- custom local model sub-boxes & path picker ---- */
+.mdl.missing{opacity:.52;border-style:dashed;}
+.mdl-sz{margin-left:4px;opacity:.65;font-size:8px;}
+.sub-box{
+  margin:8px 26px 14px;padding:12px 14px;
+  border:1px solid var(--line-2);border-radius:4px;
+  background:rgb(var(--ink-rgb) / .02);
+  display:flex;flex-direction:column;gap:4px;
+}
+.sub-box-head{
+  font-family:var(--mono);font-size:8.5px;letter-spacing:.14em;text-transform:uppercase;
+  color:var(--ink-4);margin-bottom:4px;
+}
+.scan-row{
+  display:flex;align-items:center;justify-content:space-between;gap:10px;
+  padding:5px 0;border-bottom:1px solid var(--line);
+}
+.scan-row:last-child{border-bottom:none;}
+.scan-name{
+  font-family:var(--mono);font-size:10px;color:var(--ink-2);
+  overflow:hidden;text-overflow:ellipsis;white-space:nowrap;
+}
+.path-pick-wrap{display:flex;align-items:center;gap:6px;min-width:0;width:100%;}
+.path-pick-wrap .num-in{flex:1;min-width:0;text-align:left;}
+.stt-row{cursor:pointer;}
+.path-dlg{width:min(540px,calc(100vw - 40px));padding:22px 24px 18px;}
+.path-dlg-bar{display:flex;align-items:center;gap:8px;margin-bottom:10px;}
+.path-dlg-in{flex:1;min-width:0;text-align:left;}
+.path-dlg-list{
+  max-height:300px;overflow-y:auto;
+  border:1px solid var(--line);background:rgb(var(--ink-rgb) / .015);
+  margin-bottom:14px;
+}
+.path-dlg-row{
+  display:flex;align-items:center;gap:10px;width:100%;text-align:left;
+  padding:8px 10px;border-bottom:1px solid var(--line);
+  font-size:12px;color:var(--ink-2);
+}
+.path-dlg-row:hover{background:rgb(var(--accent-rgb) / .08);}
+.path-dlg-tag{
+  flex:none;font-family:var(--mono);font-size:8px;letter-spacing:.1em;
+  padding:2px 5px;border:1px solid var(--line-2);color:var(--ink-4);
+}
+.path-dlg-row.dir .path-dlg-tag{color:var(--accent);border-color:rgb(var(--accent-rgb) / .35);}
+.path-dlg-name{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+.path-dlg-size{flex:none;font-family:var(--mono);font-size:9.5px;color:var(--ink-4);}
+.path-dlg-empty{padding:24px;text-align:center;font-size:11.5px;color:var(--ink-4);}

@@ -1,0 +1,421 @@
+<script setup lang="ts">
+import { computed, ref, watch } from 'vue'
+import { useUiStore } from '@/stores/ui'
+import { useSessionStore } from '@/stores/session'
+import { useI18n } from '@/i18n'
+import { fileUrl } from '@/api/client'
+import { useFileUrls } from '@/composables/useFileUrl'
+import { deleteBranchImage, getBranchImages, type BranchImage } from '@/api/gallery'
+import { deleteGroupImage, getGroupImages, type GroupImage } from '@/api/group'
+import { useChatStore } from '@/stores/chat'
+import { usePictureStore } from '@/stores/pictures'
+import type { LabelKey } from '@/i18n'
+import { formatDateTime } from '@/utils/time'
+
+const ui = useUiStore()
+const session = useSessionStore()
+const chat = useChatStore()
+const pictures = usePictureStore()
+const { t } = useI18n()
+
+/**
+ * Two albums in one drawer.
+ *
+ * Scene pictures and attachments are separate lists with separate lifetimes:
+ * a generated picture lives in its own table, an attachment lives in message
+ * metadata. They share this panel because the user thinks of both as "images",
+ * and nothing else.
+ */
+type Tab = 'scene' | 'files' | 'group'
+const tab = ref<Tab>('scene')
+
+/* ---- attachments ---- */
+const fileItems = ref<BranchImage[]>([])
+const groupItems = ref<GroupImage[]>([])
+/** The album is one viewer with three sources; the tab picks which one it reads. */
+const items = computed<Array<BranchImage | GroupImage>>(() =>
+  tab.value === 'group' ? groupItems.value : fileItems.value,
+)
+const index = ref(0)
+const fileError = ref('')
+const urlMap = useFileUrls(() => items.value.map((i) => i.url), 0)
+
+const fileCurrent = computed(() => {
+  const it = items.value[index.value]
+  return it ? urlMap.value[it.url] || '' : ''
+})
+const fileItem = computed(() => items.value[index.value] ?? null)
+const fileName = computed(() => fileItem.value?.name ?? 'image')
+const fileMeta = computed(() => {
+  const it = fileItem.value
+  if (!it) return ''
+  const kb = Math.round((it.size || 0) / 1024)
+  return `${it.width || 0} x ${it.height || 0} · ${kb} KB`
+})
+
+/** Locale lookup for a free-form source tag, with the raw tag as fallback. */
+function sourceLabel(source: string): string {
+  return t(`picture.source.${source}` as LabelKey)
+}
+
+function goFile(step: number) {
+  const n = items.value.length
+  if (!n) return
+  index.value = (index.value + step + n) % n
+}
+
+async function loadFiles() {
+  fileItems.value = []
+  index.value = 0
+  const cid = session.activeCompanionId
+  const bid = session.activeBranch
+  if (!cid || !bid) return
+  try {
+    const r = await getBranchImages(cid, bid)
+    fileItems.value = r.images
+    fileError.value = ''
+  } catch (e) {
+    fileError.value = e instanceof Error ? e.message : String(e)
+  }
+}
+
+/** Pictures sent into the open room. Empty until the stage has opened one. */
+async function loadGroup() {
+  groupItems.value = []
+  index.value = 0
+  if (!ui.groupRoomId) return
+  try {
+    const r = await getGroupImages(ui.groupRoomId)
+    groupItems.value = r.images
+    fileError.value = ''
+  } catch (e) {
+    fileError.value = e instanceof Error ? e.message : String(e)
+  }
+}
+
+async function removeFile() {
+  const it = items.value[index.value]
+  if (!it) return
+  try {
+    if (tab.value === 'group') {
+      await deleteGroupImage(ui.groupRoomId, it.url)
+      await loadGroup()
+      ui.bumpGroupEpoch()
+      return
+    }
+    const cid = session.activeCompanionId
+    const bid = session.activeBranch
+    if (!cid || !bid) return
+    await deleteBranchImage(cid, bid, it.url)
+    await loadFiles()
+    await chat.loadMessages()
+  } catch (e) {
+    fileError.value = e instanceof Error ? e.message : String(e)
+  }
+}
+
+/** Hand the current attachment back to the composer as a pending attachment. */
+function quoteFile() {
+  const item = items.value[index.value]
+  if (!item) return
+  ui.quotedImage = { url: item.url, name: item.name }
+  ui.closePanel('gallery')
+}
+
+function askDeleteFile() {
+  const item = items.value[index.value]
+  if (!item) return
+  ui.askConfirm({
+    title: t('picture.delete'),
+    text: item.name,
+    confirmLabel: t('picture.delete'),
+    danger: true,
+    onConfirm: removeFile,
+  })
+}
+
+/* ---- generated scenes ---- */
+const sceneId = ref<number | null>(null)
+const sceneUrlMap = useFileUrls(() => pictures.doneItems.map((p) => p.url), 0)
+
+const scene = computed(() => {
+  const list = pictures.doneItems
+  if (!list.length) return null
+  const hit = list.find((p) => p.id === sceneId.value)
+  return hit ?? list[0]
+})
+const sceneUrl = computed(() => (scene.value ? sceneUrlMap.value[scene.value.url] || '' : ''))
+const sceneMeta = computed(() => {
+  const it = scene.value
+  if (!it) return ''
+  const kb = Math.round((it.size || 0) / 1024)
+  return `${it.width || 0} x ${it.height || 0} · ${kb} KB`
+})
+
+function pickScene(id: number) {
+  sceneId.value = id
+}
+
+function formatTime(raw: string): string {
+  return formatDateTime(raw)
+}
+
+async function download(url: string, name: string) {
+  const a = document.createElement('a')
+  a.href = await fileUrl(url)
+  a.download = name || 'image'
+  a.click()
+}
+
+async function removeScene() {
+  const it = scene.value
+  if (!it) return
+  try {
+    await pictures.remove(it.id)
+    sceneId.value = null
+  } catch (e) {
+    fileError.value = e instanceof Error ? e.message : String(e)
+  }
+}
+
+function askDeleteScene() {
+  const it = scene.value
+  if (!it) return
+  ui.askConfirm({
+    title: t('picture.delete'),
+    text: `${sourceLabel(it.source)} · ${sceneMeta.value}`,
+    confirmLabel: t('picture.delete'),
+    danger: true,
+    onConfirm: removeScene,
+  })
+}
+
+async function retryScene() {
+  const it = scene.value
+  if (!it) return
+  try {
+    await pictures.retry(it.id)
+  } catch (e) {
+    fileError.value = e instanceof Error ? e.message : String(e)
+  }
+}
+
+async function generateHere() {
+  fileError.value = ''
+  try {
+    await pictures.generate()
+  } catch (e) {
+    fileError.value = e instanceof Error ? e.message : String(e)
+  }
+}
+
+watch(tab, () => {
+  // Each album has its own length; an index kept from the previous one would
+  // point past the end and show an empty stage.
+  index.value = 0
+})
+
+// Switching rooms while the album is open has to swap the room album too,
+// otherwise the grid keeps showing the previous room's pictures.
+watch(
+  () => ui.groupRoomId,
+  () => {
+    if (ui.isOpen('gallery')) void loadGroup()
+  },
+)
+
+watch(
+  () => ui.isOpen('gallery'),
+  async (open) => {
+    if (!open) return
+    await Promise.all([loadFiles(), loadGroup(), pictures.ensureLoaded()])
+    sceneId.value = null
+
+    // A caller can ask for one attachment by url; honour that and switch tab,
+    // otherwise the panel would open on a different album than requested.
+    const target = ui.galleryTarget
+    ui.galleryTarget = ''
+    if (!target) {
+      index.value = 0
+      return
+    }
+    const inGroup = groupItems.value.findIndex((it) => it.url === target)
+    if (inGroup >= 0) {
+      tab.value = 'group'
+      index.value = inGroup
+      return
+    }
+    const at = items.value.findIndex((it) => it.url === target)
+    if (at >= 0) {
+      tab.value = 'files'
+      index.value = at
+    }
+  },
+  { immediate: true },
+)
+</script>
+
+<template>
+  <aside class="panel album" :class="{ show: ui.isOpen('gallery') }">
+    <div class="d-head album-head">
+      <span class="d-kicker">{{ t('picture.kicker') }}</span>
+      <span class="d-title">{{ t('picture.title') }}</span>
+      <button class="d-close" aria-label="close" @click="ui.closePanel('gallery')">
+        <svg viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18" /></svg>
+      </button>
+    </div>
+
+    <div class="album-tabs">
+      <button class="album-tab" :class="{ on: tab === 'scene' }" @click="tab = 'scene'">
+        <span>{{ t('picture.tabScenes') }}</span>
+        <span class="album-tab-n">{{ pictures.doneItems.length }}</span>
+      </button>
+      <button class="album-tab" :class="{ on: tab === 'files' }" @click="tab = 'files'">
+        <span>{{ t('picture.tabFiles') }}</span>
+        <span class="album-tab-n">{{ fileItems.length }}</span>
+      </button>
+      <button class="album-tab" :class="{ on: tab === 'group' }" @click="tab = 'group'">
+        <span>{{ t('picture.tabGroup') }}</span>
+        <span class="album-tab-n">{{ groupItems.length }}</span>
+      </button>
+      <button class="album-tab-action" @click="generateHere">
+        <svg viewBox="0 0 24 24" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M4 8h3l1.5-2h7L17 8h3v11H4z" />
+          <circle cx="12" cy="13.2" r="3.2" />
+        </svg>
+      </button>
+    </div>
+
+    <div class="d-body album-body">
+      <!-- generated scenes -->
+      <template v-if="tab === 'scene'">
+        <div v-if="pictures.generating" class="album-flag">
+          <span class="album-pulse"></span>{{ t('picture.generating') }}
+        </div>
+        <p v-if="fileError || pictures.error" class="album-error">{{ fileError || pictures.error }}</p>
+
+        <div v-if="!pictures.doneItems.length && !pictures.generating" class="album-empty">
+          <div class="album-empty-mark">
+            <svg viewBox="0 0 24 24" stroke-linecap="round" stroke-linejoin="round">
+              <rect x="3.5" y="5" width="17" height="14" rx="1.5" />
+              <path d="M3.5 15l4.5-4 4 3.5 3-2.5 5.5 4.5" />
+              <circle cx="9" cy="9.5" r="1.3" />
+            </svg>
+          </div>
+          <p>{{ t('picture.emptyScenes') }}</p>
+        </div>
+
+        <template v-else>
+          <div class="album-stage">
+            <img v-if="sceneUrl" :src="sceneUrl" :alt="scene?.prompt || 'scene'" />
+            <div v-else class="album-loading">{{ t('picture.loading') }}</div>
+          </div>
+
+          <div v-if="scene" class="album-detail">
+            <div class="album-detail-head">
+              <span class="album-badge">{{ sourceLabel(scene.source) }}</span>
+              <span class="album-dim">{{ sceneMeta }}</span>
+              <span class="album-dim">{{ scene.provider }}</span>
+            </div>
+            <p class="album-prompt">{{ scene.prompt }}</p>
+            <div class="album-detail-foot">
+              <span class="album-dim">{{ formatTime(scene.created_at) }}</span>
+              <span v-if="scene.status === 'failed'" class="album-fail">{{ scene.error }}</span>
+            </div>
+            <div class="album-acts">
+              <button class="album-btn" @click="download(scene.url, `scene-${scene.id}.png`)">
+                {{ t('picture.download') }}
+              </button>
+              <button
+                v-if="scene.status === 'failed'"
+                class="album-btn"
+                @click="retryScene"
+              >
+                {{ t('picture.retry') }}
+              </button>
+              <button class="album-btn danger" @click="askDeleteScene">{{ t('picture.delete') }}</button>
+            </div>
+          </div>
+
+          <div class="album-grid">
+            <button
+              v-for="p in pictures.doneItems"
+              :key="p.id"
+              class="album-cell"
+              :class="{ on: scene?.id === p.id }"
+              @click="pickScene(p.id)"
+            >
+              <img :src="sceneUrlMap[p.url]" :alt="p.prompt" />
+            </button>
+          </div>
+        </template>
+      </template>
+
+      <!-- attachments: the single thread's files, and the open room's pictures -->
+      <template v-else-if="tab === 'files' || tab === 'group'">
+        <p v-if="fileError" class="album-error">{{ fileError }}</p>
+
+        <div v-if="!items.length" class="album-empty">
+          <div class="album-empty-mark">
+            <svg viewBox="0 0 24 24" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M12 16V4" /><path d="M7 9l5-5 5 5" />
+              <path d="M4 16v3.5h16V16" />
+            </svg>
+          </div>
+          <p>{{ tab === 'group' ? t('picture.emptyGroup') : t('picture.emptyFiles') }}</p>
+        </div>
+
+        <template v-else>
+          <div class="album-stage">
+            <img v-if="fileCurrent" :src="fileCurrent" :alt="fileName" />
+            <div v-else class="album-loading">{{ t('picture.loading') }}</div>
+          </div>
+
+          <div class="album-detail">
+            <div class="album-detail-head">
+              <span class="album-badge">{{
+                tab === 'group' ? t('picture.tabGroup') : t('picture.tabFiles')
+              }}</span>
+              <span class="album-dim">{{ fileMeta }}</span>
+              <span class="album-dim">{{ index + 1 }} / {{ items.length }}</span>
+            </div>
+            <p class="album-prompt album-prompt-soft">{{ fileName }}</p>
+            <div class="album-acts">
+              <button v-if="tab !== 'group'" class="album-btn" @click="quoteFile">
+                {{ t('picture.quote') }}
+              </button>
+              <button
+                class="album-btn"
+                @click="fileItem && download(fileItem.url, fileItem.name)"
+              >
+                {{ t('picture.download') }}
+              </button>
+              <button class="album-btn danger" @click="askDeleteFile">{{ t('picture.delete') }}</button>
+            </div>
+          </div>
+
+          <div class="album-grid">
+            <button
+              v-for="(it, i) in items"
+              :key="it.url"
+              class="album-cell"
+              :class="{ on: i === index }"
+              @click="index = i"
+            >
+              <img :src="urlMap[it.url]" :alt="it.name" />
+            </button>
+          </div>
+
+          <div class="album-nav">
+            <button class="album-nav-btn" :aria-label="t('picture.prev')" @click="goFile(-1)">
+              <svg viewBox="0 0 24 24"><path d="M15 5l-7 7 7 7" /></svg>
+            </button>
+            <button class="album-nav-btn" :aria-label="t('picture.next')" @click="goFile(1)">
+              <svg viewBox="0 0 24 24"><path d="M9 5l7 7-7 7" /></svg>
+            </button>
+          </div>
+        </template>
+      </template>
+    </div>
+  </aside>
+</template>

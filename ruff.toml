@@ -1,0 +1,17 @@
+# ruff configuration
+#
+# This codebase predates most of ruff's default rules: it uses typing.List and
+# typing.Dict throughout, keeps lines well past 88 characters, and catches
+# broad exceptions on purpose in the engine wrappers. Modernising that is a
+# separate job, not something a lint run should decide.
+#
+# What this file guards is the class of defect that breaks at runtime:
+# undefined names and shadowed redefinitions. Those are cheap to check and
+# always wrong.
+#
+# For a full report:  ruff check backend test --select ALL
+
+target-version = "py39"
+
+[lint]
+select = ["F821", "F811"]

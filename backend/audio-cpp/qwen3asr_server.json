@@ -1,0 +1,19 @@
+{
+  "host": "127.0.0.1",
+  "port": 18243,
+  "backend": "vulkan",
+  "device": 0,
+  "threads": 4,
+  "lazy_load": true,
+  "idle_unload_ms": 120000,
+  "min_free_memory_mb": 128,
+  "models": [
+    {
+      "id": "qwen3-asr",
+      "family": "qwen3_asr",
+      "path": "E:\\dearpebble\\models\\qwen3-asr\\qwen3-asr-1.7b-q8_0.gguf",
+      "task": "asr",
+      "mode": "offline"
+    }
+  ]
+}

@@ -1,0 +1,72 @@
+/* ============================================================
+   KEYFRAMES
+   ============================================================ */
+@keyframes drift{
+  0%{transform:translate3d(-3%,-2%,0) scale(1);}
+  50%{transform:translate3d(2%,3%,0) scale(1.07);}
+  100%{transform:translate3d(4%,-1%,0) scale(1.03);}
+}
+@keyframes grainShift{
+  0%,100%{transform:translate(0,0);}
+  25%{transform:translate(-2%,1%);}
+  50%{transform:translate(1%,-2%);}
+  75%{transform:translate(-1%,-1%);}
+}
+@keyframes scan{0%{top:-16px;}100%{top:100%;}}
+@keyframes spin{to{transform:rotate(360deg);}}
+@keyframes fill{0%{width:8%;}100%{width:100%;}}
+@keyframes reel{to{transform:rotate(360deg);}}
+@keyframes dotPulse{0%,100%{opacity:.35;transform:scale(1);}50%{opacity:1;transform:scale(1.5);}}
+@keyframes fadeUp{from{opacity:0;transform:translateY(14px);}to{opacity:1;transform:none;}}
+@keyframes expose{from{opacity:1;}to{opacity:0;}}
+@keyframes sweep{
+  0%{transform:translateX(-60%);opacity:0;}
+  22%{opacity:1;}
+  100%{transform:translateX(60%);opacity:0;}
+}
+@keyframes focusIn{
+  from{opacity:0;filter:blur(7px);transform:translateY(10px);}
+  to{opacity:1;filter:blur(0);transform:none;}
+}
+@keyframes inkDry{
+  0%{text-shadow:0 0 16px rgb(var(--accent-rgb) / var(--ink-dry-a));}
+  100%{text-shadow:0 0 0 rgb(var(--accent-rgb) / 0);}
+}
+@keyframes blink{0%,49%{opacity:1;}50%,100%{opacity:0;}}
+@keyframes recWave{
+  0%,100%{transform:scaleY(.45);opacity:.55;}
+  50%{transform:scaleY(1.5);opacity:1;}
+}
+@keyframes breathe{
+  0%,100%{opacity:.55;transform:translate(-50%,-50%) scale(1);}
+  50%{opacity:1;transform:translate(-50%,-50%) scale(1.045);}
+}
+@keyframes pulse{
+  0%,100%{opacity:.45;}
+  50%{opacity:1;}
+}
+@keyframes fadeUp{
+  from{opacity:0;transform:translateY(8px);}
+  to{opacity:1;transform:none;}
+}
+@keyframes nudge{
+  0%,100%{transform:translateX(0);}
+  50%{transform:translateX(4px);}
+}
+
+/* ============================================================
+   THEME TRANSITION
+   ============================================================ */
+::view-transition-old(root),
+::view-transition-new(root){
+  animation-duration:.62s;
+  animation-timing-function:cubic-bezier(.7,0,.28,1);
+}
+::view-transition-old(root){animation-name:vtOut;}
+::view-transition-new(root){animation-name:vtIris;}
+@keyframes vtOut{to{opacity:0;}}
+@keyframes vtIris{
+  from{clip-path:circle(0 at var(--ox,50%) var(--oy,50%));}
+  to{clip-path:circle(155% at var(--ox,50%) var(--oy,50%));}
+}
+

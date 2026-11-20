@@ -1,0 +1,53 @@
+/* ============================================================
+   CONFIRM DIALOG
+   ============================================================ */
+.dialog-ov{
+  position:fixed;inset:0;z-index:96;
+  background:rgb(var(--shadow-rgb) / .58);
+  display:grid;place-items:center;
+  opacity:0;pointer-events:none;transition:opacity .35s ease;
+  backdrop-filter:blur(3px);
+}
+.dialog-ov.show{opacity:1;pointer-events:auto;}
+.dialog{
+  width:min(430px,calc(100vw - 48px));
+  background:var(--bg-2);border:1px solid var(--line-2);
+  padding:30px 32px 24px;
+  box-shadow:0 40px 110px rgb(var(--shadow-rgb) / .5);
+  transform:translateY(10px) scale(.985);
+  transition:transform .45s var(--ease-out);
+}
+.dialog-ov.show .dialog{transform:none;}
+.dlg-kicker{
+  font-family:var(--mono);font-size:8px;letter-spacing:.24em;text-transform:uppercase;
+  color:var(--accent-dim);margin-bottom:12px;
+}
+.dlg-title{font-size:19px;line-height:1.35;color:var(--ink);margin-bottom:10px;}
+.dlg-text{font-size:13.5px;line-height:1.78;color:var(--ink-3);margin:0 0 26px;}
+.dlg-actions{display:flex;justify-content:flex-end;gap:8px;}
+
+/* ============================================================
+   DROP OVERLAY
+   ============================================================ */
+.drop-ov{
+  position:fixed;inset:0;z-index:97;
+  background:rgb(var(--shadow-rgb) / .72);
+  display:grid;place-items:center;
+  opacity:0;pointer-events:none;transition:opacity .3s ease;
+  backdrop-filter:blur(4px);
+}
+.drop-ov.show{opacity:1;pointer-events:auto;}
+.drop-card{
+  text-align:center;padding:54px 66px;
+  border:1px dashed rgb(var(--accent-rgb) / .45);
+  background:rgb(var(--bg-rgb) / .55);
+  transform:scale(.97);transition:transform .4s var(--ease-out);
+}
+.drop-ov.show .drop-card{transform:none;}
+.drop-card svg{width:34px;height:34px;stroke:var(--accent);fill:none;stroke-width:1.2;margin-bottom:18px;}
+.drop-title{font-size:17px;color:var(--ink-2);margin-bottom:9px;}
+.drop-hint{
+  font-family:var(--mono);font-size:9px;letter-spacing:.14em;
+  text-transform:uppercase;color:var(--ink-4);
+}
+

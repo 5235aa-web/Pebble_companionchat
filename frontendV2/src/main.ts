@@ -1,0 +1,29 @@
+import { createApp } from 'vue'
+import { createPinia } from 'pinia'
+import App from './App.vue'
+
+// Order matters: these files are the original stylesheet split by section,
+// imported back in the exact order they were written.
+import './styles/01-tokens.css'
+import './styles/02-atmosphere.css'
+import './styles/03-stage.css'
+import './styles/04-rail.css'
+import './styles/05-thread.css'
+import './styles/06-composer.css'
+import './styles/07-tooltip.css'
+import './styles/08-scene.css'
+import './styles/09-panels.css'
+import './styles/10-attachments.css'
+import './styles/11-dialogs.css'
+import './styles/12-profile.css'
+import './styles/13-desk.css'
+import './styles/14-card-editor.css'
+import './styles/15-thread-extras.css'
+import './styles/16-keyframes.css'
+import './styles/17-responsive.css'
+import './styles/18-memory.css'
+import './styles/19-scene-copy.css'
+import './styles/20-picture-studio.css'
+import './styles/21-group.css'
+
+createApp(App).use(createPinia()).mount('#app')

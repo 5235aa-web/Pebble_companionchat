@@ -1,0 +1,324 @@
+/* ============================================================
+   THREAD
+   ============================================================ */
+.scroller{
+  grid-area:thread;
+  overflow-y:auto;overflow-x:hidden;
+  position:relative;
+  scroll-behavior:smooth;
+  overscroll-behavior:contain;
+}
+/*
+  Scrollbar fade. The thumb is invisible at rest, appears while the thread is
+  being scrolled, and disappears again 1.2s after the gesture stops. A hidden
+  thumb can still be dragged, so the hover rule keeps working.
+*/
+.scroller:not(.scrolling)::-webkit-scrollbar-thumb{background:transparent;}
+.scroller.scrolling::-webkit-scrollbar-thumb{background:rgb(var(--ink-rgb) / .16);}
+.scroller::-webkit-scrollbar-thumb:hover{background:rgb(var(--ink-rgb) / .26);}
+.thread{
+  position:relative;
+  max-width:720px;
+  margin:0 0 0 var(--gutter);
+  padding:42px 0 58px 46px;
+}
+.axis{
+  position:absolute;left:20px;top:42px;bottom:58px;width:1px;
+  background:linear-gradient(180deg,transparent,rgb(var(--ink-rgb) / .09) 4%,rgb(var(--ink-rgb) / .09) 95%,transparent);
+  pointer-events:none;
+}
+
+/* ---- compaction summary card ---- */
+.summary-card{
+  margin:6px 0 42px;
+  padding:16px 20px 18px;
+  border:1px dashed rgb(var(--ink-rgb) / .16);
+  border-radius:4px;
+  background:rgb(var(--ink-rgb) / .018);
+  /* Isolate layout and paint: a beat changing inside cannot force the thread to
+     re-lay out, and its repaint stays inside this box. */
+  contain:layout paint;
+}
+.sc-head{
+  display:flex;align-items:center;justify-content:space-between;gap:14px;
+  width:100%;padding:0;margin-bottom:0;background:none;border:0;cursor:pointer;
+  text-align:left;
+}
+.summary-card.open .sc-head{margin-bottom:10px;}
+.sc-chev{
+  width:11px;height:11px;stroke:currentColor;fill:none;stroke-width:1.8;
+  transition:transform .3s var(--ease);
+}
+.summary-card.open .sc-chev{transform:rotate(90deg);}
+.sc-kicker{
+  font-family:var(--mono);font-size:8.5px;letter-spacing:.22em;text-transform:uppercase;
+  color:var(--accent);opacity:.8;
+}
+.sc-meta{font-family:var(--mono);font-size:8.5px;letter-spacing:.12em;color:var(--ink-4);}
+.sc-body{
+  margin:0;
+  font-size:12.5px;line-height:1.75;color:var(--ink-3);
+  white-space:pre-wrap;
+}
+
+/* ---- beat ---- */
+.beat{
+  position:relative;
+  /* Creates a stacking context so the -1 pseudo-element stays behind the text
+     instead of dropping below the thread background. */
+  isolation:isolate;
+  /* A reply growing during streaming repaints this box only; the thread around
+     it keeps its layout and does not get walked by the paint pass.
+     `layout` only — not `paint`: .node sits at left:-27px, outside this box, and
+     paint containment would clip it away. */
+  contain:layout;
+  opacity:0;filter:blur(7px);transform:translateY(10px);
+  margin-bottom:38px;
+}
+.beat.lit{animation:focusIn .95s var(--ease) forwards;}
+.beat.lit .say{animation:inkDry 1.9s ease-out forwards;}
+.node{
+  position:absolute;left:-27px;top:9px;
+  width:6px;height:6px;border-radius:50%;
+  background:rgb(var(--ink-rgb) / .18);
+  transition:background .7s ease,box-shadow .7s ease,transform .5s var(--ease);
+}
+.beat.lit .node{background:var(--accent);box-shadow:0 0 13px rgb(var(--accent-rgb) / .55);}
+html[data-theme="day"] .beat.lit .node{box-shadow:0 0 9px rgb(var(--accent-rgb) / .32);}
+
+/* Search jump: a wash behind the target beat that fades out on its own.
+   Drawn on a pseudo-element so it never touches the beat's own animations —
+   `.lit` owns the entrance transition, and reusing it here would replay it.
+
+   Four seconds, not two: the thread scrolls smoothly to the target, and over a
+   long distance the scroll alone takes a second or two. A two-second wash was
+   often gone by the time the beat arrived on screen. */
+.beat.spot::before{
+  content:'';
+  position:absolute;
+  inset:-11px -15px;
+  border-radius:6px;
+  pointer-events:none;
+  /* Sits under the text: the wash is translucent, but stacking it on top would
+     still tint the glyphs and make them look dimmed while it is showing. */
+  z-index:-1;
+  background:rgb(var(--accent-rgb) / .14);
+  box-shadow:
+    inset 0 0 0 1px rgb(var(--accent-rgb) / .42),
+    0 0 28px rgb(var(--accent-rgb) / .14);
+  animation:beatSpot 4s var(--ease) forwards;
+}
+.beat.spot::after{
+  content:'';
+  position:absolute;
+  left:-15px;
+  top:-6px;
+  bottom:-6px;
+  width:3px;
+  border-radius:2px;
+  pointer-events:none;
+  background:var(--accent);
+  box-shadow:0 0 14px rgb(var(--accent-rgb) / .85);
+  animation:beatSpotBar 4s var(--ease) forwards;
+}
+html[data-theme="day"] .beat.spot::before{
+  background:rgb(var(--accent-rgb) / .11);
+  box-shadow:
+    inset 0 0 0 1px rgb(var(--accent-rgb) / .48),
+    0 0 22px rgb(var(--accent-rgb) / .12);
+}
+.beat.spot .node{
+  animation:spotNode 4s var(--ease) forwards;
+}
+@keyframes beatSpot{
+  0%{opacity:0;transform:scale(.982);}
+  8%{opacity:1;transform:scale(1);}
+  16%{opacity:.72;}
+  24%{opacity:1;}
+  /* Hold the wash clearly once scrolled into view, then release smoothly. */
+  78%{opacity:1;}
+  100%{opacity:0;transform:scale(1);}
+}
+@keyframes beatSpotBar{
+  0%{opacity:0;transform:scaleY(.2);}
+  10%{opacity:1;transform:scaleY(1);}
+  78%{opacity:1;transform:scaleY(1);}
+  100%{opacity:0;transform:scaleY(.5);}
+}
+@keyframes spotNode{
+  0%{background:rgb(var(--ink-rgb) / .18);box-shadow:none;transform:scale(1);}
+  12%{background:var(--accent);box-shadow:0 0 18px rgb(var(--accent-rgb) / .85);transform:scale(2.4);}
+  24%{transform:scale(2.0);}
+  100%{background:var(--accent);box-shadow:0 0 0 rgb(var(--accent-rgb) / 0);transform:scale(1.5);}
+}
+.beat:hover .node{transform:scale(1.7);}
+.beat-body{min-width:0;}
+
+.beat-head{display:flex;align-items:baseline;gap:11px;margin-bottom:9px;}
+.speaker{
+  font-family:var(--mono);font-size:10px;font-weight:400;
+  letter-spacing:.24em;text-transform:uppercase;
+  color:var(--accent-dim);
+  transition:color .4s ease;
+}
+.beat:hover .speaker{color:var(--accent);}
+.beat-time{
+  font-family:var(--mono);font-size:9px;letter-spacing:.08em;
+  color:var(--ink-4);opacity:.62;
+}
+
+/* AI speech: latin serif, reading measure */
+.beat[data-role="ai"] .say{
+  font-size:18px;line-height:1.72;letter-spacing:.002em;
+  color:var(--ink);margin:0 0 .62em;
+}
+.beat[data-role="ai"] .say:last-child{margin-bottom:0;}
+.beat[data-role="ai"] .direction{
+  font-size:16px;line-height:1.66;font-style:italic;
+  color:var(--ink-3);
+  border-left:1px solid var(--line-2);
+  padding-left:17px;
+  margin:0 0 .78em;
+}
+
+/* user speech: director's margin note */
+.beat[data-role="you"] .beat-head{margin-bottom:8px;}
+.beat[data-role="you"] .speaker{color:var(--ink-4);letter-spacing:.28em;}
+.beat[data-role="you"] .say{
+  font-size:16px;line-height:1.76;color:var(--ink-2);margin:0 0 .5em;
+}
+.beat[data-role="you"] .direction{
+  font-size:15px;line-height:1.7;font-style:italic;color:var(--ink-3);
+  opacity:.8;border-left:none;padding-left:0;margin:0 0 .5em;
+}
+
+/* attachments inside a beat */
+.attach-row{display:flex;flex-wrap:wrap;gap:8px;margin:0 0 12px;}
+.attach-thumb{
+  width:92px;height:92px;border:1px solid var(--line-2);
+  overflow:hidden;position:relative;cursor:pointer;
+  transition:border-color .3s ease,transform .4s var(--ease);
+}
+.attach-thumb:hover{border-color:rgb(var(--accent-rgb) / .5);transform:translateY(-2px);}
+.attach-thumb img{width:100%;height:100%;object-fit:cover;display:block;filter:saturate(.85);}
+
+/* tools */
+.beat-tools{
+  display:flex;align-items:center;gap:2px;margin-top:12px;
+  opacity:0;transform:translateY(-4px);
+  transition:opacity .4s ease,transform .45s var(--ease);
+  pointer-events:none;
+}
+.beat:hover .beat-tools{opacity:1;transform:none;pointer-events:auto;}
+/* Generation footprint: model, duration, tokens. Inside .beat-tools so it
+   inherits the same reveal and never competes with the reply for attention. */
+.beat-meta{
+  font-family:var(--mono);font-size:8.5px;letter-spacing:.12em;text-transform:uppercase;
+  color:var(--ink-4);margin-right:12px;white-space:nowrap;
+}
+/* The breakdown is far wider than the label it hangs from. Centring it pushed
+   the opening tokens off the window, so it opens from the label's left edge. */
+.beat-meta[data-tip]::after{
+  left:0;right:auto;
+  transform:translateY(4px);
+}
+.beat-meta[data-tip]:hover::after{transform:translateY(0);}
+/* A voice turn shows this instead of the transcript. The text still exists in
+   the database and is what the model reads on every later turn; it is only
+   hidden from the person who said it. */
+.voice-bubble{
+  font-style:italic;color:var(--ink-3);
+}
+.tool{
+  width:26px;height:26px;display:grid;place-items:center;
+  color:var(--ink-4);
+  transition:color .3s ease,background .3s ease;
+}
+.tool.danger:hover{color:var(--ember);}
+.tool:hover{color:var(--accent);background:rgb(var(--accent-rgb) / .07);}
+.tool svg{width:13px;height:13px;stroke:currentColor;fill:none;stroke-width:1.5;stroke-linecap:round;stroke-linejoin:round;}
+.tool[data-on="1"]{color:var(--accent);}
+.tool.on{color:var(--accent);background:rgb(var(--accent-rgb) / .09);}
+.tool.on:hover{background:rgb(var(--accent-rgb) / .14);}
+
+/* swipe */
+.swipe{display:flex;align-items:center;gap:2px;margin-left:6px;}
+.swipe-btn{
+  width:22px;height:22px;display:grid;place-items:center;color:var(--ink-4);
+  transition:color .3s ease,transform .3s var(--ease);
+}
+.swipe-btn:hover{color:var(--accent);transform:scale(1.15);}
+.swipe-btn svg{width:11px;height:11px;stroke:currentColor;fill:none;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round;}
+.swipe-n{
+  font-family:var(--mono);font-size:9px;letter-spacing:.1em;color:var(--ink-4);
+  min-width:30px;text-align:center;
+}
+
+/* edit mode */
+.beat.editing .say,.beat.editing .direction{display:none;}
+.edit-area{
+  width:100%;min-height:96px;
+  font-size:16.5px;line-height:1.72;color:var(--ink);
+  border:1px solid var(--line-2);padding:12px 14px;
+  background:rgb(var(--ink-rgb) / .02);
+  transition:border-color .3s;
+}
+.edit-area:focus{border-color:rgb(var(--accent-rgb) / .45);}
+.edit-actions{display:flex;gap:10px;margin-top:10px;}
+.mini-btn{
+  font-family:var(--mono);font-size:9px;letter-spacing:.18em;text-transform:uppercase;
+  color:var(--ink-3);padding:5px 11px;border:1px solid var(--line-2);
+  transition:color .3s,border-color .3s,background .3s;
+}
+.mini-btn:hover{color:var(--accent);border-color:rgb(var(--accent-rgb) / .45);}
+.mini-btn.danger{color:var(--ember);border-color:rgb(var(--ember-rgb) / .42);}
+.mini-btn.danger:hover{background:rgb(var(--ember-rgb) / .1);}
+.mini-btn.primary{color:var(--accent);border-color:rgb(var(--accent-rgb) / .4);background:rgb(var(--accent-rgb) / .07);}
+.mini-btn:disabled{opacity:.38;cursor:not-allowed;}
+
+/* streaming caret */
+.caret{
+  display:inline-block;width:2px;height:1em;vertical-align:-.14em;
+  margin-left:2px;background:var(--accent);
+  animation:blink 1.05s steps(2) infinite;
+}
+
+/* ---- scene break ---- */
+.scene-break{
+  display:flex;align-items:center;gap:16px;
+  margin:34px 0 40px;
+  opacity:0;filter:blur(6px);
+}
+.scene-break.lit{animation:focusIn 1.1s var(--ease) forwards;}
+.sb-rule{flex:1;height:1px;background:linear-gradient(90deg,transparent,var(--line-2),transparent);}
+.sb-text{
+  font-family:var(--mono);font-size:9px;letter-spacing:.24em;text-transform:uppercase;
+  color:var(--ink-4);white-space:nowrap;
+}
+
+/* ---- summary (compacted) ---- */
+.summary-beat{
+  border-left:2px solid rgb(var(--accent-rgb) / .3);
+  padding:14px 0 14px 18px;margin-bottom:34px;
+  background:linear-gradient(90deg,rgb(var(--accent-rgb) / .045),transparent 70%);
+}
+.summary-label{
+  font-family:var(--mono);font-size:9px;letter-spacing:.22em;text-transform:uppercase;
+  color:var(--accent-dim);margin-bottom:7px;
+}
+.summary-text{font-size:15px;line-height:1.7;font-style:italic;color:var(--ink-3);}
+
+/* to present */
+.to-present{
+  position:absolute;right:calc(100% - var(--gutter) - 720px);bottom:calc(100% + 10px);z-index:7;
+  width:34px;height:34px;border-radius:50%;
+  border:1px solid var(--line-2);background:var(--bg-2);
+  display:grid;place-items:center;color:var(--ink-3);
+  opacity:0;transform:translateY(8px) scale(.9);pointer-events:none;
+  transition:all .45s var(--ease);
+  backdrop-filter:blur(6px);
+}
+.to-present.show{opacity:1;transform:none;pointer-events:auto;}
+.to-present:hover{color:var(--accent);border-color:rgb(var(--accent-rgb) / .45);}
+.to-present svg{width:14px;height:14px;stroke:currentColor;fill:none;stroke-width:1.7;stroke-linecap:round;stroke-linejoin:round;}
+

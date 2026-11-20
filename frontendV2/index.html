@@ -1,0 +1,298 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="night" data-accent="amber" data-font="wenkai">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Dialogue</title>
+  <link rel="icon" href="data:," />
+  <script>
+    ;(function () {
+      try {
+        var d = document.documentElement
+        var t = localStorage.getItem('dialogue.theme')
+        var a = localStorage.getItem('dialogue.accent')
+        if (t) d.dataset.theme = t
+        if (a) d.dataset.accent = a
+        var f = localStorage.getItem('dialogue.font')
+        if (f) d.dataset.font = f
+      } catch (e) {}
+    })()
+  </script>
+  <style>
+    /* Inlined on purpose: the splash has to paint before the module graph
+       loads, so it cannot wait for a stylesheet request. */
+    #splash {
+      position: fixed;
+      inset: 0;
+      z-index: 9999;
+      display: grid;
+      place-items: center;
+      background: #0a0908;
+      color: #ece5d8;
+      font-family: "Newsreader", "LXGW WenKai", "Noto Serif SC", Georgia, serif;
+      transition: opacity 0.72s cubic-bezier(0.16, 1, 0.3, 1);
+    }
+    #splash.sp-out { opacity: 0; pointer-events: none; }
+
+    #splash::before {
+      content: "";
+      position: absolute;
+      inset: 0;
+      background-image: repeating-linear-gradient(
+        118deg,
+        rgba(236, 229, 216, 0.018) 0 1px,
+        transparent 1px 26px
+      );
+      pointer-events: none;
+    }
+    #splash::after {
+      content: "";
+      position: absolute;
+      inset: 0;
+      background: radial-gradient(ellipse at 50% 46%, transparent 32%, rgba(0, 0, 0, 0.62) 100%);
+      pointer-events: none;
+    }
+
+    .sp-stage {
+      position: relative;
+      display: grid;
+      place-items: center;
+      gap: 0;
+      transform: translateY(-2vh);
+    }
+
+    .sp-rings { position: relative; width: 240px; height: 240px; }
+    .sp-rings svg { position: absolute; inset: 0; width: 100%; height: 100%; overflow: visible; }
+
+    .sp-ring {
+      fill: none;
+      stroke: rgba(236, 229, 216, 0.30);
+      stroke-width: 0.9;
+      stroke-linecap: round;
+      stroke-dasharray: 754;
+      stroke-dashoffset: 754;
+      transform-origin: 50% 50%;
+      transform: rotate(-96deg);
+      animation: sp-draw 2.1s cubic-bezier(0.33, 1, 0.68, 1) 0.18s forwards;
+    }
+    .sp-ring-2 {
+      fill: none;
+      stroke: rgba(224, 163, 94, 0.24);
+      stroke-width: 0.6;
+      stroke-linecap: round;
+      stroke-dasharray: 754;
+      stroke-dashoffset: 754;
+      transform-origin: 50% 50%;
+      transform: rotate(-96deg);
+      animation: sp-draw 2.4s cubic-bezier(0.33, 1, 0.68, 1) 0.56s forwards;
+    }
+    @keyframes sp-draw { to { stroke-dashoffset: 0; } }
+
+    .sp-word {
+      position: absolute;
+      inset: 0;
+      display: grid;
+      place-items: center;
+      font-size: 33px;
+      font-weight: 300;
+      letter-spacing: 0.055em;
+      text-indent: 0.055em;
+      color: #ece5d8;
+      filter: blur(9px);
+      opacity: 0;
+      animation: sp-ink 1.5s cubic-bezier(0.16, 1, 0.3, 1) 1.25s forwards;
+    }
+    @keyframes sp-ink {
+      0% { opacity: 0; filter: blur(9px); transform: scale(1.04); }
+      60% { opacity: 1; filter: blur(0.6px); }
+      100% { opacity: 1; filter: blur(0); transform: scale(1); }
+    }
+
+    .sp-rule {
+      width: 0;
+      height: 1px;
+      margin-top: 26px;
+      background: linear-gradient(90deg, transparent, rgba(236, 229, 216, 0.26), transparent);
+      animation: sp-rule 1.1s cubic-bezier(0.16, 1, 0.3, 1) 2.2s forwards;
+    }
+    @keyframes sp-rule { to { width: 238px; } }
+
+    .sp-sub {
+      margin-top: 18px;
+      font-family: "IBM Plex Mono", ui-monospace, Consolas, monospace;
+      font-size: 8.5px;
+      letter-spacing: 0.42em;
+      text-indent: 0.42em;
+      color: rgba(236, 229, 216, 0.42);
+      opacity: 0;
+      transform: translateY(5px);
+      animation: sp-sub 1.1s cubic-bezier(0.16, 1, 0.3, 1) 2.55s forwards;
+    }
+    @keyframes sp-sub { to { opacity: 1; transform: none; } }
+
+    .sp-dots { display: flex; gap: 7px; margin-top: 30px; opacity: 0; animation: sp-sub 0.9s ease 2.9s forwards; }
+    .sp-dots i {
+      width: 3px;
+      height: 3px;
+      border-radius: 50%;
+      background: #e0a35e;
+      animation: sp-breathe 1.5s ease-in-out infinite;
+    }
+    .sp-dots i:nth-child(2) { animation-delay: 0.22s; }
+    .sp-dots i:nth-child(3) { animation-delay: 0.44s; }
+    @keyframes sp-breathe {
+      0%, 100% { opacity: 0.22; transform: scale(0.8); }
+      50% { opacity: 1; transform: scale(1.15); }
+    }
+
+    .sp-corner {
+      position: absolute;
+      width: 16px;
+      height: 16px;
+      border-color: rgba(236, 229, 216, 0.14);
+      border-style: solid;
+      border-width: 0;
+      opacity: 0;
+      animation: sp-sub 1s ease 2.7s forwards;
+    }
+    .sp-corner.tl { top: 30px; left: 32px; border-top-width: 1px; border-left-width: 1px; }
+    .sp-corner.br { bottom: 30px; right: 32px; border-bottom-width: 1px; border-right-width: 1px; }
+
+    .sp-status {
+      margin-top: 20px;
+      font-family: "IBM Plex Mono", ui-monospace, monospace;
+      font-size: 9px;
+      letter-spacing: 0.26em;
+      text-transform: uppercase;
+      color: var(--ink-4);
+      opacity: 0;
+      animation: sp-sub 1s ease 2.9s forwards;
+    }
+
+    @media (prefers-reduced-motion: reduce) {
+      .sp-ring, .sp-ring-2 { animation: none; stroke-dashoffset: 0; }
+      .sp-word { animation: none; opacity: 1; filter: none; }
+      .sp-rule { animation: none; width: 238px; }
+      .sp-sub, .sp-dots, .sp-corner { animation: none; opacity: 1; transform: none; }
+      .sp-dots i { animation: none; opacity: 0.7; }
+    }
+  </style>
+</head>
+<body>
+  <div id="splash">
+    <span class="sp-corner tl"></span>
+    <span class="sp-corner br"></span>
+    <div class="sp-stage">
+      <div class="sp-rings">
+        <svg viewBox="0 0 240 240">
+          <circle class="sp-ring" cx="120" cy="120" r="120" />
+          <circle class="sp-ring-2" cx="120" cy="120" r="112" />
+        </svg>
+        <div class="sp-word">Pebble</div>
+      </div>
+      <div class="sp-rule"></div>
+      <div class="sp-sub">COMPANION CHAT</div>
+      <div class="sp-dots"><i></i><i></i><i></i></div>
+      <div class="sp-status">starting backend</div>
+    </div>
+  </div>
+
+  <div id="app"></div>
+  <script type="module" src="/src/main.ts"></script>
+
+  <script>
+    /* The splash leaves as soon as the backend answers. A warm start really is
+       fast, and padding the opening to a fixed length makes the shell feel
+       slower than it is. MAX is the other end: a backend that never answers
+       must not own the window forever.
+
+       Readiness is polled over HTTP rather than taken from a Tauri event, so the
+       same code works in a browser (?splash=1) and adds no dependency on
+       @tauri-apps/api. */
+    ;(function () {
+      var MAX = 20000
+      var POLL = 350
+      var el = document.getElementById('splash')
+      if (!el) return
+
+      var onDesktop = '__TAURI_INTERNALS__' in window
+      var forced = /[?&]splash=1/.test(location.search)
+      if (!onDesktop && !forced) {
+        el.remove()
+        return
+      }
+
+      var finished = false
+      var status = el.querySelector('.sp-status')
+      var STEPS = ['starting backend', 'loading engines', 'waiting for gateway']
+      var step = 0
+
+      /* A script that fails to load leaves nothing on screen to explain why.
+         Park the reason on the splash and keep it there. */
+      function fail(text) {
+        finished = true
+        clearInterval(tick)
+        if (status) {
+          status.textContent = text
+          status.style.color = '#c2563c'
+          status.style.opacity = '1'
+        }
+        el.classList.remove('sp-out')
+      }
+      window.addEventListener('error', function (e) {
+        fail('ERROR · ' + (e.message || e.type))
+      })
+      window.addEventListener('unhandledrejection', function (e) {
+        var r = e.reason
+        fail('REJECTED · ' + ((r && r.message) || r))
+      })
+
+      /* The line advances on a timer so a slow start says something instead of
+         showing the same word for eight seconds. It never reaches a percentage:
+         the only real signal is /health answering. */
+      var tick = setInterval(function () {
+        if (finished) { clearInterval(tick); return }
+        if (step < STEPS.length - 1) {
+          step += 1
+          if (status) status.textContent = STEPS[step]
+        }
+      }, 1500)
+
+      function finish() {
+        if (finished) return
+        finished = true
+        clearInterval(tick)
+        if (status) status.textContent = 'ready'
+        el.classList.add('sp-out')
+        setTimeout(function () { el.remove() }, 800)
+      }
+
+      // Readiness is probed over the same WebSocket the app uses. HTTP is not
+      // usable from the packaged webview, so a fetch here would always fail and
+      // the splash would sit until the timeout.
+      var started = Date.now()
+      function poll() {
+        if (finished) return
+        if (Date.now() - started > MAX) { finish(); return }
+        var done = false
+        try {
+          var ws = new WebSocket('ws://127.0.0.1:8002/ws')
+          ws.onopen = function () {
+            done = true
+            try { ws.close() } catch (e) {}
+            finish()
+          }
+          ws.onerror = function () {
+            done = true
+            if (!finished) setTimeout(poll, POLL)
+          }
+        } catch (e) {
+          done = true
+        }
+        if (!done && !finished) setTimeout(poll, POLL)
+      }
+      setTimeout(poll, 400)
+    })()
+  </script>
+</body>
+</html>

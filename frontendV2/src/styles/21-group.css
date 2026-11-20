@@ -1,0 +1,806 @@
+/* ============================================================
+   GROUP STAGE
+   The second view: same app, same rail, a different area underneath.
+   Cards fan out behind a transparent thread, so the text reads straight
+   through the artwork instead of sitting in a column beside it.
+   ============================================================ */
+
+.stage.group-mode{
+  grid-template-columns:minmax(0,1fr);
+  grid-template-rows:auto minmax(0,1fr) minmax(0,1fr);
+  grid-template-areas:
+    "rail"
+    "group"
+    "group";
+}
+
+.group-stage{
+  grid-area:group;
+  position:relative;
+  display:flex;
+  min-height:0;
+  overflow:hidden;
+}
+
+/* ---- the hand of cards ---- */
+.gc-hand{
+  position:absolute;inset:0;
+  z-index:1;
+  pointer-events:none;
+}
+.gc-card{
+  position:absolute;
+  top:12px;
+  width:27vw;
+  height:calc(27vw * 1.55);
+  pointer-events:auto;
+  transform-origin:50% 0;
+  border:1px solid rgb(var(--ink-rgb) / .08);
+  border-radius:7px;
+  overflow:hidden;
+  background:
+    radial-gradient(120% 88% at 50% 4%, rgb(var(--accent-rgb) / .05), transparent 62%),
+    linear-gradient(168deg, var(--bg-3), var(--bg-2) 56%, var(--bg));
+  box-shadow:
+    0 30px 60px -34px rgb(var(--shadow-rgb) / .75),
+    0 1px 0 rgb(var(--ink-rgb) / .04) inset;
+  text-align:left;
+  cursor:pointer;
+  transition:
+    transform .75s var(--ease),
+    border-color .6s ease,
+    box-shadow .6s ease;
+}
+.gc-card:hover,
+.gc-card.hovered{
+  box-shadow:
+    0 40px 74px -34px rgb(var(--shadow-rgb) / .85),
+    0 1px 0 rgb(var(--ink-rgb) / .06) inset;
+}
+/* The card the room is currently focused on. */
+.gc-card.on{
+  border-color:rgb(var(--accent-rgb) / .3);
+  box-shadow:
+    0 34px 66px -32px rgb(var(--shadow-rgb) / .8),
+    0 0 0 1px rgb(var(--accent-rgb) / .12),
+    0 0 34px -14px rgb(var(--accent-rgb) / .4);
+}
+.gc-card.speaking{
+  border-color:rgb(var(--accent-rgb) / .45);
+}
+
+/* ---- portrait ---- */
+/* The card is a person, not a typographic tile: the photograph fills the upper
+   part of the card and the name sits in a gradient at the foot. The letter is
+   only a fallback for a card that has no portrait yet. */
+.gc-portrait{
+  /* 18% instead of 24%: the foot's gradient starts well above its own text, so
+     the old reserve ate a fifth of the card and still read as empty paper. */
+  position:absolute;inset:0 0 18% 0;
+  overflow:hidden;
+}
+.gc-portrait img{
+  width:100%;height:100%;object-fit:cover;display:block;
+  /* Portrait art is taller than the box, so `cover` crops top and bottom evenly.
+     Pulling the crop window up keeps the face instead of the chest. */
+  object-position:center 18%;
+  filter:saturate(.94) contrast(1.02);
+  transition:transform 1.2s var(--ease),filter .8s ease;
+}
+.gc-card:hover .gc-portrait img,
+.gc-card.hovered .gc-portrait img{transform:scale(1.035);}
+.gc-card.on .gc-portrait img{filter:saturate(1.02) contrast(1.04);}
+
+.gc-glyph{
+  position:absolute;left:50%;top:50%;
+  transform:translate(-50%,-50%);
+  font-family:var(--serif);
+  font-size:5.4vw;font-weight:300;line-height:1;
+  color:rgb(var(--ink-rgb) / .18);
+  user-select:none;
+}
+.gc-card.on .gc-glyph{color:rgb(var(--accent-rgb) / .26);}
+
+.gc-foot{
+  position:absolute;left:0;right:0;bottom:0;
+  display:flex;flex-direction:column;gap:2px;
+  padding:46px 20px 18px;
+  background:linear-gradient(0deg,var(--bg-2) 31%,rgb(var(--bg-rgb) / .8) 68%,transparent);
+}
+.gc-name{
+  font-family:var(--serif);font-size:16.5px;font-weight:400;
+  letter-spacing:.004em;color:var(--ink);
+  white-space:nowrap;overflow:hidden;text-overflow:ellipsis;
+}
+.gc-role{
+  font-family:var(--mono);font-size:7.5px;font-style:normal;
+  letter-spacing:.24em;text-transform:uppercase;
+  color:var(--accent-dim);
+  white-space:nowrap;overflow:hidden;text-overflow:ellipsis;
+}
+
+/* ---- thread, transparent over the cards ---- */
+.gc-scroll{
+  position:relative;z-index:3;
+  flex:1;min-height:0;
+  overflow-y:auto;overscroll-behavior:contain;
+  /* No scroll-behavior:smooth here. It makes every programmatic scroll — the
+     follow-the-reply scroll, the jump-to-bottom scroll — an animation, so the
+     view never lands where the code thinks it put it. The one place that wants
+     an eased scroll asks for it explicitly. */
+}
+.gc-scroll.card-hover{cursor:pointer;}
+.gc-scroll::-webkit-scrollbar{width:6px;}
+.gc-scroll::-webkit-scrollbar-thumb{background:rgb(var(--ink-rgb) / .12);border-radius:3px;}
+
+.gc-thread{
+  position:relative;
+  width:min(660px,60vw);
+  margin:0 auto;
+  padding:34px 0 40px 46px;
+  /* The veil below is a child of this box and must sit behind the text but in
+     front of the artwork, so the boxed stacking context is what makes a
+     negative z-index mean "behind my content" instead of "behind the page". */
+  isolation:isolate;
+}
+
+/**
+ * The reading veil.
+ *
+ * Text used to rely on a glow in the page colour, which works only when the
+ * artwork behind it is darker than the glow — true for a dark card, useless
+ * against a lit face or a pale sky. A veil does not care what is underneath: it
+ * pushes whatever is there toward one tone, so contrast holds everywhere.
+ *
+ * It is a horizontal band, not a full-screen scrim: the cards fan out wide and
+ * most of each one sits outside this column, so the faces and the spread stay
+ * visible while only the strip under the text is settled down. The edges fade
+ * to nothing, which is why there is no visible seam.
+ */
+.gc-thread::before{
+  content:'';
+  position:absolute;
+  /* Wider than the text column by 48px on each side, so the fade happens in
+     that margin instead of across the words: a full line is covered edge to
+     edge and the hollow end of the gradient never touches letterforms. */
+  inset:0 -48px;
+  z-index:-1;
+  pointer-events:none;
+  background:linear-gradient(90deg,
+    transparent 0,
+    rgb(var(--bg-rgb) / .82) 13%,
+    rgb(var(--bg-rgb) / .82) 95%,
+    transparent 100%);
+}
+.gc-axis{
+  position:absolute;left:20px;top:34px;bottom:40px;width:1px;
+  background:linear-gradient(180deg,transparent,rgb(var(--ink-rgb) / .09) 4%,rgb(var(--ink-rgb) / .09) 95%,transparent);
+}
+
+.gc-beat{position:relative;margin-bottom:34px;}
+.gc-node{
+  position:absolute;left:-27px;top:10px;
+  width:6px;height:6px;border-radius:50%;
+  background:rgb(var(--ink-rgb) / .18);
+  transition:background .7s ease,box-shadow .7s ease;
+}
+.gc-beat[data-role="ai"] .gc-node{
+  background:var(--accent);
+  box-shadow:0 0 13px rgb(var(--accent-rgb) / .5);
+}
+.gc-beat[data-role="you"] .gc-node{background:rgb(var(--ink-rgb) / .3);}
+
+.gc-head{display:flex;align-items:baseline;gap:11px;margin-bottom:9px;}
+.gc-speaker{
+  font-family:var(--mono);font-size:10px;letter-spacing:.24em;
+  text-transform:uppercase;color:var(--accent-dim);
+}
+.gc-beat[data-role="you"] .gc-speaker{color:var(--ink-4);letter-spacing:.28em;}
+.gc-time{
+  font-family:var(--mono);font-size:9px;letter-spacing:.08em;
+  color:var(--ink-4);opacity:.62;
+}
+
+/* Text sits directly on artwork, so it carries a soft halo of the page colour
+   instead of a panel behind it. */
+.gc-say{
+  margin:0 0 .6em;
+  font-size:18px;line-height:1.72;letter-spacing:.002em;
+  color:var(--ink);
+  text-shadow:0 0 18px var(--bg),0 0 12px rgb(var(--bg-rgb) / .85);
+}
+.gc-say:last-child{margin-bottom:0;}
+.gc-beat[data-role="you"] .gc-say{
+  font-size:16px;line-height:1.76;color:var(--ink-2);
+  text-shadow:0 0 16px var(--bg),0 0 11px rgb(var(--bg-rgb) / .85);
+}
+.gc-direction{
+  margin:0 0 .72em;
+  font-size:15.5px;line-height:1.66;font-style:italic;
+  color:var(--ink-3);
+  border-left:1px solid var(--line-2);
+  padding-left:17px;
+  text-shadow:0 0 16px var(--bg),0 0 11px rgb(var(--bg-rgb) / .85);
+}
+
+.gc-pending{
+  display:flex;align-items:center;gap:12px;
+  padding-left:0;
+  font-family:var(--mono);font-size:9px;letter-spacing:.16em;
+  text-transform:uppercase;color:var(--ink-4);
+}
+.gc-beat-node{
+  width:5px;height:5px;border-radius:50%;
+  margin-left:-28px;
+  border:1px solid rgb(var(--ink-rgb) / .3);
+  animation:gcPulse 2.2s ease-in-out infinite;
+}
+@keyframes gcPulse{
+  0%,100%{opacity:.35;transform:scale(1);}
+  50%{opacity:1;transform:scale(1.35);}
+}
+
+/* ---- composer ---- */
+.gc-composer{
+  position:relative;z-index:4;
+  flex:none;
+  padding:10px 30px 22px;
+}
+.gc-composer-inner{
+  position:relative;
+  width:min(660px,60vw);
+  margin:0 auto;
+  display:flex;align-items:flex-end;gap:6px;
+  padding:10px 0 12px;
+  border-bottom:1px solid rgb(var(--ink-rgb) / .11);
+  transition:border-color .45s ease;
+}
+.gc-composer-inner:focus-within{border-bottom-color:rgb(var(--accent-rgb) / .42);}
+.gc-input{
+  flex:1;resize:none;
+  background:none;border:0;outline:none;
+  font-family:var(--serif);
+  font-size:16.5px;line-height:1.62;color:var(--ink);
+  /* The box is grown by script up to the same 170px; past that it scrolls. */
+  padding:2px 0;max-height:170px;overflow-y:auto;
+}
+.gc-input::placeholder{color:var(--ink-4);font-style:italic;}
+.gc-cbtn{
+  position:relative;
+  width:30px;height:30px;flex:none;
+  display:grid;place-items:center;
+  color:var(--ink-4);margin-bottom:2px;
+  transition:color .3s ease,transform .35s var(--ease);
+}
+.gc-cbtn:hover{color:var(--accent);transform:translateY(-1px);}
+.gc-cbtn:disabled{opacity:.28;pointer-events:none;}
+.gc-send.busy{color:var(--accent);}
+.gc-cbtn svg{
+  width:15px;height:15px;stroke:currentColor;fill:none;
+  stroke-width:1.5;stroke-linecap:round;stroke-linejoin:round;
+}
+.gc-hint{
+  width:min(660px,60vw);margin:8px auto 0;
+  display:flex;align-items:center;flex-wrap:wrap;gap:8px;
+  font-family:var(--mono);font-size:8.5px;letter-spacing:.16em;
+  text-transform:uppercase;color:var(--ink-4);
+}
+.gc-hint-btn{
+  font:inherit;letter-spacing:inherit;text-transform:inherit;
+  color:var(--accent-dim);transition:color .25s ease;
+}
+.gc-hint-btn:hover,
+.gc-hint-btn.on{color:var(--accent);}
+.gc-target-pill{
+  font:inherit;letter-spacing:inherit;text-transform:inherit;
+  color:var(--accent);padding:1px 6px;
+  border:1px solid rgb(var(--accent-rgb) / .35);border-radius:3px;
+  background:rgb(var(--accent-rgb) / .08);
+  transition:background .25s ease,border-color .25s ease;
+}
+.gc-target-pill:hover{
+  background:rgb(var(--accent-rgb) / .16);
+  border-color:rgb(var(--accent-rgb) / .55);
+}
+.gc-cast-row{
+  width:min(660px,60vw);margin:10px auto 0;
+  display:flex;align-items:center;flex-wrap:wrap;gap:6px;
+}
+.gc-cast-pill{
+  display:inline-flex;align-items:center;gap:6px;
+  padding:2px 9px;
+  font-family:var(--mono);font-size:9px;letter-spacing:.12em;
+  color:var(--ink-3);
+  border:1px solid var(--line-2);border-radius:999px;
+  background:rgb(var(--bg-rgb) / .45);
+  transition:color .25s ease,border-color .25s ease,background .25s ease;
+}
+.gc-cast-pill:hover:not(:disabled){
+  color:var(--ink);
+  border-color:rgb(var(--accent-rgb) / .42);
+  background:rgb(var(--accent-rgb) / .08);
+}
+.gc-cast-pill.on,
+.gc-cast-pill.speaking{
+  color:var(--accent);
+  border-color:rgb(var(--accent-rgb) / .45);
+  background:rgb(var(--accent-rgb) / .08);
+}
+.gc-cast-pill:disabled{opacity:.45;cursor:not-allowed;}
+.gc-cast-dot{
+  width:5px;height:5px;border-radius:50%;
+  background:currentColor;opacity:.45;
+}
+.gc-cast-pill.on .gc-cast-dot,
+.gc-cast-pill.speaking .gc-cast-dot{opacity:1;}
+.gc-empty-cmd{
+  font-family:var(--mono);font-size:12px;letter-spacing:.04em;
+  color:var(--accent-dim);border-bottom:1px dashed rgb(var(--accent-rgb) / .4);
+  transition:color .25s ease,border-color .25s ease;
+}
+.gc-empty-cmd:hover{color:var(--accent);border-bottom-color:var(--accent);}
+.gc-dot{opacity:.5;}
+
+/* Narrow windows: cards shrink so the fan stays inside the frame. */
+@media (max-width: 1100px){
+  .gc-card{width:32vw;height:calc(32vw * 1.55);}
+  .gc-glyph{font-size:16vw;}
+  .gc-thread,.gc-composer-inner,.gc-cast-row,.gc-hint{width:min(620px,78vw);}
+}
+@media (max-width: 760px){
+  .gc-card{width:44vw;height:calc(44vw * 1.5);}
+  .gc-thread,.gc-composer-inner,.gc-cast-row,.gc-hint{width:88vw;}
+  .gc-thread{padding-left:38px;}
+}
+
+/* ---- mention picker ---- */
+/* Same surface as the branch menu in the rail: bg-2, line-2 border, a shadow
+   that separates it from the artwork behind, and item hover in accent. */
+.gc-mention{
+  position:absolute;bottom:calc(100% + 10px);left:0;right:0;
+  max-height:290px;overflow-y:auto;
+  background:var(--bg-2);border:1px solid var(--line-2);
+  padding:6px;z-index:80;
+  box-shadow:0 24px 60px rgb(var(--shadow-rgb) / .5);
+}
+.gc-mention-empty{padding:10px 12px;font-size:12px;color:var(--ink-4);}
+.gc-mention-item{
+  display:flex;align-items:center;gap:10px;width:100%;
+  padding:7px 9px;text-align:left;
+  font-size:13.5px;color:var(--ink-2);
+  transition:background .25s ease,color .25s ease;
+}
+.gc-mention-item:hover,.gc-mention-item.on{background:rgb(var(--accent-rgb) / .07);color:var(--ink);}
+.gc-avatar{
+  width:26px;height:26px;border-radius:50%;flex:none;overflow:hidden;
+  display:grid;place-items:center;
+  background:rgb(var(--ink-rgb) / .06);border:1px solid var(--line-2);
+  font-size:11px;color:var(--ink-3);
+}
+.gc-avatar img{width:100%;height:100%;object-fit:cover;display:block;}
+.gc-avatar i{font-style:normal;font-family:var(--serif);}
+.gc-mention-name{
+  flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;
+}
+.gc-mention-role{
+  flex:none;font-family:var(--mono);font-size:8.5px;letter-spacing:.16em;
+  text-transform:uppercase;color:var(--ink-4);
+}
+
+/* ---- states ---- */
+.gc-empty{
+  margin:56px 0;font-size:13px;line-height:1.8;color:var(--ink-4);text-align:center;
+}
+.gc-empty b{color:var(--accent-dim);font-weight:400;}
+.gc-empty-title{
+  margin:0 0 10px;
+  font-family:var(--serif);font-size:19px;line-height:1.3;
+  color:var(--ink-2);letter-spacing:.01em;
+}
+.gc-empty-hint{
+  margin:0;font-size:12.5px;line-height:1.9;color:var(--ink-4);
+}
+.gc-error{margin:16px 0 0;font-size:12px;line-height:1.6;color:var(--ember);}
+
+/* An empty room keeps its three seats drawn, but faint and inert: the thread
+   has to stay the thing you read, not a set of dashed rectangles over it. */
+.gc-hand.empty .gc-slot{
+  opacity:.3;
+  pointer-events:none;
+  border-color:rgb(var(--ink-rgb) / .08);
+}
+.gc-hand.empty .gc-slot-mark{color:rgb(var(--ink-rgb) / .1);}
+
+/* A reply still being written carries a caret so it reads as live text. */
+.gc-live .gc-say:last-child::after{
+  content:'';
+  display:inline-block;width:1px;height:.95em;margin-left:3px;
+  vertical-align:-.12em;background:var(--accent);
+  animation:gcCaret 1.05s steps(1) infinite;
+}
+@keyframes gcCaret{0%,49%{opacity:.9;}50%,100%{opacity:0;}}
+
+@media (max-width: 900px){
+  .gc-mention{max-height:230px;}
+}
+
+/* ---- panel tabs: one control, two data sources ---- */
+/* Used by the memory and compaction panels to switch between the companion
+   data and the room data. The two sets never mix: each tab loads its own. */
+.d-tabs{
+  display:flex;gap:2px;padding:0 24px 10px;
+  border-bottom:1px solid var(--line);
+  margin-bottom:12px;
+}
+.d-tab{
+  padding:5px 2px;margin-right:16px;
+  font-family:var(--mono);font-size:9px;letter-spacing:.18em;
+  text-transform:uppercase;color:var(--ink-4);
+  border-bottom:1px solid transparent;
+  transition:color .3s ease,border-color .3s ease;
+}
+.d-tab:hover{color:var(--ink-2);}
+.d-tab.on{color:var(--accent);border-bottom-color:rgb(var(--accent-rgb) / .5);}
+
+/* Group-side rows reuse the panel rhythm: a label, a value, a quiet preview. */
+.grp-row{padding:11px 0;border-bottom:1px solid var(--line);}
+.grp-row:last-child{border-bottom:none;}
+.grp-meta{
+  display:flex;align-items:baseline;gap:9px;margin-bottom:5px;
+  font-family:var(--mono);font-size:8.5px;letter-spacing:.14em;text-transform:uppercase;
+  color:var(--ink-4);
+}
+.grp-who{color:var(--accent-dim);letter-spacing:.18em;}
+.grp-text{
+  margin:0;font-size:12.5px;line-height:1.72;color:var(--ink-2);
+  white-space:pre-wrap;
+}
+.grp-time{font-family:var(--mono);font-size:9px;color:var(--ink-4);}
+
+/* ---- room summary ---- */
+/* Sits above the retained tail, folded by default: the memory of what came
+   before is available but does not push the live scene down the page. */
+/* The summary sits in the transcript where the folded turns used to be: a beat
+   like any other, so the room reads as "everything above this is one note". */
+.gc-beat-summary{margin-bottom:34px;}
+.gc-summary-head{
+  display:flex;align-items:baseline;gap:12px;
+  width:100%;text-align:left;cursor:pointer;
+  padding:2px 0 2px 18px;
+  border-left:1px solid rgb(var(--accent-rgb) / .3);
+  transition:border-color .3s ease;
+}
+.gc-summary-head:hover{border-left-color:rgb(var(--accent-rgb) / .55);}
+.gc-summary-k{
+  font-family:var(--mono);font-size:8.5px;letter-spacing:.2em;text-transform:uppercase;
+  color:var(--accent-dim);transition:color .3s ease;
+}
+.gc-summary-head:hover .gc-summary-k{color:var(--accent);}
+.gc-summary-n{font-family:var(--mono);font-size:9px;letter-spacing:.06em;color:var(--ink-4);}
+.gc-summary-text{
+  margin:11px 0 0;padding-left:18px;
+  font-size:12.5px;line-height:1.78;color:var(--ink-3);
+  white-space:pre-wrap;
+}
+.gc-beat[data-role="summary"] .gc-node{
+  background:rgb(var(--accent-rgb) / .45);
+  box-shadow:none;
+}
+
+/* ---- empty seats ---- */
+/* A room with nobody in it still shows the table: three dashed slots in the same
+   fan, so the empty state reads as "invite someone" rather than a broken view. */
+.gc-slot{
+  border-style:dashed;
+  border-color:rgb(var(--ink-rgb) / .12);
+  background:rgb(var(--ink-rgb) / .012);
+  box-shadow:none;
+  display:grid;place-items:center;
+  cursor:default;
+}
+.gc-slot:hover{transform:none;}
+.gc-slot-mark{
+  font-family:var(--mono);font-size:22px;
+  color:rgb(var(--ink-rgb) / .16);
+  user-select:none;
+}
+
+/* ---- room spines ---- */
+/* Rooms are places you move between, so they stand on the left edge like book
+   spines: names set vertically, the current one lit and underlined by a thin
+   warm stroke. A boxed two-column list would have read as a second navigation
+   rail, and the app already has one of those. */
+.gc-rooms{
+  width:46px;flex:none;
+  display:flex;flex-direction:column;align-items:center;
+  gap:2px;
+  padding:26px 0 22px;
+  overflow-y:auto;overflow-x:hidden;
+  scrollbar-width:none;
+}
+.gc-rooms::-webkit-scrollbar{display:none;}
+.gc-room{
+  writing-mode:vertical-rl;
+  text-orientation:mixed;
+  font-family:var(--serif);
+  font-size:11.5px;
+  letter-spacing:.2em;
+  color:var(--ink-4);
+  padding:14px 0;
+  max-height:200px;
+  overflow:hidden;
+  white-space:nowrap;
+  position:relative;
+  transition:color .32s ease;
+}
+.gc-room::before{
+  content:'';position:absolute;
+  left:50%;top:5px;bottom:5px;width:1px;
+  transform:translateX(-50%) scaleY(0);
+  transform-origin:top;
+  background:linear-gradient(180deg,transparent,var(--accent),transparent);
+  opacity:0;
+  transition:transform .55s var(--ease),opacity .4s ease;
+}
+.gc-room:hover{color:var(--ink-2);}
+.gc-room.on{color:var(--accent);}
+.gc-room.on::before{transform:translateX(-50%) scaleY(1);opacity:.5;}
+
+/* ---- main column ---- */
+.gc-main{
+  flex:1;min-width:0;
+  position:relative;
+  display:flex;flex-direction:column;
+}
+
+/* Room name and the new-room button. The name is an input that looks like a
+   heading until focused, so renaming never opens a dialog. */
+.gc-bar{
+  position:relative;z-index:5;flex:none;
+  display:flex;align-items:center;gap:10px;
+  padding:12px 22px 10px;
+}
+.gc-title{
+  flex:1;min-width:0;
+  font-family:var(--serif);font-size:14px;letter-spacing:.01em;
+  color:var(--ink-3);text-align:center;
+  background:transparent;border:0;  padding:3px 6px;
+  border-bottom:1px solid transparent;
+  transition:color .3s ease,border-color .3s ease;
+}
+.gc-title:hover{color:var(--ink-2);}
+.gc-title:focus{color:var(--ink);border-bottom-color:rgb(var(--accent-rgb) / .4);outline:none;}
+.gc-bar-btn{
+  width:28px;height:28px;flex:none;display:grid;place-items:center;
+  color:var(--ink-3);
+  border:1px solid var(--line-2);border-radius:50%;
+  transition:color .3s ease,border-color .3s ease,background .3s ease,transform .4s var(--ease);
+}
+.gc-bar-btn:hover{
+  color:var(--accent);
+  border-color:rgb(var(--accent-rgb) / .38);
+  background:rgb(var(--accent-rgb) / .06);
+  transform:rotate(90deg);
+}
+.gc-bar-btn svg{width:16px;height:16px;stroke:currentColor;fill:none;stroke-width:1.6;stroke-linecap:round;}
+
+/* The clear button only appears when there is something to clear, and only
+   turns red on hover: it is a broom, not a trap. Disabled keeps a ghost of
+   itself — a control that vanishes is indistinguishable from a broken one. */
+.gc-clear{opacity:.34;transition:opacity .3s ease,color .3s ease;}
+.gc-composer-inner:hover .gc-clear,
+.gc-input:focus ~ .gc-clear{opacity:1;}
+.gc-clear:disabled{opacity:.14;pointer-events:none;}
+.gc-clear:hover{color:var(--ember);}
+
+/* ---- room change transition ---- */
+/* Same gesture as the app's curtain: a short fade through the page colour, no
+   new vocabulary. Keyed on the room epoch so it replays on every switch. */
+.gc-veil{
+  position:absolute;inset:0;z-index:20;pointer-events:none;
+  background:var(--bg);
+  /* The resting state has to be transparent: if the animation is ever skipped
+     (reduced motion, a re-key mid-frame) an opaque default would hide the whole
+     stage behind a flat rectangle. */
+  opacity:0;
+  animation:gcVeil .66s var(--ease) forwards;
+}
+@keyframes gcVeil{
+  0%{opacity:0;}
+  22%{opacity:.92;}
+  100%{opacity:0;}
+}
+
+/* Command name in a slash picker: monospaced and warm, so it reads as a token
+   rather than as something someone said. */
+.gc-cmd{
+  flex:1;min-width:0;
+  font-family:var(--mono);font-size:12px;letter-spacing:.06em;
+  color:var(--accent);
+}
+
+/* ---- user note panel ---- */
+/* Same drawer as the mention picker, opened by the portrait button in the
+   composer. Saves to the room, never to a character card. */
+.gc-note{
+  position:absolute;bottom:calc(100% + 10px);left:0;right:0;
+  background:var(--bg-2);border:1px solid var(--line-2);
+  padding:14px 16px 12px;
+  z-index:80;
+  box-shadow:0 24px 60px rgb(var(--shadow-rgb) / .5);
+}
+.gc-note-k{
+  font-family:var(--mono);font-size:8.5px;letter-spacing:.22em;text-transform:uppercase;
+  color:var(--ink-4);margin-bottom:10px;
+}
+.gc-note-input{
+  width:100%;resize:vertical;min-height:64px;max-height:180px;
+  font-family:var(--serif);font-size:13.5px;line-height:1.7;
+  color:var(--ink-2);background:rgb(var(--ink-rgb) / .022);
+  border:1px solid var(--line);padding:9px 10px;
+  transition:border-color .3s ease;
+}
+.gc-note-input:focus{outline:none;border-color:rgb(var(--accent-rgb) / .38);}
+.gc-note-foot{
+  display:flex;gap:8px;justify-content:flex-end;margin-top:10px;
+}
+.gc-note-btn{opacity:.34;transition:opacity .3s ease,color .3s ease;}
+.gc-composer-inner:hover .gc-note-btn,
+.gc-note-btn:focus-visible{opacity:1;}
+
+/* ---- room spine tooltips ---- */
+/* The global tooltip sits above its anchor; on a vertical spine that would
+   fly off through the top edge, so these open to the right instead. */
+.gc-rooms [data-tip]::after{
+  bottom:auto;top:50%;left:calc(100% + 10px);
+  transform:translateY(-50%) translateX(-4px);
+  white-space:nowrap;
+}
+.gc-rooms [data-tip]:hover::after{transform:translateY(-50%) translateX(0);}
+
+/* The spine column scrolls independently of the stage: rooms accumulate, the
+   fan does not. */
+.gc-rooms{min-height:0;overscroll-behavior:contain;}
+
+/* ---- spine hover label ---- */
+/* Escapes the clipping of the spine column by living in the viewport, not in
+   the column. Same colour and border as a `data-tip` bubble. */
+.gc-room-tip{
+  position:fixed;left:56px;
+  transform:translateY(-50%);
+  z-index:90;pointer-events:none;
+  font-family:var(--mono);font-size:11px;letter-spacing:.16em;
+  color:var(--ink-2);background:var(--bg-3);
+  border:1px solid var(--line-2);
+  padding:5px 10px;white-space:nowrap;
+  animation:gcTipIn .22s var(--ease);
+}
+@keyframes gcTipIn{
+  from{opacity:0;transform:translateY(-50%) translateX(-4px);}
+  to{opacity:1;transform:translateY(-50%) translateX(0);}
+}
+
+/* Tooltips in the room bar open downward: the bar sits against the top edge,
+   so an upward bubble would leave the viewport. */
+.gc-bar [data-tip]::after{
+  bottom:auto;top:calc(100% + 10px);
+  transform:translateX(-50%) translateY(-4px);
+}
+.gc-bar [data-tip]:hover::after{
+  transform:translateX(-50%) translateY(0);
+}
+
+/* ---- room memory rows: edit and delete ---- */
+/* The actions stay invisible until the row is hovered: a list of memories is
+   for reading, and two icons on every line turn it into a spreadsheet. */
+.grp-actions{margin-left:auto;display:flex;align-items:center;gap:2px;}
+.grp-act{
+  width:22px;height:22px;display:grid;place-items:center;
+  color:var(--ink-4);opacity:0;
+  transition:opacity .25s ease,color .25s ease;
+}
+.grp-row:hover .grp-act{opacity:1;}
+.grp-act:hover{color:var(--accent);}
+.grp-act.danger:hover{color:var(--ember);}
+.grp-act svg{width:13px;height:13px;stroke:currentColor;fill:none;stroke-width:1.6;stroke-linecap:round;stroke-linejoin:round;}
+
+/* Jump to the newest line, parked just outside the input box.
+   The inner box is centred and min(660px,60vw) wide, so its right edge sits at
+   50% + half that; the extra 46px clears it. Round with a filled base like the
+   single thread's button — on artwork a bare glyph is invisible.
+
+   The selector carries `.gc-composer` on purpose: the global tooltip rule
+   `[data-tip]:not(.to-present){position:relative}` matches this button as well
+   and outranks a bare class, which silently turned it into a relative box
+   parked off the left edge of the screen. */
+.gc-composer .gc-jump{
+  position:absolute;
+  right:calc(50% - min(330px, 30vw) - 46px);
+  bottom:40px;
+  width:34px;height:34px;border-radius:50%;
+  display:grid;place-items:center;
+  color:var(--ink-3);
+  background:var(--bg-2);
+  border:1px solid var(--line-2);
+  animation:gcJumpIn .26s var(--ease);
+}
+.gc-jump:hover{color:var(--accent);border-color:rgb(var(--accent-rgb) / .45);}
+.gc-jump svg{
+  width:14px;height:14px;stroke:currentColor;fill:none;
+  stroke-width:1.7;stroke-linecap:round;stroke-linejoin:round;
+}
+@keyframes gcJumpIn{
+  from{opacity:0;transform:translateY(5px);}
+  to{opacity:1;transform:translateY(0);}
+}
+
+/* ---- per-line actions ---- */
+/* Invisible until the line is hovered: the transcript is read, not managed. */
+.gc-tools{
+  margin-left:auto;display:flex;align-items:center;gap:2px;
+  align-self:center;
+}
+.gc-tool{
+  width:20px;height:20px;display:grid;place-items:center;
+  color:var(--ink-4);opacity:0;
+  transition:opacity .25s ease,color .25s ease;
+}
+.gc-beat:hover .gc-tool,
+.gc-tool:focus-visible,
+.gc-tool.on{opacity:1;}
+.gc-tool:hover,
+.gc-tool.on{color:var(--accent);}
+.gc-tool-chip{
+  padding:1px 7px;
+  font-family:var(--mono);font-size:9px;letter-spacing:.08em;
+  color:var(--accent);
+  border:1px solid rgb(var(--accent-rgb) / .38);border-radius:999px;
+  background:rgb(var(--accent-rgb) / .08);
+  transition:background .2s ease,border-color .2s ease;
+}
+.gc-tool-chip:hover{
+  background:rgb(var(--accent-rgb) / .18);
+  border-color:rgb(var(--accent-rgb) / .6);
+}
+.gc-tool.danger:hover{color:var(--ember);}
+.gc-tool svg{
+  width:12px;height:12px;stroke:currentColor;fill:none;
+  stroke-width:1.6;stroke-linecap:round;stroke-linejoin:round;
+}
+
+/* ---- narration ---- */
+/* The button lights up while the next send is a stage direction. A dot under
+   it rather than a fill: the composer has no panel and a filled chip would
+   look like a second send button. */
+.gc-cbtn.on{
+  color:var(--accent);
+  transform:none;
+}
+.gc-cbtn.on::after{
+  content:'';position:absolute;bottom:-2px;left:50%;
+  width:3px;height:3px;border-radius:50%;
+  background:var(--accent);
+  transform:translateX(-50%);
+}
+
+/* A narration is the author speaking, not a line of dialogue: the name drops to
+   the quietest ink, and the node stops glowing like a reply. */
+.gc-beat[data-role="narration"] .gc-speaker{
+  color:var(--ink-4);letter-spacing:.30em;
+}
+.gc-beat[data-role="narration"] .gc-node{
+  background:rgb(var(--ink-rgb) / .14);
+  box-shadow:none;
+}
+
+/* Pictures a line carries: thumbnails in the flow, the album opens on click. */
+.gc-shots{display:flex;flex-wrap:wrap;gap:8px;margin-top:8px;}
+.gc-shot{padding:0;border:1px solid var(--line-2);border-radius:10px;overflow:hidden;background:var(--bg-2);cursor:pointer;transition:transform .2s ease,box-shadow .2s ease;}
+.gc-shot:hover{transform:translateY(-2px);box-shadow:0 10px 24px rgb(var(--shadow-rgb) / .35);}
+.gc-shot img{display:block;width:120px;height:120px;object-fit:cover;}
+.gc-composer > .chips{padding:8px 18px 0;}
+
+/* Hearts: outline when pinned, filled when strong, both persist on the row. */
+.grp-act.heart.on{opacity:1;color:var(--accent);}
+.grp-act.heart.full svg{fill:rgb(var(--accent-rgb) / .9);}
+.d-tab-n{margin-left:6px;font-size:10px;opacity:.55;font-variant-numeric:tabular-nums;}

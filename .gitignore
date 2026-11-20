@@ -1,0 +1,143 @@
+# ----------------------------------------------------------------
+# Python
+# ----------------------------------------------------------------
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+*.egg-info/
+.eggs/
+build/
+dist/
+.venv/
+venv/
+env/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# ----------------------------------------------------------------
+# Node / Vite
+# ----------------------------------------------------------------
+node_modules/
+dist/
+.vite/
+*.tsbuildinfo
+npm-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# ----------------------------------------------------------------
+# Rust / Tauri
+#
+# A pattern that contains a slash is anchored to this file's directory, so the
+# bare "src-tauri/..." forms never matched anything: the crate lives one level
+# down in frontendV2/. Without the prefix the release build tree - target/ holds
+# the app exe, the NSIS installer and every intermediate object file - and the
+# ~90 MB backend sidecar were left tracked.
+# ----------------------------------------------------------------
+frontendV2/src-tauri/target/
+frontendV2/src-tauri/gen/
+frontendV2/src-tauri/binaries/*.exe
+
+# ----------------------------------------------------------------
+# User data — never commit
+#
+# The database holds every conversation, uploads holds avatars and chat
+# images, llm_providers.json holds real API keys, voice holds reference
+# clips. None of it belongs in a repository.
+# ----------------------------------------------------------------
+*.db
+*.db-wal
+*.db-shm
+*.sqlite
+*.sqlite3
+companions.db
+companions.db-wal
+companions.db-shm
+uploads/
+voice/
+llm_providers.json
+.pebblecompanion/
+backup/
+
+# Local pre-change database copies. Their .db contents were already covered by
+# the rule above; this keeps the directory and any stray sidecar out as well.
+.local-backup/
+
+# Secrets a shell or a Vite build may grow later. The real key store is
+# llm_providers.json above.
+.env
+.env.*
+!.env.example
+
+# ----------------------------------------------------------------
+# Model weights — never bundled, never committed
+# ----------------------------------------------------------------
+models/
+*.gguf
+*.safetensors
+*.pth
+*.bin
+*.onnx
+*.ckpt
+
+# ----------------------------------------------------------------
+# audio-cpp runtime
+#
+# Only the server binary, DLLs and model specs ship. Build tools, fetched
+# archives, logs, recorded samples and generated configs stay out.
+# ----------------------------------------------------------------
+backend/audio-cpp/audiocpp_cli.exe
+backend/audio-cpp/audiocpp_gguf.exe
+backend/audio-cpp/*.zip
+backend/audio-cpp/tools/
+backend/audio-cpp/*.log
+backend/audio-cpp/*.log.*
+backend/audio-cpp/*.wav
+backend/audio-cpp/server*.json
+backend/audio-cpp/voice/
+
+# ----------------------------------------------------------------
+# Local logs, scratch and generated artefacts
+# ----------------------------------------------------------------
+*.log
+*.log.*
+build_author.txt
+# Design drafts and throwaway previews sitting next to the source. Anchored to
+# the root so frontendV2/index.html and other real entry points are untouched.
+/*.html
+# Throwaway scripts the same way: anchored, so test helpers named _tmp_* inside
+# a package stay tracked.
+/_tmp_*
+_beats.json
+_lore.json
+_meta.json
+_prof.json
+scripts/__pycache__/
+.pebble/
+
+# ----------------------------------------------------------------
+# Generated knowledge base
+#
+# Rebuilt from the code on demand; keeping it in version control only
+# produces diffs that lag behind the source.
+# ----------------------------------------------------------------
+knowledgesource/
+
+# ----------------------------------------------------------------
+# Retired front end, kept locally for reference only
+# ----------------------------------------------------------------
+frontend（已废弃，不再使用）/
+frontend/
+
+# ----------------------------------------------------------------
+# Editor / OS
+# ----------------------------------------------------------------
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+desktop.ini

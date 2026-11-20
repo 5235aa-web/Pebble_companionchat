@@ -1,0 +1,433 @@
+/* ============================================================
+   PICTURE STUDIO
+   The scene stage on the right, and the album drawer it opens.
+   ============================================================ */
+
+/* ---- scene stage: generated picture ---- */
+.scene-photo{cursor:pointer;touch-action:pan-y;}
+.scene-photo.has-picture img{
+  /* Set by the drag handler; the base transform lives in 08-scene.css, so the
+     hover zoom keeps working by composing on the same property. */
+  transform:translateX(var(--scene-drag,0px));
+}
+/* Only generated pictures are re-framed upward. The portrait keeps the
+   centring it has always had, so adding this feature does not silently
+   recompose the character's face. */
+.scene-photo img.scene-gen{object-position:center 30%;}
+
+/* ---- slide swap ----
+   Both images are absolutely positioned, so a plain src change pops. The
+   outgoing and incoming frames overlap and cross-fade with a short blur, which
+   reads as a dissolve without touching transform (that property belongs to the
+   drag).
+
+   The `.scene-photo img` prefix is required, not decorative: 08-scene.css sets
+   its own `transition` and `filter` on that selector, and a bare class here
+   would lose the cascade and animate nothing. */
+.scene-photo img.scene-swap-enter-active,
+.scene-photo img.scene-swap-leave-active{
+  transition:opacity .52s var(--ease-out), filter .52s ease;
+  will-change:opacity, filter;
+}
+.scene-photo img.scene-swap-enter-active{z-index:2;}
+.scene-photo img.scene-swap-leave-active{z-index:1;}
+.scene-photo img.scene-swap-enter-from{opacity:0;filter:blur(10px) saturate(.86);}
+.scene-photo img.scene-swap-leave-to{opacity:0;filter:blur(6px) saturate(.94);}
+/* Same specificity as the base hover rule, but later in the cascade: without
+   this the generated picture would be the only image that never breathes. */
+.scene:hover .scene-photo.has-picture img{
+  transform:translateX(var(--scene-drag,0px)) scale(1.025);
+}
+.scene-photo.dragging img{transition:none;}
+.scene-photo.dragging{cursor:grabbing;}
+
+.scene-nav{
+  position:absolute;top:50%;z-index:3;
+  width:32px;height:32px;display:grid;place-items:center;
+  transform:translateY(-50%);
+  color:var(--ink-2);
+  background:rgb(var(--shadow-rgb) / .26);
+  border:1px solid rgb(var(--ink-rgb) / .14);
+  backdrop-filter:blur(8px);
+  opacity:0;transition:opacity .35s ease,color .3s ease,border-color .3s ease,background .3s ease;
+}
+.scene-nav.prev{left:12px;}
+.scene-nav.next{right:12px;}
+.scene:hover .scene-nav{opacity:1;}
+.scene-nav:hover{
+  color:var(--accent);border-color:rgb(var(--accent-rgb) / .5);
+  background:rgb(var(--accent-rgb) / .08);
+}
+.scene-nav svg{width:14px;height:14px;stroke:currentColor;fill:none;stroke-width:1.6;}
+
+.scene-busy,.scene-count{
+  position:absolute;z-index:3;top:16px;
+  font-family:var(--mono);font-size:8px;letter-spacing:.2em;text-transform:uppercase;
+  color:var(--ink-2);
+  background:rgb(var(--shadow-rgb) / .34);
+  backdrop-filter:blur(8px);
+}
+.scene-busy{
+  left:50%;transform:translateX(-50%);
+  display:flex;align-items:center;gap:8px;padding:7px 13px;
+  border:1px solid rgb(var(--accent-rgb) / .32);
+  color:var(--accent-ink);
+}
+.scene-busy-dot{
+  width:5px;height:5px;border-radius:50%;background:var(--accent);
+  animation:scenePulse 1.4s ease-in-out infinite;
+}
+/* Sampling progress, local ComfyUI only: cloud providers have no step counter
+   and keep the plain pulsing dot. */
+.scene-busy-bar{
+  position:relative;display:block;width:58px;height:2px;
+  background:rgb(var(--accent-rgb) / .22);overflow:hidden;
+}
+.scene-busy-bar i{
+  position:absolute;top:0;bottom:0;left:0;display:block;
+  background:var(--accent);
+  transition:width .5s linear;
+}
+.scene-cancel{
+  padding:2px 7px;
+  font-family:var(--mono);font-size:7px;letter-spacing:.16em;text-transform:uppercase;
+  color:var(--ink-3);border:1px solid rgb(var(--ink-rgb) / .16);
+  transition:color .3s ease,border-color .3s ease;
+}
+.scene-cancel:hover{color:rgb(var(--ember-rgb));border-color:rgb(var(--ember-rgb) / .5);}
+.scene-count{
+  right:14px;padding:5px 9px;letter-spacing:.16em;color:var(--ink-3);
+  border:1px solid rgb(var(--ink-rgb) / .1);
+}
+
+.scene-tools{display:flex;align-items:center;gap:8px;margin-top:15px;}
+.sc-gen{
+  display:inline-flex;align-items:center;gap:8px;padding:8px 13px;
+  border:1px solid var(--line-2);color:var(--ink-2);
+  font-family:var(--mono);font-size:8px;letter-spacing:.18em;text-transform:uppercase;
+  transition:border-color .35s ease,color .35s ease,background .35s ease;
+}
+.sc-gen svg{width:13px;height:13px;stroke:currentColor;fill:none;stroke-width:1.5;}
+.sc-gen:hover:not(:disabled){
+  border-color:rgb(var(--accent-rgb) / .55);color:var(--accent);
+  background:rgb(var(--accent-rgb) / .06);
+}
+.sc-gen:disabled{opacity:.6;cursor:default;}
+.sc-gen.busy svg{animation:scenePulse 1.8s ease-in-out infinite;}
+
+.sc-open{
+  display:inline-flex;align-items:center;gap:6px;padding:8px 10px;
+  border:1px solid var(--line-2);color:var(--ink-3);
+  font-family:var(--mono);font-size:8px;letter-spacing:.14em;
+  transition:border-color .35s ease,color .35s ease;
+}
+.sc-open svg{width:13px;height:13px;stroke:currentColor;fill:none;stroke-width:1.5;}
+.sc-open:hover{border-color:rgb(var(--accent-rgb) / .45);color:var(--accent);}
+
+.scene-error{
+  margin:11px 0 0;padding-left:9px;
+  border-left:2px solid rgb(var(--ember-rgb) / .62);
+  font-size:11px;line-height:1.62;color:rgb(var(--ember-rgb));
+}
+
+@keyframes scenePulse{
+  0%,100%{opacity:.3;transform:scale(.82);}
+  50%{opacity:1;transform:scale(1.12);}
+}
+
+/* ---- album drawer ---- */
+.album{width:560px;}
+
+.album-tabs{
+  flex:none;display:flex;align-items:center;gap:0;
+  padding:0 24px;border-bottom:1px solid var(--line);
+}
+.album-tab{
+  position:relative;display:flex;align-items:center;gap:7px;
+  padding:12px 0 11px;margin-right:22px;
+  font-family:var(--mono);font-size:8px;letter-spacing:.2em;text-transform:uppercase;
+  color:var(--ink-4);
+  border-bottom:1px solid transparent;
+  transition:color .3s ease,border-color .3s ease;
+}
+.album-tab.on{color:var(--accent);border-bottom-color:var(--accent);}
+.album-tab:hover{color:var(--ink-2);}
+.album-tab.on:hover{color:var(--accent);}
+.album-tab-n{
+  font-size:7.5px;letter-spacing:.1em;color:var(--ink-4);
+  padding:2px 5px;border:1px solid var(--line-2);
+}
+.album-tab.on .album-tab-n{color:var(--accent-dim);border-color:rgb(var(--accent-rgb) / .35);}
+.album-tab-action{
+  margin-left:auto;width:28px;height:28px;display:grid;place-items:center;
+  color:var(--ink-4);transition:color .3s ease;
+}
+.album-tab-action svg{width:14px;height:14px;stroke:currentColor;fill:none;stroke-width:1.5;}
+.album-tab-action:hover{color:var(--accent);}
+
+.album-body{padding:0;overflow-y:auto;overflow-x:hidden;}
+.album-body::-webkit-scrollbar{width:6px;}
+.album-body::-webkit-scrollbar-thumb{background:rgb(var(--ink-rgb) / .14);}
+
+.album-flag{
+  display:flex;align-items:center;gap:9px;
+  margin:16px 24px 0;padding:9px 12px;
+  border:1px solid rgb(var(--accent-rgb) / .28);
+  background:rgb(var(--accent-rgb) / .05);
+  font-family:var(--mono);font-size:8px;letter-spacing:.2em;text-transform:uppercase;
+  color:var(--accent-dim);
+}
+.album-pulse{
+  width:5px;height:5px;border-radius:50%;background:var(--accent);
+  animation:scenePulse 1.5s ease-in-out infinite;
+}
+
+.album-error{
+  margin:14px 24px 0;padding-left:9px;
+  border-left:2px solid rgb(var(--ember-rgb) / .62);
+  font-size:11.5px;line-height:1.62;color:rgb(var(--ember-rgb));
+}
+
+.album-empty{
+  display:flex;flex-direction:column;align-items:center;justify-content:center;
+  gap:16px;padding:70px 40px;text-align:center;
+}
+.album-empty-mark{color:rgb(var(--ink-rgb) / .16);}
+.album-empty-mark svg{width:46px;height:46px;stroke:currentColor;fill:none;stroke-width:1;}
+.album-empty p{
+  margin:0;max-width:280px;
+  font-size:12px;line-height:1.9;color:var(--ink-4);
+}
+
+.album-stage{
+  position:relative;margin:18px 24px 0;
+  display:grid;place-items:center;
+  min-height:220px;max-height:48vh;
+  background:
+    radial-gradient(120% 100% at 50% 0%,rgb(var(--accent-rgb) / .05),transparent 70%),
+    rgb(var(--shadow-rgb) / .32);
+  border:1px solid var(--line);
+  overflow:hidden;
+}
+.album-stage img{
+  display:block;max-width:100%;max-height:48vh;object-fit:contain;
+  box-shadow:0 30px 80px rgb(var(--shadow-rgb) / .5);
+}
+.album-loading{
+  font-family:var(--mono);font-size:8px;letter-spacing:.22em;text-transform:uppercase;
+  color:var(--ink-4);
+}
+
+.album-detail{padding:16px 24px 0;}
+.album-detail-head{display:flex;align-items:center;gap:10px;flex-wrap:wrap;}
+.album-badge{
+  font-family:var(--mono);font-size:7.5px;letter-spacing:.2em;text-transform:uppercase;
+  color:var(--accent-dim);
+  border:1px solid rgb(var(--accent-rgb) / .3);
+  padding:3px 7px;
+}
+.album-dim{
+  font-family:var(--mono);font-size:8px;letter-spacing:.1em;color:var(--ink-4);
+}
+.album-prompt{
+  margin:12px 0 0;max-height:92px;overflow:auto;
+  font-size:12.5px;line-height:1.78;color:var(--ink-3);
+}
+.album-prompt-soft{
+  font-family:var(--mono);font-size:10px;letter-spacing:.06em;color:var(--ink-3);
+  max-height:none;overflow:hidden;word-break:break-all;
+}
+.album-detail-foot{
+  display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-top:10px;
+}
+.album-fail{
+  font-size:10.5px;line-height:1.6;color:rgb(var(--ember-rgb));
+  max-width:100%;overflow:hidden;text-overflow:ellipsis;
+}
+
+.album-acts{display:flex;gap:8px;flex-wrap:wrap;margin-top:15px;}
+.album-btn{
+  padding:7px 12px;
+  border:1px solid var(--line-2);
+  font-family:var(--mono);font-size:8px;letter-spacing:.16em;text-transform:uppercase;
+  color:var(--ink-3);
+  transition:border-color .3s ease,color .3s ease,background .3s ease;
+}
+.album-btn:hover{
+  border-color:rgb(var(--accent-rgb) / .5);color:var(--accent);
+  background:rgb(var(--accent-rgb) / .05);
+}
+.album-btn.danger:hover{
+  border-color:rgb(var(--ember-rgb) / .55);color:rgb(var(--ember-rgb));
+  background:rgb(var(--ember-rgb) / .06);
+}
+
+.album-grid{
+  display:grid;grid-template-columns:repeat(auto-fill,minmax(92px,1fr));
+  gap:6px;padding:18px 24px 24px;
+}
+.album-cell{
+  position:relative;aspect-ratio:1/1;overflow:hidden;
+  border:1px solid var(--line);
+  background:rgb(var(--shadow-rgb) / .28);
+}
+.album-cell img{
+  width:100%;height:100%;object-fit:cover;display:block;
+  opacity:.7;
+  transition:opacity .35s ease,transform .6s var(--ease-out);
+}
+.album-cell:hover img{opacity:1;}
+.album-cell.on{border-color:var(--accent);}
+.album-cell.on img{opacity:1;transform:scale(1.015);}
+
+.album-nav{
+  display:flex;align-items:center;justify-content:center;gap:10px;
+  padding:0 24px 22px;
+}
+.album-nav-btn{
+  width:30px;height:30px;display:grid;place-items:center;
+  border:1px solid var(--line-2);color:var(--ink-3);
+  transition:border-color .3s ease,color .3s ease;
+}
+.album-nav-btn svg{width:13px;height:13px;stroke:currentColor;fill:none;stroke-width:1.6;}
+.album-nav-btn:hover{border-color:rgb(var(--accent-rgb) / .5);color:var(--accent);}
+
+@media (max-width:900px){
+  .album{width:100vw;}
+  .album-stage img{max-height:40vh;}
+  .album-grid{grid-template-columns:repeat(auto-fill,minmax(78px,1fr));}
+}
+
+/* ---- backstage: pictures tab ---- */
+/* Provider dropdowns are UiSelect, not <select>: on Windows the native popup
+   is drawn by the OS, so option backgrounds and the hover row ignore the theme
+   no matter what is declared here. */
+.pic-area{
+  width:100%;resize:vertical;min-height:44px;
+  border:1px solid var(--line-2);
+  padding:8px 10px;
+  background:rgb(var(--shadow-rgb) / .18);
+  font-family:var(--serif);font-size:12.5px;line-height:1.7;
+}
+.pic-area:focus{outline:none;border-color:rgb(var(--accent-rgb) / .5);}
+
+/* ---- provider parameter tooltips ----
+   The shared [data-tip] bubble in 07-tooltip.css is single-line and centred,
+   which suits a two-word label on an icon but not a sentence. Here it wraps,
+   aligns to the field's left edge, and is capped so it cannot run past the
+   panel. Only the picture fields carry this class, so nothing else moves. */
+.pic-params [data-tip]::after{
+  left:0;right:auto;
+  transform:translateY(4px);
+  white-space:normal;
+  width:max-content;
+  max-width:320px;
+  line-height:1.75;
+  letter-spacing:.03em;
+  text-align:left;
+  padding:8px 11px;
+}
+.pic-params [data-tip]:hover::after{transform:translateY(0);}
+
+/* ---- comfyui card ----
+   ComfyUI is a desktop program the user starts separately, so its state gets a
+   visible strip instead of an error at generation time: dot, word, version,
+   recheck. Everything else on the card stays identical to the cloud providers. */
+.comfy-box{
+  margin:4px 0 10px;padding:10px 12px;
+  border:1px solid var(--line-2);
+  background:rgb(var(--shadow-rgb) / .16);
+}
+.comfy-state{
+  display:flex;align-items:center;gap:8px;
+  font-family:var(--mono);font-size:8.5px;letter-spacing:.16em;text-transform:uppercase;
+  color:var(--ink-3);
+}
+.comfy-dot{
+  flex:none;width:5px;height:5px;border-radius:50%;
+  background:rgb(var(--ember-rgb) / .8);
+  transition:background .35s ease;
+}
+.comfy-state.on .comfy-dot{background:var(--accent);animation:scenePulse 1.9s ease-in-out infinite;}
+.comfy-state.on .comfy-name{color:var(--accent);}
+.comfy-name{
+  flex:1;min-width:0;
+  overflow:hidden;text-overflow:ellipsis;white-space:nowrap;
+}
+.comfy-ver{color:var(--ink-4);letter-spacing:.1em;}
+.comfy-retry{
+  flex:none;padding:3px 8px;
+  border:1px solid var(--line-2);color:var(--ink-3);
+  font-family:var(--mono);font-size:7.5px;letter-spacing:.14em;text-transform:uppercase;
+  transition:border-color .3s ease,color .3s ease;
+}
+.comfy-retry:hover{border-color:rgb(var(--accent-rgb) / .5);color:var(--accent);}
+.comfy-err{
+  margin:8px 0 0;padding-left:9px;
+  border-left:2px solid rgb(var(--ember-rgb) / .62);
+  font-size:11px;line-height:1.62;color:rgb(var(--ember-rgb));
+}
+.comfy-device{
+  margin:8px 0 0;
+  font-family:var(--mono);font-size:8.5px;letter-spacing:.1em;color:var(--ink-4);
+  overflow:hidden;text-overflow:ellipsis;white-space:nowrap;
+}
+.comfy-actions{display:flex;align-items:center;gap:8px;margin-top:10px;}
+.comfy-import{
+  display:inline-flex;align-items:center;padding:5px 9px;
+  border:1px solid var(--line-2);color:var(--ink-3);cursor:pointer;
+  font-family:var(--mono);font-size:7.5px;letter-spacing:.14em;text-transform:uppercase;
+  transition:border-color .3s ease,color .3s ease,background .3s ease;
+}
+.comfy-import:hover{
+  border-color:rgb(var(--accent-rgb) / .5);color:var(--accent);
+  background:rgb(var(--accent-rgb) / .06);
+}
+.comfy-import input{display:none;}
+.comfy-del{
+  padding:5px 9px;border:1px solid var(--line-2);color:var(--ink-3);
+  font-family:var(--mono);font-size:7.5px;letter-spacing:.14em;text-transform:uppercase;
+  transition:border-color .3s ease,color .3s ease;
+}
+.comfy-del:hover{border-color:rgb(var(--ember-rgb) / .5);color:rgb(var(--ember-rgb));}
+.pic-tabs{flex-wrap:wrap;gap:6px;}
+.pic-tabs .pv-tab{font-size:7.5px;letter-spacing:.12em;}
+.pic-note{
+  display:flex;align-items:baseline;gap:10px;flex-wrap:wrap;
+  margin-bottom:4px;
+  font-size:11px;line-height:1.7;color:var(--ink-4);
+}
+.pic-free{
+  font-family:var(--mono);font-size:7.5px;letter-spacing:.18em;text-transform:uppercase;
+  color:var(--accent-dim);
+  border:1px solid rgb(var(--accent-rgb) / .3);
+  padding:2px 6px;
+}
+.pic-usage{
+  margin-left:auto;
+  font-family:var(--mono);font-size:8px;letter-spacing:.12em;color:var(--ink-4);
+}
+
+/* Provider cards: a dot for readiness, a badge for the current default. Without
+   the dot, "enabled" and "has a key" looked identical and a misconfigured
+   provider only failed at generation time. */
+.pic-provider{gap:7px;align-items:center;}
+.pic-dot{
+  width:5px;height:5px;flex:none;border-radius:50%;
+  background:rgb(var(--ink-rgb) / .18);
+  transition:background .3s ease,box-shadow .3s ease;
+}
+.pic-provider.ready .pic-dot{
+  background:var(--accent);
+  box-shadow:0 0 6px rgb(var(--accent-rgb) / .55);
+}
+.pic-provider.default{border-color:rgb(var(--accent-rgb) / .42);}
+.pic-badge{
+  font-family:var(--mono);font-size:6.5px;letter-spacing:.16em;text-transform:uppercase;
+  color:var(--accent-dim);border:1px solid rgb(var(--accent-rgb) / .32);
+  padding:1px 4px;margin-left:1px;
+}
+.pic-dirty{
+  font-family:var(--mono);font-size:8px;letter-spacing:.14em;
+  color:var(--accent-dim);
+}

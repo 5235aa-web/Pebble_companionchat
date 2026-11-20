@@ -1,0 +1,118 @@
+@font-face {
+  font-family: "LXGW WenKai";
+  src: url("../assets/fonts/LXGWWenKai-Regular.woff2") format("woff2");
+  font-weight: 400;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: "LXGW WenKai";
+  src: url("../assets/fonts/LXGWWenKai-Medium.woff2") format("woff2");
+  font-weight: 500;
+  font-style: normal;
+  font-display: swap;
+}
+
+/* ============================================================
+   TOKENS
+   ============================================================ */
+:root{
+  --bg:#0a0908;
+  --bg-2:#0e0c0b;
+  --bg-3:#171412;
+  --bg-rgb:10 9 8;
+  --ink:#ece5d8;
+  --ink-rgb:236 229 216;
+  --ink-2:#c4bcae;
+  --ink-3:#8a8378;
+  --ink-4:#5a554e;
+  --shadow-rgb:0 0 0;
+  --ink-dry-a:.5;
+  --line:rgb(var(--ink-rgb) / .07);
+  --line-2:rgb(var(--ink-rgb) / .12);
+
+  --accent:#e0a35e;
+  --accent-rgb:224 163 94;
+  --accent-dim:#a87754;
+  --accent-ink:#fff8ec;
+  --ember:#c2563c;
+  --ember-rgb:194 86 60;
+
+  --serif:"Newsreader","LXGW WenKai","Noto Serif SC","Source Han Serif SC",Georgia,serif;
+  --mono:"IBM Plex Mono",ui-monospace,SFMono-Regular,Consolas,monospace;
+
+  --spine-w:64px;
+  --wings-w:400px;
+  --measure:660px;
+  --gutter:clamp(20px,4vw,64px);
+
+  --ease:cubic-bezier(.22,.9,.24,1);
+  --ease-out:cubic-bezier(.16,1,.3,1);
+}
+html[data-theme="day"]{
+  --bg:#f2ebdd;
+  --bg-2:#e9e0cf;
+  --bg-3:#e2d7c3;
+  --bg-rgb:242 235 221;
+  --ink:#1f1a15;
+  --ink-rgb:31 26 21;
+  --ink-2:#4a423a;
+  --ink-3:#6f6559;
+  --ink-4:#9c9082;
+  --shadow-rgb:120 100 80;
+  --ink-dry-a:.18;
+  --line:rgb(var(--ink-rgb) / .10);
+  --line-2:rgb(var(--ink-rgb) / .18);
+}
+html[data-accent="amber"]{--accent:#e0a35e;--accent-rgb:224 163 94;--accent-dim:#a87754;--accent-ink:#fff8ec;}
+html[data-accent="ember"]{--accent:#c2563c;--accent-rgb:194 86 60;--accent-dim:#8e3a28;--accent-ink:#fff3ee;}
+html[data-accent="celadon"]{--accent:#7fa89a;--accent-rgb:127 168 154;--accent-dim:#5c8175;--accent-ink:#f2fbf7;}
+html[data-accent="moon"]{--accent:#94a6c4;--accent-rgb:148 166 196;--accent-dim:#6a7c9a;--accent-ink:#f4f8ff;}
+html[data-accent="plum"]{--accent:#a878a8;--accent-rgb:168 120 168;--accent-dim:#7d567d;--accent-ink:#fdf4fd;}
+
+html[data-accent="jade"]{--accent:#5fa88a;--accent-rgb:95 168 138;--accent-dim:#3f7d64;--accent-ink:#f0fbf6;}
+
+html[data-accent="rose"]{--accent:#c4798a;--accent-rgb:196 121 138;--accent-dim:#965666;--accent-ink:#fff2f5;}
+
+html[data-theme="day"][data-accent="amber"]{--accent:#8f5d1c;--accent-rgb:143 93 28;--accent-dim:#a1733a;}
+html[data-theme="day"][data-accent="ember"]{--accent:#ab3b25;--accent-rgb:171 59 37;--accent-dim:#c05a45;}
+html[data-theme="day"][data-accent="celadon"]{--accent:#3f6a5b;--accent-rgb:63 106 91;--accent-dim:#5c8477;}
+html[data-theme="day"][data-accent="moon"]{--accent:#47597a;--accent-rgb:71 89 122;--accent-dim:#657a99;}
+
+html[data-theme="day"][data-accent="plum"]{--accent:#6b3f6b;--accent-rgb:107 63 107;--accent-dim:#8a5c8a;}
+
+html[data-theme="day"][data-accent="jade"]{--accent:#2f6b52;--accent-rgb:47 107 82;--accent-dim:#4f8a71;}
+
+html[data-theme="day"][data-accent="rose"]{--accent:#8f4556;--accent-rgb:143 69 86;--accent-dim:#ad6474;}
+
+/* ============================================================
+   RESET
+   ============================================================ */
+*,*::before,*::after{box-sizing:border-box;}
+html,body{height:100%;overflow:hidden;}
+body{
+  margin:0;background:var(--bg);color:var(--ink);
+  font-family:var(--serif);font-weight:400;
+  -webkit-font-smoothing:antialiased;-moz-osx-font-smoothing:grayscale;
+  overflow:hidden;
+}
+button{background:none;border:none;padding:0;margin:0;cursor:pointer;color:inherit;font:inherit;}
+input,textarea{background:none;border:none;outline:none;color:inherit;font:inherit;resize:none;}
+input::placeholder,textarea::placeholder{color:var(--ink-4);}
+a{color:inherit;}
+svg{display:block;}
+::selection{background:rgb(var(--accent-rgb) / .24);color:var(--accent-ink);}
+::-webkit-scrollbar{width:6px;height:6px;}
+::-webkit-scrollbar-track{background:transparent;}
+::-webkit-scrollbar-thumb{background:rgb(var(--ink-rgb) / .10);border-radius:3px;}
+::-webkit-scrollbar-thumb:hover{background:rgb(var(--ink-rgb) / .22);}
+
+
+/* ---- typeface switching ---- */
+html[data-font="song"]{
+  --serif:"Newsreader","Songti SC","Noto Serif SC",SimSun,Georgia,serif;
+}
+html[data-font="hei"]{
+  --serif:system-ui,-apple-system,"PingFang SC","Microsoft YaHei",sans-serif;
+}

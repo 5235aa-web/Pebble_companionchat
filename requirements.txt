@@ -1,0 +1,30 @@
+# Web framework. uvicorn[standard] pulls in websockets and watchfiles, both of
+# which the RPC socket and --reload depend on.
+fastapi==0.136.3
+uvicorn[standard]==0.49.0
+
+# Pinned although starlette already requires both: the application imports them
+# directly - BaseModel / field_validator across seven modules, anyio.to_thread
+# for the thumbnail and upload file IO in main.py - so the installed version
+# must not be left to whatever a transitive range happens to resolve.
+pydantic==2.13.4
+anyio==4.13.0
+
+python-multipart==0.0.32
+websockets==16.0
+
+# HTTP client for outbound calls to cloud providers.
+httpx==0.28.1
+
+# Token counting. tiktoken covers the OpenAI vocabularies; tokenizers reads a
+# local tokenizer.json when one is present next to a model.
+tiktoken==0.13.0
+tokenizers==0.21.4
+
+# Attachment parsing. These are imported inside functions so a missing library
+# degrades one file type instead of breaking the whole app; PyInstaller needs
+# them listed as hidden imports for the same reason.
+Pillow==12.2.0
+python-docx==1.2.0
+openpyxl==3.1.5
+pypdf==6.15.0

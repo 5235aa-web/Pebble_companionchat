@@ -1,0 +1,67 @@
+/* ============================================================
+   ATTACHMENTS - polaroids & paper
+   ============================================================ */
+.chips{display:flex;align-items:flex-end;gap:16px;padding:4px 0 12px;}
+.chip{position:relative;padding:0;border:none;background:none;transition:transform .45s var(--ease);}
+.chip:hover{transform:translateY(-4px);}
+
+.chip-photo{
+  position:relative;padding:5px 5px 22px;
+  background:var(--ink);
+  box-shadow:0 10px 26px rgb(var(--shadow-rgb) / .5);
+  transform:rotate(-2.6deg);
+  transition:transform .45s var(--ease),box-shadow .45s ease;
+}
+.chip:hover .chip-photo{transform:rotate(0deg);box-shadow:0 16px 36px rgb(var(--shadow-rgb) / .55);}
+.chip-photo img{width:104px;height:104px;object-fit:cover;display:block;}
+.chip-photo .cap{
+  position:absolute;left:0;right:0;bottom:3px;padding:0 4px;
+  font-family:var(--mono);font-size:9px;letter-spacing:.06em;
+  color:rgb(var(--bg-rgb) / .72);text-align:center;
+  white-space:nowrap;overflow:hidden;text-overflow:ellipsis;
+}
+
+.chip-paper{
+  position:relative;width:92px;height:116px;
+  background:linear-gradient(158deg,rgb(var(--ink-rgb) / .11),rgb(var(--ink-rgb) / .035));
+  border:1px solid rgb(var(--ink-rgb) / .17);
+  box-shadow:0 8px 20px rgb(var(--shadow-rgb) / .42);
+  transform:rotate(2deg);
+  display:flex;flex-direction:column;align-items:center;justify-content:center;
+  transition:transform .45s var(--ease);
+}
+.chip:hover .chip-paper{transform:rotate(0deg);}
+.chip-paper::before{
+  content:'';position:absolute;top:0;right:0;
+  border-width:0 9px 9px 0;border-style:solid;
+  border-color:transparent rgb(var(--ink-rgb) / .16) transparent transparent;
+}
+.chip-paper .ext{
+  font-family:var(--mono);font-size:11px;letter-spacing:.12em;
+  color:var(--ink-3);text-transform:uppercase;
+}
+.chip-paper .nm{
+  font-family:var(--mono);font-size:8.5px;letter-spacing:.03em;color:var(--ink-4);
+  margin-top:9px;max-width:78px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;
+}
+
+.chip-x{
+  position:absolute;top:-7px;right:-7px;z-index:2;
+  width:26px;height:26px;border-radius:50%;
+  background:var(--bg-2);border:1px solid var(--line-2);
+  display:grid;place-items:center;color:var(--ink-4);
+  opacity:0;transform:scale(.8);
+  transition:opacity .25s ease,transform .3s var(--ease),color .25s ease;
+}
+.chip:hover .chip-x{opacity:1;transform:scale(1);}
+.chip-x:hover{color:var(--ember);border-color:rgb(var(--ember-rgb) / .5);}
+.chip-x svg{width:12px;height:12px;stroke:currentColor;fill:none;stroke-width:2.2;}
+
+.chip.up .chip-photo,.chip.up .chip-paper{opacity:.5;}
+.chip-scan{position:absolute;inset:0;overflow:hidden;pointer-events:none;}
+.chip-scan::after{
+  content:'';position:absolute;left:0;right:0;height:16px;
+  background:linear-gradient(180deg,transparent,rgb(var(--accent-rgb) / .6),transparent);
+  animation:scan 1.6s ease-in-out infinite;
+}
+

@@ -1,0 +1,92 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 640 200" width="640" height="200" role="img" aria-label="P.C.C — Pebble Companion Chat">
+  <defs>
+    <linearGradient id="bgGrad" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#14110f" />
+      <stop offset="55%" stop-color="#0d0b0a" />
+      <stop offset="100%" stop-color="#090807" />
+    </linearGradient>
+    <radialGradient id="amberGlow" cx="24%" cy="50%" r="48%">
+      <stop offset="0%" stop-color="#e0a35e" stop-opacity="0.22" />
+      <stop offset="55%" stop-color="#a87754" stop-opacity="0.06" />
+      <stop offset="100%" stop-color="#0a0908" stop-opacity="0" />
+    </radialGradient>
+    <linearGradient id="amberStroke" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#f2c48d" />
+      <stop offset="50%" stop-color="#e0a35e" />
+      <stop offset="100%" stop-color="#c2563c" />
+    </linearGradient>
+    <linearGradient id="pebbleFill" x1="0.15" y1="0.1" x2="0.85" y2="0.95">
+      <stop offset="0%" stop-color="#2a231d" />
+      <stop offset="100%" stop-color="#13100d" />
+    </linearGradient>
+    <linearGradient id="lineFade" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0%" stop-color="#e0a35e" stop-opacity="0.7" />
+      <stop offset="65%" stop-color="#ece5d8" stop-opacity="0.22" />
+      <stop offset="100%" stop-color="#ece5d8" stop-opacity="0" />
+    </linearGradient>
+  </defs>
+
+  <!-- Outer card surface (readable on both light and dark themes) -->
+  <rect x="2" y="2" width="636" height="196" rx="20" fill="url(#bgGrad)" stroke="#2c241d" stroke-width="1.5" />
+  <rect x="10" y="10" width="620" height="180" rx="14" fill="none" stroke="#ece5d8" stroke-opacity="0.06" stroke-width="1" />
+  <rect x="2" y="2" width="636" height="196" rx="20" fill="url(#amberGlow)" />
+
+  <!-- Subtle corner registration marks -->
+  <path d="M24 32 V24 H32 M616 32 V24 H608 M24 168 V176 H32 M616 168 V176 H608" fill="none" stroke="#e0a35e" stroke-opacity="0.28" stroke-width="1" stroke-linecap="round" />
+
+  <!-- Left emblem: concentric splash rings + pebble crest + dialogue spark -->
+  <g transform="translate(116, 100)">
+    <!-- Outer orbital rings -->
+    <circle r="66" fill="none" stroke="#ece5d8" stroke-opacity="0.18" stroke-width="0.9" stroke-dasharray="310 26 70 18" transform="rotate(-24)" />
+    <circle r="54" fill="none" stroke="url(#amberStroke)" stroke-opacity="0.48" stroke-width="1" stroke-dasharray="220 18 42 16" transform="rotate(32)" />
+    <circle r="42" fill="none" stroke="#ece5d8" stroke-opacity="0.10" stroke-width="0.75" />
+
+    <!-- Pebble organic stone silhouette -->
+    <path
+      d="M-24 -8 C-26 -24, -6 -32, 12 -27 C28 -22, 32 -4, 25 13 C18 28, -5 31, -19 22 C-28 16, -23 3, -24 -8 Z"
+      fill="url(#pebbleFill)"
+      stroke="url(#amberStroke)"
+      stroke-width="1.4"
+    />
+    <!-- Inner subtle facet & voice/dialogue wave inside the pebble -->
+    <path
+      d="M-13 2 C-8 -5, -4 -5, 0 2 C4 9, 8 9, 13 2"
+      fill="none"
+      stroke="#ece5d8"
+      stroke-opacity="0.82"
+      stroke-width="1.6"
+      stroke-linecap="round"
+    />
+    <circle cx="-13" cy="2" r="1.8" fill="#e0a35e" />
+    <circle cx="13" cy="2" r="1.8" fill="#e0a35e" />
+    <!-- Orbiting amber node -->
+    <circle cx="47" cy="-27" r="3" fill="#e0a35e" />
+    <circle cx="47" cy="-27" r="6" fill="#e0a35e" fill-opacity="0.2" />
+  </g>
+
+  <!-- Right wordmark: P.C.C -->
+  <g transform="translate(216, 0)">
+    <text
+      x="0"
+      y="108"
+      fill="#ece5d8"
+      font-family="Georgia, 'Times New Roman', serif"
+      font-size="68"
+      font-weight="400"
+      letter-spacing="6"
+    >P<tspan fill="#e0a35e">.</tspan>C<tspan fill="#e0a35e">.</tspan>C</text>
+
+    <!-- Editorial divider rule -->
+    <rect x="2" y="124" width="336" height="1" fill="url(#lineFade)" />
+
+    <!-- Subtitle -->
+    <text
+      x="2"
+      y="148"
+      fill="#a89e90"
+      font-family="'IBM Plex Mono', ui-monospace, SFMono-Regular, Consolas, monospace"
+      font-size="11.5"
+      letter-spacing="3.2"
+    >PEBBLE COMPANION CHAT  ·  DIALOGUE</text>
+  </g>
+</svg>
