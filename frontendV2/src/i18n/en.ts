@@ -613,12 +613,11 @@ export const en = {
   'update.upToDate': 'You are already running the latest version.',
   'update.emptyNotes': 'No release notes were included for this release.',
   'update.checkFailed': 'Could not check for updates',
-  'update.downloading': 'Downloading installer… {pct}%',
-  'update.launching': 'Starting installer…',
-  'update.installFailed': 'Update failed',
+  'update.downloading': 'Downloading update… {pct}%',
+  'update.ready': 'Update downloaded — restart to apply',
+  'update.restart': 'Restart',
   'update.update': 'Update',
   'update.later': 'Later',
-  'update.openRelease': 'Download',
 } as const
 
 export type LabelKey = keyof typeof en

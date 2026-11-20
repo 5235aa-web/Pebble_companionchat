@@ -39,6 +39,7 @@ pnpm-debug.log*
 frontendV2/src-tauri/target/
 frontendV2/src-tauri/gen/
 frontendV2/src-tauri/binaries/*.exe
+frontendV2/.tauri-keys/
 
 # ----------------------------------------------------------------
 # User data — never commit

@@ -602,10 +602,9 @@ export const zh: Record<keyof typeof en, string> = {
   'update.upToDate': '当前已经是最新版本，无需更新。',
   'update.emptyNotes': '本次发布未填写更新说明。',
   'update.checkFailed': '检查更新失败',
-  'update.downloading': '正在下载安装包… {pct}%',
-  'update.launching': '正在启动安装程序…',
-  'update.installFailed': '更新失败',
+  'update.downloading': '正在下载更新… {pct}%',
+  'update.ready': '更新已就绪，重启后生效',
+  'update.restart': '立即重启',
   'update.update': 'Update',
   'update.later': 'Later',
-  'update.openRelease': '前往下载',
 }

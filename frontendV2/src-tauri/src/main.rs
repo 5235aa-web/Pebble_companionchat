@@ -315,6 +315,11 @@ fn main() {
             ));
         })
         .setup(|app| {
+            #[cfg(desktop)]
+            {
+                app.handle().plugin(tauri_plugin_updater::Builder::new().build())?;
+                app.handle().plugin(tauri_plugin_process::init())?;
+            }
             let handle = app.handle().clone();
             std::thread::spawn(move || {
                 let child = spawn_backend(&handle);

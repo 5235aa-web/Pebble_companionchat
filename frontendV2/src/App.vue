@@ -26,16 +26,13 @@ import { useSessionStore } from './stores/session'
 import { useChatStore } from './stores/chat'
 import { useLlmStore } from './stores/llm'
 import { usePictureStore } from './stores/pictures'
-import { useUpdaterStore } from './stores/updater'
 import { onSocketReady } from './api/client'
-import { isDesktop } from './lib/window'
 
 const ui = useUiStore()
 const session = useSessionStore()
 const chat = useChatStore()
 const llm = useLlmStore()
 const pictures = usePictureStore()
-const updater = useUpdaterStore()
 
 const glowX = ref(-400)
 const glowY = ref(-400)
@@ -101,9 +98,6 @@ async function bootstrap(): Promise<void> {
       await session.loadTokens(llm.tokenQuery)
     } catch {
       // Token accounting is advisory.
-    }
-    if (isDesktop() && !updater.hasChecked) {
-      void updater.check(true)
     }
   } finally {
     booting = false
