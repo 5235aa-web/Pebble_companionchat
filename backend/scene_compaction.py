@@ -271,7 +271,14 @@ async def compact_scene(
     parts = segmented_summary.pack_parts(lines, limit, _line_tokens)
 
     trimmed = False
-    if len(parts) == 1 and total_tokens > limit and allow_trim:
+    if len(parts) == 1 and total_tokens > limit:
+        if not allow_trim:
+            return {
+                "ok": False,
+                "error": "needs_trim",
+                "tokens": total_tokens,
+                "limit": limit,
+            }
         # One turn bigger than the whole window is the only case left where a
         # lossy pass is unavoidable, and only when the caller already agreed.
         lines = _trim_lines(lines, limit)
