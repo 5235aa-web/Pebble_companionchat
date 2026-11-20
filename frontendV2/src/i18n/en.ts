@@ -26,6 +26,7 @@ export const en = {
   'rail.deleteBranch': 'Delete branch',
   'rail.dayNight': 'Day / Night',
   'rail.accent': 'Accent colour',
+  'rail.update': 'Updates',
   'rail.searchPlaceholder': 'search lines',
   'rail.searching': 'Searching',
   'rail.noMatch': 'No matches',
@@ -598,6 +599,26 @@ export const en = {
   'jump.narrationTag': 'NARRATION',
   'jump.emptyFilter': 'No matching entries',
   'jump.attachmentOnly': '[Attachment]',
+
+  /* ---- updater ---- */
+  'update.kicker': 'RELEASE',
+  'update.titleAvailable': 'New version available',
+  'update.titleLatest': 'Up to date',
+  'update.titleChecking': 'Checking for updates',
+  'update.refresh': 'Check again',
+  'update.current': 'Current',
+  'update.latest': 'Latest',
+  'update.checking': 'Checking GitHub Releases…',
+  'update.noRelease': 'No GitHub Release has been published yet. Run the release workflow on GitHub to publish your first version.',
+  'update.upToDate': 'You are already running the latest version.',
+  'update.emptyNotes': 'No release notes were included for this release.',
+  'update.checkFailed': 'Could not check for updates',
+  'update.downloading': 'Downloading installer… {pct}%',
+  'update.launching': 'Starting installer…',
+  'update.installFailed': 'Update failed',
+  'update.update': 'Update',
+  'update.later': 'Later',
+  'update.openRelease': 'Download',
 } as const
 
 export type LabelKey = keyof typeof en

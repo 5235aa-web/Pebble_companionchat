@@ -8,6 +8,8 @@ import { useChatStore, llmConfig } from '@/stores/chat'
 import { useScriptStore } from '@/stores/script'
 import { useLlmStore } from '@/stores/llm'
 import { useMemoryStore } from '@/stores/memory'
+import { useUpdaterStore } from '@/stores/updater'
+import UpdatePanel from './UpdatePanel.vue'
 import { searchMessages } from '@/api/companion'
 import { closeWindow, isDesktop, minimizeWindow, toggleMaximizeWindow } from '@/lib/window'
 
@@ -18,6 +20,7 @@ const chat = useChatStore()
 const script = useScriptStore()
 const llm = useLlmStore()
 const memory = useMemoryStore()
+const updater = useUpdaterStore()
 
 /** True while the open thread is a scene being played. */
 const inScene = computed(
@@ -504,6 +507,22 @@ function askDeleteBranch(id: string) {
       </button>
 
       <div class="dial-h">
+        <div v-if="desktop" class="update-wrap">
+          <button
+            class="dial-btn update-btn"
+            :class="{ on: updater.panelOpen, has: updater.hasUpdate }"
+            :data-tip="updater.panelOpen ? undefined : t('rail.update')"
+            @click="updater.togglePanel()"
+          >
+            <svg viewBox="0 0 24 24">
+              <path d="M12 4v10" />
+              <path d="M8 10l4 4 4-4" />
+              <path d="M5 17v1.5A1.5 1.5 0 006.5 20h11a1.5 1.5 0 001.5-1.5V17" />
+            </svg>
+            <span v-if="updater.hasUpdate" class="update-dot" aria-hidden="true"></span>
+          </button>
+          <UpdatePanel />
+        </div>
         <button class="dial-btn lang-btn" :data-tip="langTip" @click="cycleLocale()">
           {{ locale === 'en' ? 'EN' : '中' }}
         </button>

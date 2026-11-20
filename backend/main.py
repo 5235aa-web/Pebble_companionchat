@@ -29,6 +29,7 @@ from .paths import (
 from .tts_service import router as tts_router
 from .settings_routes import router as settings_router
 from .group_sessions.routes import router as group_router
+from .update_routes import router as update_router
 from .llm_client import SUPPORTED_PROVIDERS
 from . import audio_cpp_job
 from .llama_server_engine import (
@@ -115,6 +116,7 @@ app.include_router(tts_router)
 app.include_router(picture_router)
 app.include_router(settings_router)
 app.include_router(group_router)
+app.include_router(update_router)
 
 # Picture Studio: create the output folder and close rows a previous process
 # left mid-flight. Wrapped because a locked or unreadable database here must

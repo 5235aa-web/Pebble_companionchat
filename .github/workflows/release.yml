@@ -1,0 +1,154 @@
+name: Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Release version (e.g. 0.1.1, without leading v)'
+        required: true
+        type: string
+      notes:
+        description: 'Release notes (shown in the app update panel)'
+        required: false
+        default: ''
+        type: string
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  release-windows:
+    name: Build & Publish Windows Release
+    runs-on: windows-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Resolve release metadata
+        id: meta
+        shell: pwsh
+        run: |
+          if ("${{ github.event_name }}" -eq "workflow_dispatch") {
+            $raw = "${{ github.event.inputs.version }}".Trim()
+          } else {
+            $raw = "${{ github.ref_name }}".Trim()
+          }
+          $ver = $raw.TrimStart('v', 'V')
+          if ($ver -notmatch '^\d+\.\d+\.\d+(-[0-9A-Za-z.-]+)?$') {
+            throw "Invalid semantic version: '$raw'. Expected format like 0.1.1"
+          }
+          $tag = "v$ver"
+          "version=$ver" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+          "tag=$tag" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+
+          Set-Content -Path VERSION -Value $ver -NoNewline -Encoding utf8
+
+          $pkgPath = "frontendV2/package.json"
+          $pkg = Get-Content $pkgPath -Raw | ConvertFrom-Json
+          $pkg.version = $ver
+          $pkg | ConvertTo-Json -Depth 10 | Set-Content $pkgPath -Encoding utf8
+
+          $tauriPath = "frontendV2/src-tauri/tauri.conf.json"
+          $tauri = Get-Content $tauriPath -Raw | ConvertFrom-Json
+          $tauri.version = $ver
+          $tauri | ConvertTo-Json -Depth 10 | Set-Content $tauriPath -Encoding utf8
+
+          $cargoPath = "frontendV2/src-tauri/Cargo.toml"
+          $cargo = Get-Content $cargoPath -Raw
+          $cargo = [regex]::Replace($cargo, '(?m)^version\s*=\s*"[^"]+"', "version = `"$ver`"", 1)
+          Set-Content $cargoPath -Value $cargo -NoNewline -Encoding utf8
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: 'pip'
+
+      - name: Install Python dependencies and PyInstaller
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt pyinstaller
+
+      - name: Build Python backend sidecar
+        shell: pwsh
+        run: |
+          pyinstaller pebble-backend.spec --noconfirm
+          New-Item -ItemType Directory -Force -Path "frontendV2/src-tauri/binaries" | Out-Null
+          Copy-Item -Force "dist/pebble-backend.exe" "frontendV2/src-tauri/binaries/pebble-backend-x86_64-pc-windows-msvc.exe"
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: frontendV2/package-lock.json
+
+      - name: Install frontend dependencies
+        working-directory: frontendV2
+        run: npm ci
+
+      - name: Set up Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Rust build
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: frontendV2/src-tauri
+
+      - name: Build Tauri Windows NSIS installer
+        working-directory: frontendV2
+        run: npm run tauri:build
+
+      - name: Stage release artifacts and latest.json
+        id: artifacts
+        shell: pwsh
+        env:
+          RELEASE_NOTES: ${{ github.event.inputs.notes }}
+        run: |
+          $ver = "${{ steps.meta.outputs.version }}"
+          $tag = "${{ steps.meta.outputs.tag }}"
+          $nsisDir = "frontendV2/src-tauri/target/release/bundle/nsis"
+          $setup = Get-ChildItem -Path $nsisDir -Filter "*-setup.exe" | Select-Object -First 1
+          if (-not $setup) {
+            throw "NSIS setup executable not found under $nsisDir"
+          }
+
+          New-Item -ItemType Directory -Force -Path "release-assets" | Out-Null
+          $assetName = "Pebble-Companion-Chat_${ver}_x64-setup.exe"
+          $stagedExe = Join-Path "release-assets" $assetName
+          Copy-Item -Force $setup.FullName $stagedExe
+          $size = (Get-Item $stagedExe).Length
+
+          $notes = [string]$env:RELEASE_NOTES
+          if ($null -eq $notes) { $notes = "" }
+          $notes = $notes.Trim()
+
+          $latest = [ordered]@{
+            version = $ver
+            name = "Pebble Companion Chat $tag"
+            pub_date = (Get-Date).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ")
+            notes = $notes
+            platforms = @{
+              "windows-x86_64" = @{
+                name = $assetName
+                size = $size
+                url = "https://github.com/${{ github.repository }}/releases/download/$tag/$assetName"
+              }
+            }
+          }
+          $latest | ConvertTo-Json -Depth 6 | Set-Content "release-assets/latest.json" -Encoding utf8
+
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.meta.outputs.tag }}
+          name: Pebble Companion Chat ${{ steps.meta.outputs.tag }}
+          body: ${{ github.event.inputs.notes }}
+          generate_release_notes: ${{ github.event.inputs.notes == '' }}
+          files: |
+            release-assets/*.exe
+            release-assets/latest.json

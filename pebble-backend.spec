@@ -38,6 +38,7 @@ _AUDIO_BINARIES = [
 _AUDIO_DATAS = [
     (_AUDIO + '/model_specs', 'audio-cpp/model_specs'),
     (_AUDIO + '/LICENSE', 'audio-cpp'),
+    ('VERSION', '.'),
 ]
 
 a = Analysis(
