@@ -62,9 +62,14 @@ if (!process.env.TAURI_SIGNING_PRIVATE_KEY && existsSync(keyPath)) {
   console.log(`signing key -> ${keyPath}`)
 }
 const passwordPath = path.join(keyDir, 'password.txt')
-if (!process.env.TAURI_SIGNING_PRIVATE_KEY_PASSWORD && existsSync(passwordPath)) {
-  process.env.TAURI_SIGNING_PRIVATE_KEY_PASSWORD = (await readFile(passwordPath, 'utf8')).trim()
-  console.log('key password -> .tauri-keys/password.txt')
+if (process.env.TAURI_SIGNING_PRIVATE_KEY_PASSWORD === undefined) {
+  if (existsSync(passwordPath)) {
+    process.env.TAURI_SIGNING_PRIVATE_KEY_PASSWORD = (await readFile(passwordPath, 'utf8')).trim()
+    console.log('key password -> .tauri-keys/password.txt')
+  } else {
+    process.env.TAURI_SIGNING_PRIVATE_KEY_PASSWORD = ''
+    console.log('key password -> (empty)')
+  }
 }
 if (!process.env.TAURI_SIGNING_PRIVATE_KEY) {
   console.error('No signing key: set TAURI_SIGNING_PRIVATE_KEY or save one at .tauri-keys/pebble.key')

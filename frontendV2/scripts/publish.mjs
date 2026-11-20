@@ -6,8 +6,10 @@
    upload an installer that is already sitting in src-tauri/target/release/bundle/nsis.
 */
 
-import { readFile, readdir } from 'node:fs/promises'
+import { spawn } from 'node:child_process'
 import { existsSync } from 'node:fs'
+import { mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises'
+import os from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -18,6 +20,7 @@ const here = path.dirname(fileURLToPath(import.meta.url))
 const frontend = path.resolve(here, '..')
 const confPath = path.join(frontend, 'src-tauri', 'tauri.conf.json')
 const bundleDir = path.join(frontend, 'src-tauri', 'target', 'release', 'bundle', 'nsis')
+const forceReplace = process.argv.includes('--force')
 
 const token =
   process.env.GITHUB_TOKEN ||
@@ -54,6 +57,7 @@ if (!installer) {
   process.exit(1)
 }
 
+const installerPath = path.join(bundleDir, installer)
 const sigPath = path.join(bundleDir, `${installer}.sig`)
 if (!existsSync(sigPath)) {
   console.error(
@@ -63,7 +67,7 @@ if (!existsSync(sigPath)) {
 }
 
 const signature = (await readFile(sigPath, 'utf8')).trim()
-const installerBytes = await readFile(path.join(bundleDir, installer))
+const installerBytes = await readFile(installerPath)
 
 function notesFor(text, wanted) {
   const lines = text.split(/\r?\n/)
@@ -104,62 +108,120 @@ async function api(url, init = {}) {
     const body = await res.text()
     throw new Error(`${init.method || 'GET'} ${url} -> ${res.status} ${body.slice(0, 400)}`)
   }
+  if (res.status === 204) return null
   return res.json()
 }
 
-async function uploadAsset(releaseId, name, buffer, contentType) {
+function uploadAssetWithCurl(releaseId, name, filePath, contentType) {
   const url = `https://uploads.github.com/repos/${OWNER}/${REPO}/releases/${releaseId}/assets?name=${encodeURIComponent(name)}`
-  const res = await fetch(url, {
-    method: 'POST',
-    headers: {
-      Authorization: `Bearer ${token}`,
-      Accept: 'application/vnd.github+json',
-      'User-Agent': 'pebble-companionchat-release',
-      'Content-Type': contentType,
-      'Content-Length': String(buffer.length),
-    },
-    body: buffer,
+  const curlExe = process.platform === 'win32' ? 'curl.exe' : 'curl'
+  const configLines = [
+    `url = "${url}"`,
+    `header = "Authorization: Bearer ${token}"`,
+    `header = "Accept: application/vnd.github+json"`,
+    `header = "User-Agent: pebble-companionchat-release"`,
+    `header = "Content-Type: ${contentType}"`,
+  ].join('\n')
+
+  return new Promise((resolve, reject) => {
+    const child = spawn(
+      curlExe,
+      [
+        '--config',
+        '-',
+        '--request',
+        'POST',
+        '--data-binary',
+        `@${filePath}`,
+        '--http1.1',
+        '--retry',
+        '3',
+        '--retry-delay',
+        '3',
+        '--connect-timeout',
+        '30',
+        '--max-time',
+        '900',
+        '--fail-with-body',
+        '--progress-bar',
+      ],
+      { stdio: ['pipe', 'pipe', 'inherit'] },
+    )
+    let stdout = ''
+    child.stdout.on('data', chunk => {
+      stdout += chunk.toString('utf8')
+    })
+    child.on('error', reject)
+    child.on('exit', code => {
+      if (code !== 0) {
+        reject(new Error(`curl upload ${name} exited with ${code}: ${stdout.slice(0, 400)}`))
+        return
+      }
+      try {
+        resolve(JSON.parse(stdout))
+      } catch (err) {
+        reject(new Error(`Invalid JSON from upload ${name}: ${err.message} (${stdout.slice(0, 200)})`))
+      }
+    })
+    child.stdin.write(configLines)
+    child.stdin.end()
   })
-  if (!res.ok) {
-    const body = await res.text()
-    throw new Error(`upload ${name} -> ${res.status} ${body.slice(0, 400)}`)
-  }
-  return res.json()
 }
 
 console.log(`tag ${tag} · installer ${installer} (${(installerBytes.length / 1048576).toFixed(1)} MB)`)
 
-const existing = await fetch(`https://api.github.com/repos/${OWNER}/${REPO}/releases/tags/${tag}`, {
+let release = null
+const existingRes = await fetch(`https://api.github.com/repos/${OWNER}/${REPO}/releases/tags/${tag}`, {
   headers: {
     Authorization: `Bearer ${token}`,
     Accept: 'application/vnd.github+json',
     'User-Agent': 'pebble-companionchat-release',
   },
 })
-if (existing.ok) {
-  const body = await existing.json()
-  console.error(`Release ${tag} already exists (${body.html_url}).`)
-  console.error('Bump "version" in src-tauri/tauri.conf.json, rebuild, then run this again.')
-  process.exit(1)
+
+if (existingRes.ok) {
+  release = await existingRes.json()
+  const existingAssets = Array.isArray(release.assets) ? release.assets : []
+  const githubAssetName = installer.replace(/ /g, '.')
+  const hasExe = existingAssets.some(a => a.name === installer || a.name === githubAssetName)
+  const hasFeed = existingAssets.some(a => a.name === 'latest.json')
+  if (hasExe && hasFeed && !forceReplace) {
+    console.error(`Release ${tag} already exists with all assets (${release.html_url}).`)
+    console.error('Bump the version for a new release, or pass --force to re-upload assets.')
+    process.exit(1)
+  }
+  console.log(`reusing existing incomplete release: ${release.html_url}`)
+  for (const oldAsset of existingAssets) {
+    if (
+      oldAsset.name === installer ||
+      oldAsset.name === githubAssetName ||
+      oldAsset.name === 'latest.json'
+    ) {
+      await api(`https://api.github.com/repos/${OWNER}/${REPO}/releases/assets/${oldAsset.id}`, {
+        method: 'DELETE',
+      })
+      console.log(`removed previous asset: ${oldAsset.name}`)
+    }
+  }
+} else {
+  release = await api(`https://api.github.com/repos/${OWNER}/${REPO}/releases`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      tag_name: tag,
+      name: `Pebble Companion Chat ${version}`,
+      body: notes,
+      draft: false,
+      prerelease: false,
+    }),
+  })
+  console.log(`release created: ${release.html_url}`)
 }
 
-const release = await api(`https://api.github.com/repos/${OWNER}/${REPO}/releases`, {
-  method: 'POST',
-  headers: { 'Content-Type': 'application/json' },
-  body: JSON.stringify({
-    tag_name: tag,
-    name: `Pebble Companion Chat ${version}`,
-    body: notes,
-    draft: false,
-    prerelease: false,
-  }),
-})
-console.log(`release created: ${release.html_url}`)
-
-const asset = await uploadAsset(
+const asset = await uploadAssetWithCurl(
   release.id,
   installer,
-  installerBytes,
+  installerPath,
   'application/octet-stream',
 )
 console.log(`installer uploaded: ${asset.browser_download_url}`)
@@ -175,8 +237,16 @@ const feed = {
     },
   },
 }
-const feedBytes = Buffer.from(JSON.stringify(feed, null, 2), 'utf8')
-await uploadAsset(release.id, 'latest.json', feedBytes, 'application/json')
+
+const tmpDir = await mkdtemp(path.join(os.tmpdir(), 'pebble-release-'))
+const feedPath = path.join(tmpDir, 'latest.json')
+try {
+  await writeFile(feedPath, JSON.stringify(feed, null, 2), 'utf8')
+  await uploadAssetWithCurl(release.id, 'latest.json', feedPath, 'application/json')
+} finally {
+  await rm(tmpDir, { recursive: true, force: true })
+}
+
 console.log('latest.json uploaded')
 console.log('')
 console.log('Done. Installed copies read:')
