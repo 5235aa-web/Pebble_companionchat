@@ -13,10 +13,12 @@ import time
 from typing import List, Dict, AsyncGenerator, Optional, Tuple
 
 from .companion_db import (
-    get_companion, save_message, save_message_with_swipes, get_messages,
+    get_companion, get_companion_assets, get_branch_hud, update_branch_hud,
+    save_message, save_message_with_swipes, get_messages,
     get_last_assistant_message, update_message_content, add_swipe_to_message,
     delete_message, delete_messages_after,
 )
+from .card_hud import CardHudStreamFilter, build_card_hud_prompt, merge_card_hud
 from .llm_client import call_llm_stream, load_default_llm_config
 from .world_book_engine import get_active_world_book_content
 from .compaction import is_summary_message, SUMMARY_MARKER_START
@@ -331,6 +333,8 @@ class Companion:
         history: Optional[List[Dict]] = None,
         branch_id: str = "main",
         memory_out: Optional[List[Dict]] = None,
+        *,
+        include_card_hud: bool = False,
     ) -> str:
         """
         Assemble the character-card system prompt.
@@ -422,6 +426,11 @@ class Companion:
                 'the actions, feelings, and inner states of the user or yourself. '
                 'Your next reply must be based on that narration message.'
             )
+
+        if include_card_hud:
+            hud_state = get_branch_hud(self.id, branch_id)
+            assets = get_companion_assets(self.id)
+            parts.append(build_card_hud_prompt(hud_state.get("hud"), assets))
         
         # The opening message is deliberately absent. Feeding it to the model as
         # part of the system prompt made it treat the greeting as something to
@@ -431,19 +440,51 @@ class Companion:
         # history at its requested depth, which _build_messages handles.
         
         return "\n\n".join(parts)
-    
+
+    def _resolve_card_hud_state(self, branch_id: str) -> Optional[Dict]:
+        """Return branch HUD state when single-chat HUD is active for this branch."""
+        state = get_branch_hud(self.id, branch_id)
+        return state if state.get("effective_enabled") else None
+
+    def _finalize_card_hud(
+        self,
+        branch_id: str,
+        hud_filter: CardHudStreamFilter,
+        initial_hud: Dict,
+    ) -> Tuple[str, Dict]:
+        """Flush a CardHudStreamFilter, persist merged state, and build the SSE event."""
+        tail, hud_update, media_cue = hud_filter.finish()
+        merged_hud = merge_card_hud(initial_hud, hud_update)
+        if hud_update:
+            update_branch_hud(self.id, branch_id, hud=merged_hud)
+        event = {
+            "type": "card_hud",
+            "companion_id": self.id,
+            "branch_id": branch_id,
+            "hud": merged_hud,
+            "media_cue": media_cue,
+        }
+        return tail, event
+
     def _build_messages(
         self,
         history: List[Dict],
         branch_id: str = "main",
         memory_out: Optional[List[Dict]] = None,
+        *,
+        include_card_hud: bool = False,
     ) -> List[Dict]:
         """
         Build the LLM message list: one system prompt plus the branch history.
         Compaction summaries are replayed with the system role so they do not
         occupy an assistant turn.
         """
-        messages = [{"role": "system", "content": self.build_system_prompt(history, branch_id, memory_out)}]
+        messages = [{
+            "role": "system",
+            "content": self.build_system_prompt(
+                history, branch_id, memory_out, include_card_hud=include_card_hud
+            ),
+        }]
         sub = self._macro_context()
         
         # A summary covers the earliest part of the conversation, so it belongs
@@ -819,13 +860,17 @@ class Companion:
         
         # 3. 构建消息
         memories: List[Dict] = []
+        card_hud_state: Optional[Dict] = None
         if script_session_id:
             # Script mode replaces the card's chat scaffolding wholesale, so no
             # world book, memory, examples or post-history instructions reach
             # the model.
             messages = self._build_script_messages(history, script_session_id)
         else:
-            messages = self._build_messages(history, branch_id, memories)
+            card_hud_state = self._resolve_card_hud_state(branch_id)
+            messages = self._build_messages(
+                history, branch_id, memories, include_card_hud=bool(card_hud_state)
+            )
         logger.info(f"Messages built: {len(messages)} items")
         
         # 3.5 音频的注入挪到 LLM 配置解析之后：能否发送 input_audio 取决于
@@ -947,6 +992,7 @@ class Companion:
             pending = await _first_or_none(stream)
 
         state_filter = ScriptStreamFilter() if script_session_id else None
+        hud_filter = CardHudStreamFilter() if (not script_session_id and card_hud_state) else None
         while True:
             if pending is not None:
                 chunk, pending = pending, None
@@ -960,8 +1006,9 @@ class Companion:
                 if first_token_ms is None:
                     first_token_ms = (time.perf_counter() - started) * 1000
                 text = chunk["content"]
-                if state_filter is not None:
-                    text = state_filter.feed(text)
+                active_filter = state_filter or hud_filter
+                if active_filter is not None:
+                    text = active_filter.feed(text)
                     if not text:
                         continue
                     chunk = {**chunk, "content": text}
@@ -978,6 +1025,7 @@ class Companion:
                 return
         
         script_state: Optional[Dict] = None
+        card_hud_event: Optional[Dict] = None
         if state_filter is not None:
             tail, hud_update, scene_done = state_filter.finish()
             if tail:
@@ -1000,6 +1048,13 @@ class Companion:
                 "scene_done": bool(scene_done),
                 "turns_done": turns_done,
             }
+        elif hud_filter is not None and card_hud_state is not None:
+            tail, card_hud_event = self._finalize_card_hud(
+                branch_id, hud_filter, card_hud_state.get("hud") or {}
+            )
+            if tail:
+                full_content += tail
+                yield {"type": "content", "content": tail}
 
         logger.info(f"LLM stream complete, received {chunk_count} chunks, content_len={len(full_content)}")
         generation = _generation_record(
@@ -1039,6 +1094,8 @@ class Companion:
 
         if script_state is not None:
             yield script_state
+        if card_hud_event is not None:
+            yield card_hud_event
 
         yield {"type": "done", "final_content": full_content, "message_id": msg_id, "user_message_id": user_message_id, "memories": _in_play_payload(memories), "generation": generation}
 
@@ -1190,7 +1247,10 @@ class Companion:
         
         # 2. 构建消息
         memories: List[Dict] = []
-        messages = self._build_messages(context_history, branch_id, memories)        
+        card_hud_state = self._resolve_card_hud_state(branch_id)
+        messages = self._build_messages(
+            context_history, branch_id, memories, include_card_hud=bool(card_hud_state)
+        )
         # 3. 获取LLM配置
         llm_config = self._resolve_llm_config_full(llm_config)
         if not llm_config:
@@ -1205,6 +1265,7 @@ class Companion:
         usage_info: Optional[Dict] = None
         started = time.perf_counter()
         first_token_ms: Optional[float] = None
+        hud_filter = CardHudStreamFilter() if card_hud_state else None
         async for chunk in call_llm_stream(
             provider_type=llm_config["provider_type"],
             api_key=llm_config["api_key"],
@@ -1225,7 +1286,13 @@ class Companion:
             if chunk["type"] == "content":
                 if first_token_ms is None:
                     first_token_ms = (time.perf_counter() - started) * 1000
-                full_content += chunk["content"]
+                text = chunk["content"]
+                if hud_filter is not None:
+                    text = hud_filter.feed(text)
+                    if not text:
+                        continue
+                    chunk = {**chunk, "content": text}
+                full_content += text
                 yield chunk
             elif chunk["type"] == "thinking":
                 yield chunk
@@ -1236,7 +1303,16 @@ class Companion:
                 logger.error(f"LLM error: {chunk.get('message')}")
                 yield chunk
                 return
-        
+
+        card_hud_event: Optional[Dict] = None
+        if hud_filter is not None and card_hud_state is not None:
+            tail, card_hud_event = self._finalize_card_hud(
+                branch_id, hud_filter, card_hud_state.get("hud") or {}
+            )
+            if tail:
+                full_content += tail
+                yield {"type": "content", "content": tail}
+
         logger.info(f"Regenerate stream complete, content_len={len(full_content)}")
         generation = _generation_record(
             llm_config,
@@ -1254,6 +1330,8 @@ class Companion:
             if result:
                 logger.info(f"New swipe added, total_swipes={len(result['swipes'])}, swipe_id={result['swipe_id']}")
         
+        if card_hud_event is not None:
+            yield card_hud_event
         yield {"type": "done", "final_content": full_content, "message_id": message_id, "memories": _in_play_payload(memories), "generation": generation}
 
     async def generate_reedit_stream(
@@ -1285,7 +1363,10 @@ class Companion:
 
         history = get_messages(self.id, branch_id)
         memories: List[Dict] = []
-        messages = self._build_messages(history, branch_id, memories)
+        card_hud_state = self._resolve_card_hud_state(branch_id)
+        messages = self._build_messages(
+            history, branch_id, memories, include_card_hud=bool(card_hud_state)
+        )
 
         llm_config = self._resolve_llm_config_full(llm_config)
         if not llm_config:
@@ -1301,6 +1382,7 @@ class Companion:
         usage_info: Optional[Dict] = None
         started = time.perf_counter()
         first_token_ms: Optional[float] = None
+        hud_filter = CardHudStreamFilter() if card_hud_state else None
         async for chunk in call_llm_stream(
             provider_type=llm_config["provider_type"],
             api_key=llm_config["api_key"],
@@ -1320,7 +1402,13 @@ class Companion:
             if chunk["type"] == "content":
                 if first_token_ms is None:
                     first_token_ms = (time.perf_counter() - started) * 1000
-                full_content += chunk["content"]
+                text = chunk["content"]
+                if hud_filter is not None:
+                    text = hud_filter.feed(text)
+                    if not text:
+                        continue
+                    chunk = {**chunk, "content": text}
+                full_content += text
                 yield chunk
             elif chunk["type"] == "usage":
                 usage_info = chunk
@@ -1331,6 +1419,15 @@ class Companion:
                 logger.error(f"LLM error: {chunk.get('message')}")
                 yield chunk
                 return
+
+        card_hud_event: Optional[Dict] = None
+        if hud_filter is not None and card_hud_state is not None:
+            tail, card_hud_event = self._finalize_card_hud(
+                branch_id, hud_filter, card_hud_state.get("hud") or {}
+            )
+            if tail:
+                full_content += tail
+                yield {"type": "content", "content": tail}
 
         logger.info(f"Reedit stream complete, content_len={len(full_content)}")
         generation = _generation_record(
@@ -1349,6 +1446,8 @@ class Companion:
             )
             logger.info(f"Reedit: AI response saved, id={msg_id}")
 
+        if card_hud_event is not None:
+            yield card_hud_event
         yield {"type": "done", "final_content": full_content, "message_id": msg_id, "memories": _in_play_payload(memories), "generation": generation}
     
     # 调用方（前端）只带 provider/base_url/model/temperature/top_p，本地权重的

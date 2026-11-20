@@ -7,17 +7,23 @@ import json
 import os
 import functools
 import logging
+import shutil
 import tempfile
 import asyncio
 from typing import Optional, List, Dict, Any
 from datetime import datetime
 
+import anyio
+from pathlib import Path
 from fastapi import APIRouter, UploadFile, File, Form, HTTPException, Query
-from fastapi.responses import StreamingResponse
+from fastapi.responses import Response, StreamingResponse
 from pydantic import BaseModel, Field
+from starlette.background import BackgroundTask
 
 from .companion_db import (
     get_companion, get_all_companions, delete_companion, update_companion,
+    add_companion_asset, get_companion_assets, get_companion_asset, delete_companion_asset,
+    get_branch_hud, update_branch_hud,
     get_branches, create_branch, delete_branch, update_branch_name,
     get_messages, get_messages_with_swipes, delete_message, get_message_count, clear_branch_messages,
     save_message, mark_messages_compacted, get_compacted_messages,
@@ -34,9 +40,28 @@ from .companion_db import (
 from .companion import Companion
 from .script_db import get_session_by_branch
 from .picturesys import service as picture_service
-from .paths import AVATAR_DIR, LLM_CONFIG_PATH
+from .paths import AVATAR_DIR, COMPANION_ASSETS_DIR, DATA_ROOT, LLM_CONFIG_PATH, TMP_UPLOAD_DIR
 from .llm_client import load_default_llm_config
-from .tavern_importer import import_from_bytes
+from .tavern_importer import import_card_file, import_from_bytes
+from .charx import (
+    CharxError,
+    MAX_CARD_UPLOAD_BYTES,
+    MAX_CHARX_SINGLE_ASSET_BYTES,
+    classify_media_kind,
+    infer_ext,
+    infer_mime,
+)
+from .card_transfer import (
+    EXPORT_CHUNK_BYTES,
+    TransferError,
+    abort_staged_upload,
+    append_staged_chunk,
+    cleanup_staged_export,
+    commit_staged_upload,
+    init_staged_upload,
+    prepare_charx_export,
+    read_export_chunk,
+)
 from .token_counter import get_token_status, acount_full_context, estimate_tokens_messages, get_context_window
 from . import token_engine
 from .compaction import compact_conversation, CompactionResult, CompactionConfig, get_summary_preview, is_summary_message
@@ -100,6 +125,39 @@ async def _read_upload(file: UploadFile, max_bytes: int = MAX_UPLOAD_BYTES) -> b
             )
         chunks.append(chunk)
     return b"".join(chunks)
+
+
+async def _stream_upload_to_tempfile(
+    file: UploadFile,
+    max_bytes: int = MAX_CARD_UPLOAD_BYTES,
+    suffix: str = ".tmp",
+) -> Path:
+    """Stream an UploadFile directly to disk in 1 MB chunks without buffering in RAM."""
+    in_dir = TMP_UPLOAD_DIR / "in"
+    in_dir.mkdir(parents=True, exist_ok=True)
+    fd, raw_path = tempfile.mkstemp(prefix="upload_", suffix=suffix, dir=str(in_dir))
+    os.close(fd)
+    tmp_path = Path(raw_path)
+    total = 0
+    try:
+        with open(tmp_path, "wb") as out:
+            while True:
+                chunk = await file.read(1024 * 1024)
+                if not chunk:
+                    break
+                total += len(chunk)
+                if total > max_bytes:
+                    raise HTTPException(
+                        status_code=413,
+                        detail=f"文件超过 {max_bytes // (1024 * 1024)} MB 上限",
+                    )
+                out.write(chunk)
+        if total == 0:
+            raise HTTPException(status_code=400, detail="上传文件为空")
+        return tmp_path
+    except Exception:
+        tmp_path.unlink(missing_ok=True)
+        raise
 
 
 def _record_usage_chunk(chunk: Any, companion_id: str, branch_id: str) -> None:
@@ -526,32 +584,126 @@ async def delete_companion_detail(companion_id: str):
 
 # ==================== Card Import ====================
 
+class StagedUploadInitRequest(BaseModel):
+    filename: str
+    total_size: int = 0
+    file_type: str = ""
+
+
+class StagedUploadChunkRequest(BaseModel):
+    offset: int
+    data_b64: str
+
+
+@router.post("/import/upload/init")
+async def init_card_upload(request: StagedUploadInitRequest):
+    """初始化分片上传会话（支持大体积 .charx/.png/.json，兼容 Tauri WebSocket 桥接）。"""
+    try:
+        return init_staged_upload(request.filename, request.total_size, request.file_type)
+    except TransferError as e:
+        raise HTTPException(status_code=e.status_code, detail=str(e))
+
+
+@router.post("/import/upload/{upload_id}/chunk")
+async def upload_card_chunk(upload_id: str, request: StagedUploadChunkRequest):
+    """写入单个分片到磁盘暂存区。"""
+    try:
+        return await anyio.to_thread.run_sync(
+            append_staged_chunk, upload_id, request.offset, request.data_b64
+        )
+    except TransferError as e:
+        raise HTTPException(status_code=e.status_code, detail=str(e))
+
+
+@router.post("/import/upload/{upload_id}/commit")
+async def commit_card_upload(upload_id: str):
+    """完成分片上传并从磁盘流式导入角色卡。"""
+    try:
+        companion_id = await anyio.to_thread.run_sync(commit_staged_upload, upload_id)
+        return {"status": "success", "companion_id": companion_id}
+    except TransferError as e:
+        raise HTTPException(status_code=e.status_code, detail=str(e))
+    except Exception as e:
+        logger.error("Staged card commit failed: %s", e, exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Import failed: {str(e)}")
+
+
+@router.delete("/import/upload/{upload_id}")
+async def abort_card_upload(upload_id: str):
+    """取消并清理分片上传暂存文件。"""
+    try:
+        removed = abort_staged_upload(upload_id)
+        return {"status": "success", "removed": removed}
+    except TransferError as e:
+        raise HTTPException(status_code=e.status_code, detail=str(e))
+
+
 @router.post("/import/json")
 async def import_tavern_json(file: UploadFile = File(...)):
     """导入 JSON 角色卡。"""
-    if not file.filename or not file.filename.endswith('.json'):
+    if not file.filename or not file.filename.lower().endswith('.json'):
         raise HTTPException(status_code=400, detail="File must be a .json file")
-    
+
+    tmp_path: Optional[Path] = None
     try:
-        content = await _read_upload(file)
-        companion_id = import_from_bytes(content, 'json')
+        tmp_path = await _stream_upload_to_tempfile(file, max_bytes=MAX_CARD_UPLOAD_BYTES, suffix='.json')
+        companion_id = await anyio.to_thread.run_sync(import_card_file, str(tmp_path), 'json')
         return {"status": "success", "companion_id": companion_id}
+    except HTTPException:
+        raise
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Import failed: {str(e)}")
+    finally:
+        if tmp_path is not None:
+            tmp_path.unlink(missing_ok=True)
 
 
 @router.post("/import/png")
 async def import_tavern_png(file: UploadFile = File(...)):
     """导入 PNG 角色卡（从元数据提取）。"""
-    if not file.filename or not file.filename.endswith('.png'):
+    if not file.filename or not file.filename.lower().endswith('.png'):
         raise HTTPException(status_code=400, detail="File must be a .png file")
-    
+
+    tmp_path: Optional[Path] = None
     try:
-        content = await _read_upload(file)
-        companion_id = import_from_bytes(content, 'png')
+        tmp_path = await _stream_upload_to_tempfile(file, max_bytes=MAX_CARD_UPLOAD_BYTES, suffix='.png')
+        companion_id = await anyio.to_thread.run_sync(import_card_file, str(tmp_path), 'png')
         return {"status": "success", "companion_id": companion_id}
+    except HTTPException:
+        raise
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Import failed: {str(e)}")
+    finally:
+        if tmp_path is not None:
+            tmp_path.unlink(missing_ok=True)
+
+
+@router.post("/import/charx")
+async def import_tavern_charx(file: UploadFile = File(...)):
+    """流式导入 CHARX（.charx / .zip）角色卡及其图片/音视频资产。"""
+    fname = (file.filename or "").lower()
+    if not fname.endswith(('.charx', '.zip')):
+        raise HTTPException(status_code=400, detail="File must be a .charx or .zip file")
+
+    tmp_path: Optional[Path] = None
+    try:
+        tmp_path = await _stream_upload_to_tempfile(file, max_bytes=MAX_CARD_UPLOAD_BYTES, suffix='.charx')
+        companion_id = await anyio.to_thread.run_sync(import_card_file, str(tmp_path), 'charx')
+        return {"status": "success", "companion_id": companion_id}
+    except HTTPException:
+        raise
+    except (CharxError, ValueError) as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        logger.error("Import CHARX failed: %s", e, exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Import failed: {str(e)}")
+    finally:
+        if tmp_path is not None:
+            tmp_path.unlink(missing_ok=True)
 
 
 # ==================== Card Export ====================
@@ -560,7 +712,6 @@ async def import_tavern_png(file: UploadFile = File(...)):
 async def export_tavern_json(companion_id: str):
     """导出角色卡为JSON格式。"""
     from .tavern_exporter import export_to_json, get_export_filename
-    from .companion_db import get_companion
     from urllib.parse import quote
     
     companion = get_companion(companion_id)
@@ -570,10 +721,7 @@ async def export_tavern_json(companion_id: str):
     try:
         json_content = export_to_json(companion)
         filename = get_export_filename(companion, 'json')
-        # 对文件名进行 URL 编码以支持中文
         encoded_filename = quote(filename)
-        
-        from fastapi.responses import Response
         return Response(
             content=json_content,
             media_type="application/json",
@@ -590,7 +738,6 @@ async def export_tavern_json(companion_id: str):
 async def export_tavern_png(companion_id: str):
     """导出角色卡为PNG格式（嵌入元数据）。"""
     from .tavern_exporter import export_to_png, get_export_filename
-    from .companion_db import get_companion
     from urllib.parse import quote
     
     companion = get_companion(companion_id)
@@ -600,10 +747,7 @@ async def export_tavern_png(companion_id: str):
     try:
         png_bytes = export_to_png(companion)
         filename = get_export_filename(companion, 'png')
-        # 对文件名进行 URL 编码以支持中文
         encoded_filename = quote(filename)
-        
-        from fastapi.responses import Response
         return Response(
             content=png_bytes,
             media_type="image/png",
@@ -616,6 +760,189 @@ async def export_tavern_png(companion_id: str):
         raise HTTPException(status_code=500, detail=f"Export failed: {str(e)}")
 
 
+@router.get("/{companion_id}/export/charx")
+async def export_tavern_charx(companion_id: str):
+    """流式导出角色卡为 CHARX（.charx）容器包。"""
+    from .tavern_exporter import export_to_charx_file, get_export_filename
+    from urllib.parse import quote
+
+    companion = get_companion(companion_id)
+    if not companion:
+        raise HTTPException(status_code=404, detail="Companion not found")
+
+    assets = get_companion_assets(companion_id)
+    out_dir = TMP_UPLOAD_DIR / "out"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    fd, raw_path = tempfile.mkstemp(prefix="stream_", suffix=".charx", dir=str(out_dir))
+    os.close(fd)
+    dest_path = Path(raw_path)
+
+    try:
+        await anyio.to_thread.run_sync(export_to_charx_file, companion, assets, dest_path)
+        file_size = dest_path.stat().st_size
+        filename = get_export_filename(companion, 'charx')
+        encoded_filename = quote(filename)
+
+        def _iter_file():
+            with open(dest_path, "rb") as f:
+                while True:
+                    chunk = f.read(EXPORT_CHUNK_BYTES)
+                    if not chunk:
+                        break
+                    yield chunk
+
+        return StreamingResponse(
+            _iter_file(),
+            media_type="application/zip",
+            headers={
+                "Content-Disposition": f"attachment; filename*=UTF-8''{encoded_filename}",
+                "Content-Length": str(file_size),
+            },
+            background=BackgroundTask(dest_path.unlink, missing_ok=True),
+        )
+    except Exception as e:
+        dest_path.unlink(missing_ok=True)
+        logger.error("Export CHARX failed for %s: %s", companion_id, e, exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Export failed: {str(e)}")
+
+
+@router.post("/{companion_id}/export/charx/prepare")
+async def prepare_tavern_charx_export(companion_id: str):
+    """在磁盘预生成 .charx 导出包，供分片下载（适配 Tauri / 进度条）。"""
+    companion = get_companion(companion_id)
+    if not companion:
+        raise HTTPException(status_code=404, detail="Companion not found")
+
+    assets = get_companion_assets(companion_id)
+    try:
+        return await anyio.to_thread.run_sync(prepare_charx_export, companion, assets)
+    except Exception as e:
+        logger.error("Prepare CHARX export failed for %s: %s", companion_id, e, exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Export failed: {str(e)}")
+
+
+@router.get("/export/download/{export_id}/chunk")
+async def download_staged_export_chunk(
+    export_id: str,
+    offset: int = Query(0, ge=0),
+    length: int = Query(EXPORT_CHUNK_BYTES, ge=1),
+):
+    """读取预生成导出包的指定字节分片。"""
+    try:
+        data = await anyio.to_thread.run_sync(read_export_chunk, export_id, offset, length)
+        return Response(content=data, media_type="application/octet-stream")
+    except TransferError as e:
+        raise HTTPException(status_code=e.status_code, detail=str(e))
+
+
+@router.delete("/export/download/{export_id}")
+async def delete_staged_export(export_id: str):
+    """清理已完成或已取消的暂存导出包。"""
+    try:
+        removed = cleanup_staged_export(export_id)
+        return {"status": "success", "removed": removed}
+    except TransferError as e:
+        raise HTTPException(status_code=e.status_code, detail=str(e))
+
+
+# ==================== Companion Multimedia Assets ====================
+
+@router.get("/{companion_id}/assets")
+async def list_companion_assets(companion_id: str, asset_type: Optional[str] = Query(None)):
+    """列出角色关联的所有多媒体资产（图片、表情、背景、音乐、音效等）。"""
+    if not get_companion(companion_id):
+        raise HTTPException(status_code=404, detail="Companion not found")
+    assets = get_companion_assets(companion_id, asset_type=asset_type)
+    return {"assets": assets, "count": len(assets)}
+
+
+@router.post("/{companion_id}/assets")
+async def upload_companion_asset(
+    companion_id: str,
+    file: UploadFile = File(...),
+    asset_type: str = Form("other"),
+    name: str = Form(""),
+):
+    """流式上传单个图片或音视频资产到角色资产库。"""
+    if not get_companion(companion_id):
+        raise HTTPException(status_code=404, detail="Companion not found")
+
+    orig_name = file.filename or "asset.bin"
+    ext = infer_ext(orig_name, "bin")
+    tmp_path: Optional[Path] = None
+    try:
+        tmp_path = await _stream_upload_to_tempfile(
+            file, max_bytes=MAX_CHARX_SINGLE_ASSET_BYTES, suffix=f".{ext}"
+        )
+        size_bytes = tmp_path.stat().st_size
+        semantic_type = classify_media_kind(ext, asset_type)
+        asset_name = (name or Path(orig_name).stem or "asset").strip()[:80]
+
+        import uuid
+        target_dir = COMPANION_ASSETS_DIR / companion_id / semantic_type
+        target_dir.mkdir(parents=True, exist_ok=True)
+        dest_path = target_dir / f"{uuid.uuid4().hex[:10]}.{ext}"
+        await anyio.to_thread.run_sync(shutil.move, str(tmp_path), str(dest_path))
+        tmp_path = None
+
+        rel_path = dest_path.resolve().relative_to(DATA_ROOT.resolve()).as_posix()
+        asset_id = add_companion_asset(companion_id, {
+            "asset_type": semantic_type,
+            "name": asset_name,
+            "ext": ext,
+            "mime_type": infer_mime(ext),
+            "rel_path": rel_path,
+            "source_uri": f"embeded://assets/{semantic_type}/{dest_path.name}",
+            "size_bytes": size_bytes,
+            "sort_order": len(get_companion_assets(companion_id)),
+        })
+        return {"status": "success", "asset": get_companion_asset(companion_id, asset_id)}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Asset upload failed: {str(e)}")
+    finally:
+        if tmp_path is not None:
+            tmp_path.unlink(missing_ok=True)
+
+
+@router.delete("/{companion_id}/assets/{asset_id}")
+async def remove_companion_asset(companion_id: str, asset_id: int):
+    """删除角色的单个多媒体资产及其磁盘文件。"""
+    if not get_companion(companion_id):
+        raise HTTPException(status_code=404, detail="Companion not found")
+    deleted = delete_companion_asset(companion_id, asset_id)
+    if not deleted:
+        raise HTTPException(status_code=404, detail="Asset not found")
+    rel_path = str(deleted.get("rel_path") or "")
+    if rel_path:
+        try:
+            assets_root = COMPANION_ASSETS_DIR.resolve()
+            target = (DATA_ROOT.resolve() / rel_path).resolve()
+            if target.is_relative_to(assets_root) and target.is_file():
+                target.unlink()
+        except Exception as exc:
+            logger.warning("Failed to remove asset file %s: %s", rel_path, exc)
+    return {"status": "success", "id": asset_id}
+
+
+@router.post("/{companion_id}/avatar/from-asset/{asset_id}")
+async def set_avatar_from_asset(companion_id: str, asset_id: int):
+    """将角色资产库中的某张图片设为主头像。"""
+    if not get_companion(companion_id):
+        raise HTTPException(status_code=404, detail="Companion not found")
+    asset = get_companion_asset(companion_id, asset_id)
+    if not asset:
+        raise HTTPException(status_code=404, detail="Asset not found")
+    if not str(asset.get("mime_type") or "").startswith("image/"):
+        raise HTTPException(status_code=400, detail="Selected asset is not an image")
+    rel_path = str(asset.get("rel_path") or "")
+    if not rel_path:
+        raise HTTPException(status_code=400, detail="Asset has no stored file")
+    update_companion(companion_id, {"avatar_path": rel_path})
+    return {"status": "success", "avatar_path": rel_path}
+
+
 # ==================== Branch Management ====================
 
 @router.get("/{companion_id}/branches")
@@ -625,6 +952,46 @@ async def get_companion_branches(companion_id: str):
         raise HTTPException(status_code=404, detail="Companion not found")
     branches = get_branches(companion_id)
     return {"branches": branches}
+
+
+class CardHudUpdateRequest(BaseModel):
+    hud: Optional[Dict[str, Any]] = None
+    enabled: Optional[bool] = None
+    clear_enabled: bool = False
+
+
+@router.get("/{companion_id}/branches/{branch_id}/hud")
+async def get_companion_branch_hud(companion_id: str, branch_id: str):
+    """获取单人对话分支的 HUD 状态与启用配置。"""
+    if not get_companion(companion_id):
+        raise HTTPException(status_code=404, detail="Companion not found")
+    return get_branch_hud(companion_id, branch_id)
+
+
+@router.put("/{companion_id}/branches/{branch_id}/hud")
+async def put_companion_branch_hud(
+    companion_id: str,
+    branch_id: str,
+    request: CardHudUpdateRequest,
+):
+    """更新单人对话分支的 HUD 状态或开关。"""
+    if not get_companion(companion_id):
+        raise HTTPException(status_code=404, detail="Companion not found")
+    return update_branch_hud(
+        companion_id,
+        branch_id,
+        hud=request.hud,
+        enabled=request.enabled,
+        clear_enabled=request.clear_enabled,
+    )
+
+
+@router.post("/{companion_id}/branches/{branch_id}/hud/reset")
+async def reset_companion_branch_hud(companion_id: str, branch_id: str):
+    """重置单人对话分支的 HUD 状态字段（保留开关设置）。"""
+    if not get_companion(companion_id):
+        raise HTTPException(status_code=404, detail="Companion not found")
+    return update_branch_hud(companion_id, branch_id, hud={})
 
 
 @router.post("/{companion_id}/branches")

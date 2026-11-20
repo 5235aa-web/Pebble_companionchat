@@ -18,8 +18,10 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 # backend.paths calls ensure_dirs() at import time, so this has to run first.
-# setdefault keeps whatever run_all.py already chose.
-os.environ.setdefault('PEBBLE_DATA_ROOT', tempfile.mkdtemp(prefix='pebble-test-'))
+# The guard keeps whatever run_all.py already chose; a bare setdefault would
+# create a throwaway directory on every import and leak the unused ones.
+if not os.environ.get('PEBBLE_DATA_ROOT'):
+    os.environ['PEBBLE_DATA_ROOT'] = tempfile.mkdtemp(prefix='pebble-test-')
 
 # A pid no real process can hold, used by the stand-ins below. Keeping it far
 # above the usual allocation range matters: OpenProcess on a live pid would put

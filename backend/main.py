@@ -184,7 +184,7 @@ def _write_thumb(src: Path, dst: Path, width: int) -> None:
 
 # Formats the thumbnailer may serve. Anything else under the uploads tree, and
 # everything outside it, is rejected before a byte is read.
-THUMB_SERVABLE_SUFFIXES = {".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp"}
+THUMB_SERVABLE_SUFFIXES = {".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp", ".avif", ".apng"}
 
 
 @app.get("/thumbs/{path:path}")

@@ -1,25 +1,31 @@
 <script setup lang="ts">
-import { reactive, ref, watch } from 'vue'
+import { computed, reactive, ref, watch } from 'vue'
 import { useUiStore } from '@/stores/ui'
 import { useSessionStore } from '@/stores/session'
+import { useCardAudioStore } from '@/stores/cardAudio'
 import { useI18n } from '@/i18n'
 import type { CharacterCard } from '@/data/character'
 import {
   createCompanion,
+  deleteCompanionAsset,
   exportCompanion,
   getCompanion,
+  setAvatarFromAsset,
   updateCompanion,
+  uploadCompanionAsset,
   uploadCompanionAvatar,
   type Companion,
+  type CompanionAsset,
 } from '@/api/companion'
-import { useFileUrl } from '@/composables/useFileUrl'
+import { useFileUrl, useFileUrls } from '@/composables/useFileUrl'
 import { getTtsVoices } from '@/api/tts'
 
 const ui = useUiStore()
 const session = useSessionStore()
+const cardAudio = useCardAudioStore()
 const { t } = useI18n()
 
-const empty: CharacterCard = {
+const makeEmpty = (): CharacterCard => ({
   avatar: '',
   name: '',
   role: '',
@@ -28,6 +34,7 @@ const empty: CharacterCard = {
   personality: '',
   scenario: '',
   firstMes: '',
+  alternateGreetings: [],
   mesExample: '',
   advancedPrompt: '',
   systemPrompt: '',
@@ -37,9 +44,9 @@ const empty: CharacterCard = {
   raw: '',
   ttsVoiceRef: '',
   ttsVoiceId: '',
-}
+})
 
-const card = reactive<CharacterCard>({ ...empty })
+const card = reactive<CharacterCard>(makeEmpty())
 
 // Declared after `card`: the composable reads the source immediately, and a
 // reference before the const is initialised throws a TDZ error at mount time.
@@ -59,9 +66,46 @@ const voiceClips = ref<string[]>([])
 const collapsed = reactive({
   identity: false,
   voice: false,
+  assets: true,
+  assetsImages: true,
+  assetsAudio: true,
   tts: true,
   hood: true,
 })
+
+const IMAGE_PAGE = 36
+const imageLimit = ref(IMAGE_PAGE)
+const assetFilter = ref('')
+
+const filteredImages = computed(() => {
+  const q = assetFilter.value.trim().toLowerCase()
+  if (!q) return session.imageAssets
+  return session.imageAssets.filter(
+    (a) =>
+      a.name.toLowerCase().includes(q) ||
+      a.asset_type.toLowerCase().includes(q),
+  )
+})
+
+const visibleImages = computed(() => filteredImages.value.slice(0, imageLimit.value))
+const remainingImages = computed(() =>
+  Math.max(0, filteredImages.value.length - visibleImages.value.length),
+)
+
+// Only load thumbnails for currently visible items while the panel AND the
+// Images sub-section are actually expanded (prevents loading 2000+ images at rest).
+const assetThumbMap = useFileUrls(() => {
+  if (!ui.isOpen('profile') || collapsed.assets || collapsed.assetsImages) return []
+  return visibleImages.value.map((a) => a.rel_path).filter(Boolean)
+}, 256)
+
+const assetCountLabel = computed(() => {
+  const n = session.companionAssets.length
+  return n > 0 ? `${t('card.assets')} (${n})` : t('card.assets')
+})
+const exportingLabel = ref('')
+const assetInput = ref<HTMLInputElement | null>(null)
+const uploadingAsset = ref(false)
 
 const fromCompanion = (c: Companion): CharacterCard => ({
   avatar: c.avatar_path || '',
@@ -72,6 +116,7 @@ const fromCompanion = (c: Companion): CharacterCard => ({
   personality: c.personality || '',
   scenario: c.scenario || '',
   firstMes: c.first_mes || '',
+  alternateGreetings: [...(c.alternate_greetings ?? [])],
   mesExample: c.mes_example || '',
   advancedPrompt: c.advanced_prompt || '',
   systemPrompt: c.system_prompt || '',
@@ -88,18 +133,24 @@ async function load() {
   // A draft is a card that does not exist yet: blank it out instead of loading
   // whichever companion happens to be selected behind the panel.
   if (ui.newCastDraft) {
-    Object.assign(card, empty)
+    Object.assign(card, makeEmpty())
     error.value = ''
     return
   }
   const id = session.activeCompanionId
   if (!id) {
-    Object.assign(card, empty)
+    Object.assign(card, makeEmpty())
     return
   }
+  imageLimit.value = IMAGE_PAGE
+  assetFilter.value = ''
   try {
-    const c = await getCompanion(id)
-    Object.assign(card, c ? fromCompanion(c) : empty)
+    const [c] = await Promise.all([getCompanion(id), session.loadCompanionAssets(id)])
+    Object.assign(card, c ? fromCompanion(c) : makeEmpty())
+    // Keep image/audio sub-groups collapsed by default so large 2000+ asset
+    // cards never lag or bury the rest of the editor.
+    collapsed.assetsImages = true
+    collapsed.assetsAudio = session.audioAssets.length === 0
   } catch (e) {
     error.value = e instanceof Error ? e.message : String(e)
   }
@@ -145,6 +196,7 @@ async function save() {
       personality: card.personality,
       scenario: card.scenario,
       first_mes: card.firstMes,
+      alternate_greetings: card.alternateGreetings.filter((s) => s.trim().length > 0),
       mes_example: card.mesExample,
       advanced_prompt: card.advancedPrompt,
       system_prompt: card.systemPrompt,
@@ -205,6 +257,77 @@ async function onAvatarPicked(e: Event) {
   }
 }
 
+async function exportCharx() {
+  const id = session.activeCompanionId
+  if (!id || exportingLabel.value) return
+  error.value = ''
+  exportingLabel.value = t('card.exporting', { pct: 0 })
+  try {
+    const blob = await exportCompanion(id, 'charx', (pct) => {
+      exportingLabel.value = t('card.exporting', { pct })
+    })
+    download(blob, (card.name || id) + '.charx')
+  } catch (err) {
+    error.value = err instanceof Error ? err.message : String(err)
+  } finally {
+    exportingLabel.value = ''
+  }
+}
+
+function pickAssetFiles() {
+  assetInput.value?.click()
+}
+
+async function onAssetFilesPicked(e: Event) {
+  const input = e.target as HTMLInputElement
+  const files = Array.from(input.files ?? [])
+  input.value = ''
+  const id = session.activeCompanionId
+  if (!files.length || !id) return
+  uploadingAsset.value = true
+  error.value = ''
+  try {
+    for (const file of files) {
+      const kind = file.type.startsWith('audio/')
+        ? 'audio'
+        : file.type.startsWith('image/')
+          ? 'image'
+          : 'other'
+      await uploadCompanionAsset(id, file, kind)
+    }
+    await Promise.all([session.loadCompanionAssets(id), session.loadCompanions()])
+  } catch (err) {
+    error.value = err instanceof Error ? err.message : String(err)
+  } finally {
+    uploadingAsset.value = false
+  }
+}
+
+async function makeAvatar(asset: CompanionAsset) {
+  const id = session.activeCompanionId
+  if (!id) return
+  try {
+    const r = await setAvatarFromAsset(id, asset.id)
+    card.avatar = r.avatar_path
+    await session.loadCompanions()
+  } catch (err) {
+    error.value = err instanceof Error ? err.message : String(err)
+  }
+}
+
+async function removeAsset(asset: CompanionAsset) {
+  const id = session.activeCompanionId
+  if (!id) return
+  try {
+    if (cardAudio.bgmAssetId === asset.id) cardAudio.stopBgm()
+    if (cardAudio.sfxAssetId === asset.id) cardAudio.stopSfx()
+    await deleteCompanionAsset(id, asset.id)
+    await Promise.all([session.loadCompanionAssets(id), session.loadCompanions()])
+  } catch (err) {
+    error.value = err instanceof Error ? err.message : String(err)
+  }
+}
+
 async function exportPng() {
   const id = session.activeCompanionId
   if (!id) return
@@ -235,6 +358,14 @@ function addTag() {
   card.tags.push(v)
   newTag.value = ''
 }
+
+function addGreeting() {
+  card.alternateGreetings.push('')
+}
+
+function removeGreeting(index: number) {
+  card.alternateGreetings.splice(index, 1)
+}
 </script>
 
 <template>
@@ -255,8 +386,15 @@ function addTag() {
           <div class="pf-role">{{ card.role }}</div>
         </div>
         <div v-if="!ui.newCastDraft" class="pf-exports">
-          <button class="mini-btn" @click="exportPng">{{ t('card.exportPng') }}</button>
-          <button class="mini-btn" @click="exportJson">{{ t('card.exportJson') }}</button>
+          <button class="mini-btn primary" :disabled="!!exportingLabel" @click="exportCharx">
+            {{ exportingLabel || t('card.exportCharx') }}
+          </button>
+          <button class="mini-btn" :disabled="!!exportingLabel" @click="exportPng">
+            {{ t('card.exportPng') }}
+          </button>
+          <button class="mini-btn" :disabled="!!exportingLabel" @click="exportJson">
+            {{ t('card.exportJson') }}
+          </button>
         </div>
         <button class="d-close" @click="ui.closePanel('profile')">
           <svg viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18" /></svg>
@@ -316,12 +454,186 @@ function addTag() {
               <textarea v-model="card.firstMes" class="pf-area" rows="3"></textarea>
             </div>
             <div class="pf-field">
+              <div class="pf-field-head">
+                <label>{{ t('card.alternateGreetings') }}</label>
+                <button type="button" class="pf-raw-toggle" @click="addGreeting">
+                  + {{ t('card.addGreeting') }}
+                </button>
+              </div>
+              <div v-if="card.alternateGreetings.length" class="pf-greet-list">
+                <div
+                  v-for="(_, i) in card.alternateGreetings"
+                  :key="i"
+                  class="pf-greet-item"
+                >
+                  <div class="pf-greet-meta">
+                    <span>#{{ i + 1 }}</span>
+                    <button
+                      type="button"
+                      class="pf-asset-btn danger"
+                      aria-label="remove greeting"
+                      @click="removeGreeting(i)"
+                    >
+                      ×
+                    </button>
+                  </div>
+                  <textarea
+                    v-model="card.alternateGreetings[i]"
+                    class="pf-area"
+                    rows="3"
+                  ></textarea>
+                </div>
+              </div>
+            </div>
+            <div class="pf-field">
               <label>{{ t('card.conversationExamples') }}</label>
               <textarea v-model="card.mesExample" class="pf-area" rows="4"></textarea>
             </div>
             <div class="pf-field">
               <label>{{ t('card.advancedPrompt') }}</label>
               <textarea v-model="card.advancedPrompt" class="pf-area" rows="3"></textarea>
+            </div>
+          </div>
+        </div>
+
+        <!-- Media assets (CHARX images, expressions, music, SFX) -->
+        <div v-if="!ui.newCastDraft" class="pf-group" :class="{ collapsed: collapsed.assets }">
+          <div class="pf-glabel" data-group @click="collapsed.assets = !collapsed.assets">
+            <svg class="caret" viewBox="0 0 24 24"><path d="M6 9l6 6 6-6" /></svg>
+            <span>{{ assetCountLabel }}</span>
+          </div>
+          <div class="pf-fields">
+            <div class="pf-asset-bar">
+              <button class="mini-btn" type="button" :disabled="uploadingAsset" @click="pickAssetFiles">
+                {{ t('card.assetsAdd') }}
+              </button>
+              <input
+                ref="assetInput"
+                type="file"
+                accept="image/*,audio/*,video/*"
+                multiple
+                hidden
+                @change="onAssetFilesPicked"
+              />
+            </div>
+
+            <div v-if="!session.companionAssets.length" class="pf-asset-empty">
+              {{ t('card.assetsEmpty') }}
+            </div>
+
+            <div v-if="session.imageAssets.length" class="pf-sub-group">
+              <button
+                type="button"
+                class="pf-sub-toggle"
+                :class="{ collapsed: collapsed.assetsImages }"
+                @click="collapsed.assetsImages = !collapsed.assetsImages"
+              >
+                <svg class="caret" viewBox="0 0 24 24"><path d="M6 9l6 6 6-6" /></svg>
+                <span>{{ t('card.assetsImages') }} ({{ session.imageAssets.length }})</span>
+              </button>
+              <div v-if="!collapsed.assetsImages" class="pf-sub-body">
+                <input
+                  v-model="assetFilter"
+                  class="pf-input pf-asset-filter"
+                  :placeholder="t('card.assetsFilterPlaceholder')"
+                  @input="imageLimit = IMAGE_PAGE"
+                />
+                <div class="pf-asset-grid">
+                  <div v-for="a in visibleImages" :key="a.id" class="pf-asset-card">
+                    <div class="pf-asset-thumb">
+                      <img
+                        v-if="assetThumbMap[a.rel_path]"
+                        :src="assetThumbMap[a.rel_path]"
+                        :alt="a.name"
+                        loading="lazy"
+                      />
+                    </div>
+                    <div class="pf-asset-meta">
+                      <span class="pf-asset-name" :title="a.name">{{ a.name }}</span>
+                      <span class="pf-asset-type">{{ a.asset_type }}</span>
+                    </div>
+                    <div class="pf-asset-actions">
+                      <button
+                        type="button"
+                        class="pf-asset-btn"
+                        :disabled="card.avatar === a.rel_path"
+                        @click="makeAvatar(a)"
+                      >
+                        {{ t('card.assetSetAvatar') }}
+                      </button>
+                      <button
+                        type="button"
+                        class="pf-asset-btn danger"
+                        aria-label="delete asset"
+                        @click="removeAsset(a)"
+                      >
+                        ×
+                      </button>
+                    </div>
+                  </div>
+                </div>
+                <div v-if="remainingImages > 0" class="pf-asset-more">
+                  <button
+                    type="button"
+                    class="mini-btn"
+                    @click="imageLimit += IMAGE_PAGE"
+                  >
+                    {{ t('card.assetsShowMore', { left: remainingImages }) }}
+                  </button>
+                </div>
+              </div>
+            </div>
+
+            <div v-if="session.audioAssets.length" class="pf-sub-group">
+              <button
+                type="button"
+                class="pf-sub-toggle"
+                :class="{ collapsed: collapsed.assetsAudio }"
+                @click="collapsed.assetsAudio = !collapsed.assetsAudio"
+              >
+                <svg class="caret" viewBox="0 0 24 24"><path d="M6 9l6 6 6-6" /></svg>
+                <span>{{ t('card.assetsAudio') }} ({{ session.audioAssets.length }})</span>
+              </button>
+              <div v-if="!collapsed.assetsAudio" class="pf-sub-body">
+                <div class="pf-audio-list">
+                  <div v-for="a in session.audioAssets" :key="a.id" class="pf-audio-row">
+                    <span class="pf-audio-name" :title="a.name">{{ a.name }}</span>
+                    <span class="pf-asset-type">{{ a.asset_type }}</span>
+                    <button
+                      type="button"
+                      class="pf-asset-btn"
+                      :class="{ active: cardAudio.bgmAssetId === a.id && cardAudio.bgmPlaying }"
+                      @click="cardAudio.toggleBgm(a)"
+                    >
+                      {{
+                        cardAudio.bgmAssetId === a.id && cardAudio.bgmPlaying
+                          ? t('card.assetStop')
+                          : t('card.assetPlayBgm')
+                      }}
+                    </button>
+                    <button
+                      type="button"
+                      class="pf-asset-btn"
+                      :class="{ active: cardAudio.sfxAssetId === a.id && cardAudio.sfxPlaying }"
+                      @click="cardAudio.playSfx(a)"
+                    >
+                      {{
+                        cardAudio.sfxAssetId === a.id && cardAudio.sfxPlaying
+                          ? t('card.assetStop')
+                          : t('card.assetPlaySfx')
+                      }}
+                    </button>
+                    <button
+                      type="button"
+                      class="pf-asset-btn danger"
+                      aria-label="delete audio asset"
+                      @click="removeAsset(a)"
+                    >
+                      ×
+                    </button>
+                  </div>
+                </div>
+              </div>
             </div>
           </div>
         </div>

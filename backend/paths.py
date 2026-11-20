@@ -18,13 +18,25 @@ the UI takes effect the next time an engine starts, without touching code.
 
 from __future__ import annotations
 
+import atexit
 import json
 import os
+import shutil
 import sys
+import tempfile
 from pathlib import Path
 from typing import Any, Dict, Optional
 
 APP_DIR_NAME = ".pebblecompanion"
+
+# Entry points that ship to users. A process started from one of these is the
+# real app, never a test run - even if some library pulled ``unittest`` into
+# sys.modules. Without this veto a false positive would move the user's data
+# into a temporary directory that gets deleted on exit.
+_PRODUCTION_ENTRIES = frozenset({
+    "run_backend.py",
+    "pebble-backend.exe",
+})
 
 
 def _is_frozen() -> bool:
@@ -32,11 +44,93 @@ def _is_frozen() -> bool:
     return bool(getattr(sys, "frozen", False))
 
 
+def _real_data_root() -> Path:
+    """The install the user actually runs: never a valid target for a test."""
+    return Path.home() / APP_DIR_NAME
+
+
+def _is_real_data_root(candidate: Path) -> bool:
+    try:
+        return candidate.resolve() == _real_data_root().resolve()
+    except OSError:
+        return False
+
+
+def _looks_like_test_run() -> bool:
+    """True when this interpreter is running the test suite.
+
+    The suite redirects the data root through ``PEBBLE_DATA_ROOT``, but that
+    redirect lives in ``test/__init__.py`` and therefore only runs when the
+    package is imported. A file started directly, a custom ``discover`` script,
+    or an IDE runner skips it, and this module would then resolve to the real
+    ``~/.pebblecompanion`` - where a destructive fixture once wiped the user's
+    configuration.
+
+    Detection is deliberately generous: a false positive only sends the run to
+    a throwaway directory, while a false negative lets a test delete real data.
+    The signals below cover every launcher seen in practice.
+    """
+    if os.getenv("PEBBLE_TESTING") == "1":
+        return True
+    # A frozen build is always the shipped app. Checking it before anything
+    # else removes the one false-positive path that would relocate real data.
+    if _is_frozen():
+        return False
+    if os.getenv("PYTEST_CURRENT_TEST") or os.getenv("PYTEST_ADDOPTS"):
+        return True
+    if "pytest" in sys.modules:
+        return True
+
+    # ``python -m unittest ...`` and any script that passes those words through.
+    argv = " ".join(sys.argv).lower()
+    if "unittest" in argv or "pytest" in argv:
+        return True
+
+    main = sys.modules.get("__main__")
+    if main is None:
+        return False
+    spec = getattr(main, "__spec__", None)
+    if spec is not None and str(getattr(spec, "name", "") or "").startswith("unittest"):
+        return True
+
+    main_file = getattr(main, "__file__", None) or ""
+    if main_file:
+        resolved = Path(main_file).resolve()
+        name = resolved.name.lower()
+        # PyCharm ships _jb_unittest_runner.py / _jb_pytest_runner.py.
+        if "unittest_runner" in name or "pytest_runner" in name:
+            return True
+        # The shipped entry points are never test runs, even if a library
+        # pulled unittest into sys.modules. Checked before that fallback so a
+        # false positive cannot move a user's data into a temp directory.
+        if name in _PRODUCTION_ENTRIES and resolved.parent.name != "test":
+            return False
+        if resolved.parent.name == "test" and resolved.stem.startswith("test_"):
+            return True
+
+    # Last resort: a runner that imported unittest without leaving a marker.
+    return "unittest" in sys.modules
+
+
 def _default_data_root() -> Path:
     override = os.getenv("PEBBLE_DATA_ROOT", "").strip()
     if override:
-        return Path(override).expanduser().resolve()
-    return Path.home() / APP_DIR_NAME
+        root = Path(override).expanduser().resolve()
+        # An explicit override is honoured, except when a test run aims it at
+        # the real install: that is the exact mistake this guard exists to
+        # stop, so fail loudly instead of letting the fixture proceed.
+        if _looks_like_test_run() and _is_real_data_root(root):
+            raise RuntimeError(
+                "refusing to run tests against the real data root "
+                f"{root}; unset PEBBLE_DATA_ROOT so a temporary root is used"
+            )
+        return root
+    if _looks_like_test_run():
+        root = Path(tempfile.mkdtemp(prefix="pebble-test-"))
+        os.environ["PEBBLE_DATA_ROOT"] = str(root)
+        atexit.register(shutil.rmtree, root, ignore_errors=True)
+        return root
+    return _real_data_root()
 
 
 DATA_ROOT = _default_data_root()
@@ -46,6 +140,8 @@ DB_PATH = DATA_ROOT / "companions.db"
 UPLOAD_ROOT = DATA_ROOT / "uploads"
 ATTACHMENT_DIR = UPLOAD_ROOT / "attachments"
 AVATAR_DIR = UPLOAD_ROOT / "companion_avatars"
+COMPANION_ASSETS_DIR = UPLOAD_ROOT / "companion_assets"
+TMP_UPLOAD_DIR = DATA_ROOT / "tmp_uploads"
 CONFIG_DIR = DATA_ROOT / "config"
 LOG_DIR = DATA_ROOT / "logs"
 
@@ -78,6 +174,8 @@ def ensure_dirs() -> None:
         UPLOAD_ROOT,
         ATTACHMENT_DIR,
         AVATAR_DIR,
+        COMPANION_ASSETS_DIR,
+        TMP_UPLOAD_DIR,
         CONFIG_DIR,
         LOG_DIR,
         VOICE_DIR,

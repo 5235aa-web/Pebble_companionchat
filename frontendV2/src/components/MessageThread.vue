@@ -1,14 +1,36 @@
 <script setup lang="ts">
-import { nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
+import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import ChatBeat from './ChatBeat.vue'
-import { useChatStore } from '@/stores/chat'
+import { parseLines, useChatStore } from '@/stores/chat'
 import { useSessionStore } from '@/stores/session'
+import { useUiStore } from '@/stores/ui'
+import { useCardAudioStore } from '@/stores/cardAudio'
+import { useFileUrls } from '@/composables/useFileUrl'
+import { resolveInlineMedia } from '@/utils/inlineMedia'
 import { useI18n } from '@/i18n'
 import { summaryText } from '@/data/chat'
 
 const chat = useChatStore()
 const session = useSessionStore()
+const ui = useUiStore()
+const cardAudio = useCardAudioStore()
 const { t } = useI18n()
+
+const greetingMedia = computed(() => {
+  const raw = session.emptyLine
+  if (!raw) return { images: [], audios: [], cleanedLines: [] }
+  return resolveInlineMedia(parseLines(raw), (refText) => session.findAssetByRef(refText))
+})
+
+const greetingImageMap = useFileUrls(
+  () => greetingMedia.value.images.map((a) => a.rel_path).filter(Boolean),
+  512,
+)
+
+function openGreetingImage(src: string) {
+  ui.galleryTarget = src
+  ui.openPanel('gallery')
+}
 
 const scroller = ref<HTMLElement | null>(null)
 
@@ -112,8 +134,67 @@ onMounted(async () => {
 
       <div v-if="!chat.beats.length" class="empty-stage show">
         <div class="es-mark">&ldquo;</div>
-        <div v-if="chat.activeCast?.name" class="es-name">{{ chat.activeCast?.name }}</div>
-        <p class="es-line">{{ session.emptyLine || t('empty.noMessages') }}</p>
+        <div class="es-head">
+          <div v-if="chat.activeCast?.name" class="es-name">{{ chat.activeCast?.name }}</div>
+          <div v-if="session.greetings.length > 1" class="es-greet-nav">
+            <button
+              type="button"
+              class="es-greet-btn"
+              :aria-label="t('card.greetingPrev')"
+              @click="session.cycleGreeting(-1)"
+            >
+              <svg viewBox="0 0 24 24"><path d="M15 6l-6 6 6 6" /></svg>
+            </button>
+            <span class="es-greet-idx">
+              {{ session.greetingIndex + 1 }} / {{ session.greetings.length }}
+            </span>
+            <button
+              type="button"
+              class="es-greet-btn"
+              :aria-label="t('card.greetingNext')"
+              @click="session.cycleGreeting(1)"
+            >
+              <svg viewBox="0 0 24 24"><path d="M9 6l6 6-6 6" /></svg>
+            </button>
+          </div>
+        </div>
+        <div v-if="greetingMedia.images.length" class="attach-row es-media">
+          <div
+            v-for="a in greetingMedia.images"
+            :key="a.id"
+            class="attach-thumb"
+            @click="openGreetingImage(a.rel_path)"
+          >
+            <img v-if="greetingImageMap[a.rel_path]" :src="greetingImageMap[a.rel_path]" :alt="a.name" />
+          </div>
+        </div>
+        <div v-if="greetingMedia.audios.length" class="inline-audio-row es-media">
+          <button
+            v-for="item in greetingMedia.audios"
+            :key="item.asset.id"
+            type="button"
+            class="inline-audio-pill"
+            :class="{
+              active: item.isBgm
+                ? cardAudio.bgmAssetId === item.asset.id && cardAudio.bgmPlaying
+                : cardAudio.sfxAssetId === item.asset.id && cardAudio.sfxPlaying,
+            }"
+            @click="item.isBgm ? cardAudio.toggleBgm(item.asset) : cardAudio.playSfx(item.asset)"
+          >
+            <span>♪ {{ item.asset.name }}</span>
+          </button>
+        </div>
+        <div v-if="greetingMedia.cleanedLines.length" class="es-lines">
+          <p v-for="(line, i) in greetingMedia.cleanedLines" :key="i" class="es-line">
+            {{ line.text }}
+          </p>
+        </div>
+        <p
+          v-else-if="!greetingMedia.images.length && !greetingMedia.audios.length"
+          class="es-line"
+        >
+          {{ session.emptyLine || t('empty.noMessages') }}
+        </p>
         <div v-if="session.emptyHints.length" class="es-hints">
           <button
             v-for="h in session.emptyHints"

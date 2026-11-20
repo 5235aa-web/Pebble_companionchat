@@ -11,7 +11,9 @@ import { PcmPlayer } from '@/lib/pcmPlayer'
 import { swipeMessage } from '@/api/companion'
 import { useSessionStore } from '@/stores/session'
 import { useCallStore } from '@/stores/call'
+import { useCardAudioStore } from '@/stores/cardAudio'
 import { parseLines } from '@/stores/chat'
+import { resolveInlineMedia } from '@/utils/inlineMedia'
 
 const props = defineProps<{ beat: Beat; index: number }>()
 const chat = useChatStore()
@@ -21,7 +23,17 @@ const tts = useTtsStore()
 const attachMap = useFileUrls(() => (props.beat.attachments || []).map((a) => a.src), 1024)
 const session = useSessionStore()
 const call = useCallStore()
+const cardAudio = useCardAudioStore()
 const { t } = useI18n()
+
+const inlineMedia = computed(() =>
+  resolveInlineMedia(props.beat.lines, (ref) => session.findAssetByRef(ref)),
+)
+
+const inlineImageMap = useFileUrls(
+  () => inlineMedia.value.images.map((a) => a.rel_path).filter(Boolean),
+  512,
+)
 
 const lit = ref(false)
 const thinkingOpen = ref(false)
@@ -316,11 +328,37 @@ function copyLine() {
             <img :src="attachMap[a.src]" :alt="a.alt" />
           </div>
         </div>
+        <div v-if="inlineMedia.images.length" class="attach-row">
+          <div
+            v-for="a in inlineMedia.images"
+            :key="a.id"
+            class="attach-thumb"
+            @click="openImage(a.rel_path)"
+          >
+            <img v-if="inlineImageMap[a.rel_path]" :src="inlineImageMap[a.rel_path]" :alt="a.name" />
+          </div>
+        </div>
+        <div v-if="inlineMedia.audios.length" class="inline-audio-row">
+          <button
+            v-for="item in inlineMedia.audios"
+            :key="item.asset.id"
+            type="button"
+            class="inline-audio-pill"
+            :class="{
+              active: item.isBgm
+                ? cardAudio.bgmAssetId === item.asset.id && cardAudio.bgmPlaying
+                : cardAudio.sfxAssetId === item.asset.id && cardAudio.sfxPlaying,
+            }"
+            @click="item.isBgm ? cardAudio.toggleBgm(item.asset) : cardAudio.playSfx(item.asset)"
+          >
+            <span>♪ {{ item.asset.name }}</span>
+          </button>
+        </div>
         <div v-if="beat.voice" class="beat-lines">
           <p class="say voice-bubble">{{ t('chat.voiceMessage') }}</p>
         </div>
         <div v-else class="beat-lines">
-          <p v-for="(line, i) in beat.lines" :key="i" :class="line.kind">{{ line.text }}</p>
+          <p v-for="(line, i) in inlineMedia.cleanedLines" :key="i" :class="line.kind">{{ line.text }}</p>
           <!-- The unterminated tail of a live reply. Kept as its own paragraph
                so a delta rewrites one text node instead of the whole list. -->
           <p v-if="beat.tail" class="say tail">{{ beat.tail }}<span class="caret"></span></p>

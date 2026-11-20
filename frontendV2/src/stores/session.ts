@@ -9,9 +9,11 @@ import {
   getBranches,
   renameBranch,
   getCompanion,
+  listCompanionAssets,
   listCompanions,
   updateCompanion,
   type Companion,
+  type CompanionAsset,
   type CompanionBranch,
 } from '@/api/companion'
 
@@ -123,6 +125,7 @@ const toCast = (c: Companion): CastMember => ({
   branch: '',
   active: false,
   pinned: Boolean(c.pinned),
+  assetCount: Number(c.asset_count ?? 0),
   ttsVoice: readVoice(c.tts_config),
 })
 
@@ -177,8 +180,16 @@ export const useSessionStore = defineStore('session', () => {
   const sceneBreak = ref('')
 
   /* ---- empty state copy comes from the loaded character ---- */
-  const emptyLine = ref('')
+  const greetings = ref<string[]>([])
+  const greetingIndex = ref(0)
+  const emptyLine = computed(() => greetings.value[greetingIndex.value] ?? '')
   const emptyHints = ref<string[]>([])
+
+  function cycleGreeting(step: number) {
+    const n = greetings.value.length
+    if (n < 2) return
+    greetingIndex.value = (greetingIndex.value + step + n) % n
+  }
 
   const error = ref('')
 
@@ -192,13 +203,69 @@ export const useSessionStore = defineStore('session', () => {
     companions.value.find((c) => c.id === activeCompanionId.value),
   )
 
+  const companionAssets = ref<CompanionAsset[]>([])
+  const imageAssets = computed(() =>
+    companionAssets.value.filter((a) => (a.mime_type || '').startsWith('image/')),
+  )
+  const audioAssets = computed(() =>
+    companionAssets.value.filter((a) => (a.mime_type || '').startsWith('audio/')),
+  )
+
+  async function loadCompanionAssets(id = activeCompanionId.value) {
+    if (!id) {
+      companionAssets.value = []
+      return
+    }
+    try {
+      const list = await listCompanionAssets(id)
+      if (activeCompanionId.value === id) companionAssets.value = list
+    } catch {
+      if (activeCompanionId.value === id) companionAssets.value = []
+    }
+  }
+
+  function findAssetByRef(refText: string): CompanionAsset | undefined {
+    const q = (refText || '').trim().toLowerCase()
+    if (!q) return undefined
+    const stripped = q
+      .replace(/^embeded:\/\//, '')
+      .replace(/^embedded:\/\//, '')
+      .replace(/^__asset:/, '')
+    const base = stripped.split('/').pop() || stripped
+    const stem = base.replace(/\.[^.]+$/, '')
+    return companionAssets.value.find((a) => {
+      const name = (a.name || '').toLowerCase()
+      const uri = (a.source_uri || '').toLowerCase()
+      const relBase = (a.rel_path.split('/').pop() || '').toLowerCase()
+      return (
+        name === q ||
+        name === base ||
+        name === stem ||
+        uri === q ||
+        uri.endsWith('/' + stripped) ||
+        relBase === base
+      )
+    })
+  }
+
   function applyCompanion(c: Companion) {
     act.value = c.name || c.id
     scenario.value = c.scenario || ''
     const name = resolveUserName(c.user_info)
     userName.value = name
-    // The greeting is card text, so it carries macros like any other field.
-    emptyLine.value = resolvePlaceholders(c.first_mes || '', c.name || '', name)
+    // Greetings are card text, so first_mes and alternate_greetings both
+    // carry macros like {{char}} / {{user}}.
+    const list: string[] = []
+    if ((c.first_mes || '').trim()) {
+      list.push(resolvePlaceholders(c.first_mes, c.name || '', name))
+    }
+    for (const alt of c.alternate_greetings ?? []) {
+      if (typeof alt === 'string' && alt.trim()) {
+        list.push(resolvePlaceholders(alt, c.name || '', name))
+      }
+    }
+    greetings.value = list
+    greetingIndex.value = 0
     companions.value = companions.value.map((m) => ({
       ...m,
       active: m.id === c.id,
@@ -255,10 +322,11 @@ export const useSessionStore = defineStore('session', () => {
     activeBranch.value = readBranchMap()[id] ?? ''
     branchTitle.value = ''
     inPlay.value = []
+    companionAssets.value = []
     companions.value = companions.value.map((m) => ({ ...m, active: m.id === id }))
     error.value = ''
     try {
-      const full = await getCompanion(id)
+      const [full] = await Promise.all([getCompanion(id), loadCompanionAssets(id)])
       if (full) applyCompanion(full)
       await loadBranches()
     } catch (e) {
@@ -392,10 +460,18 @@ export const useSessionStore = defineStore('session', () => {
     tokenPct,
     tokenPctText,
     sceneBreak,
+    greetings,
+    greetingIndex,
+    cycleGreeting,
     emptyLine,
     userName,
     emptyHints,
     loadCompanions,
+    companionAssets,
+    imageAssets,
+    audioAssets,
+    loadCompanionAssets,
+    findAssetByRef,
     selectCompanion,
     togglePin,
     loadBranches,

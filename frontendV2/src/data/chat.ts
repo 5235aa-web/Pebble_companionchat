@@ -83,6 +83,7 @@ export interface CastMember {
   branch: string
   active: boolean
   pinned?: boolean
+  assetCount?: number
   /**
    * Voice this character speaks in, stored on the companion row as
    * `tts_config`. Only identity is kept here; the engine and its sampling

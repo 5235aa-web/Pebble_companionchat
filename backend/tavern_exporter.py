@@ -8,10 +8,11 @@ import base64
 import struct
 import zlib
 from pathlib import Path
-
-from .paths import DATA_ROOT
-from typing import Dict, Optional
+from typing import Dict, List, Optional
 from io import BytesIO
+
+from . import paths
+from .charx import build_charx_archive
 
 
 def _create_v3_card(companion_data: Dict) -> Dict:
@@ -63,8 +64,10 @@ def _create_v3_card(companion_data: Dict) -> Dict:
         }
     }
     
-    # V3格式包装
+    # V3格式包装（同时保留 spec/spec_version 供 CCv3/CHARX 读取器识别，以及 version=3 保持向后兼容）
     return {
+        "spec": "chara_card_v3",
+        "spec_version": "3.0",
         "data": card_data,
         "version": 3
     }
@@ -148,7 +151,7 @@ def export_to_png(companion_data: Dict, avatar_bytes: Optional[bytes] = None) ->
                 try:
                     # 处理相对路径
                     if avatar_path.startswith('uploads/'):
-                        base_path = DATA_ROOT
+                        base_path = paths.DATA_ROOT
                         full_path = base_path / avatar_path
                     else:
                         full_path = Path(avatar_path)
@@ -251,6 +254,20 @@ def _create_default_png() -> bytes:
         0x49, 0x45, 0x4E, 0x44,  # IEND
         0xAE, 0x42, 0x60, 0x82,  # IEND CRC
     ])
+
+
+def export_to_charx_file(
+    companion_data: Dict,
+    assets: Optional[List[Dict]],
+    dest_path: Path,
+) -> Path:
+    """流式打包导出角色卡为 .charx (CCv3 ZIP) 文件。"""
+    return build_charx_archive(
+        companion_data=companion_data,
+        assets=assets or [],
+        card_payload_builder=_create_v3_card,
+        dest_path=dest_path,
+    )
 
 
 def get_export_filename(companion_data: Dict, format: str = 'json') -> str:

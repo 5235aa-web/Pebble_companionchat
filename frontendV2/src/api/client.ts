@@ -357,6 +357,10 @@ export const onSocketReady = (fn: () => void): (() => void) => socket.onReady(fn
 export const binaryRequest = (path: string, body: unknown): Promise<Uint8Array> =>
   socket.binary(path, body, 'POST')
 
+/** Fetch raw bytes over the `/ws` bridge via GET (used for Tauri card/asset downloads). */
+export const binaryGetRequest = (path: string): Promise<Uint8Array> =>
+  socket.binary(path, undefined, 'GET')
+
 /**
  * POST and consume the response as it streams in.
  *
@@ -490,7 +494,22 @@ export function getFileUrl(filePath: string): string {
   return filePath.startsWith('/') ? `${base}${filePath}` : `${base}/${filePath}`
 }
 
+const MAX_BLOB_CACHE = 160
 const blobCache = new Map<string, string>()
+
+function rememberBlobUrl(key: string, url: string): void {
+  if (blobCache.has(key)) {
+    blobCache.delete(key)
+  } else if (blobCache.size >= MAX_BLOB_CACHE) {
+    const oldestKey = blobCache.keys().next().value
+    if (oldestKey !== undefined) {
+      const oldestUrl = blobCache.get(oldestKey)
+      blobCache.delete(oldestKey)
+      if (oldestUrl) URL.revokeObjectURL(oldestUrl)
+    }
+  }
+  blobCache.set(key, url)
+}
 
 /**
  * MIME for a stored file, derived from its extension.
@@ -549,13 +568,29 @@ export async function fileUrl(path: string, width = 0): Promise<string> {
   const key = `${width}:${clean}`
 
   const hit = blobCache.get(key)
-  if (hit) return hit
+  if (hit) {
+    // Refresh LRU position without recreating the URL.
+    blobCache.delete(key)
+    blobCache.set(key, hit)
+    return hit
+  }
 
   const bytes = await socket.binary(request)
   // Scaled copies come back as WebP regardless of the source format, so the
   // Blob type has to follow the request rather than the path's extension.
   const type = width > 0 ? 'image/webp' : mimeFor(clean)
   const url = URL.createObjectURL(new Blob([bytes as BlobPart], { type }))
-  blobCache.set(key, url)
+  rememberBlobUrl(key, url)
   return url
+}
+
+/** Encode a Uint8Array chunk to base64 safely without overflowing the call stack. */
+export function bytesToBase64(bytes: Uint8Array): string {
+  let binary = ''
+  const step = 0x4000
+  for (let i = 0; i < bytes.length; i += step) {
+    const sub = bytes.subarray(i, Math.min(i + step, bytes.length))
+    binary += String.fromCharCode(...sub)
+  }
+  return btoa(binary)
 }

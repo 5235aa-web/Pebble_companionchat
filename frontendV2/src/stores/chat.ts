@@ -20,6 +20,7 @@ import {
 import { useSessionStore } from './session'
 import { useLlmStore } from './llm'
 import { useScriptStore } from './script'
+import { useCardHudStore } from './cardHud'
 import type { SceneSummary } from '@/api/script'
 import { compactBranch } from '@/api/compaction'
 import { formatClock } from '@/utils/time'
@@ -372,6 +373,11 @@ export const useChatStore = defineStore('chat', () => {
             (chunk.hud as Record<string, unknown>) ?? {},
             Boolean(chunk.scene_done),
             Number(chunk.turns_done ?? 0),
+          )
+        } else if (chunk.type === 'card_hud') {
+          useCardHudStore().applyStreamUpdate(
+            (chunk.hud as Record<string, unknown>) ?? {},
+            (chunk.media_cue as Record<string, unknown>) ?? {},
           )
         } else if (chunk.type === 'error') {
           error.value = chunk.message ?? 'stream error'

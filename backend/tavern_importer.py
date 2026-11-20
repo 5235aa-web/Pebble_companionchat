@@ -6,13 +6,16 @@ tavern_importer.py - 角色卡导入器。
 """
 import json
 import base64
+import shutil
 import struct
+import tempfile
 import uuid
 from pathlib import Path
 from typing import Dict, Optional
 
-from .companion_db import create_companion
-from .paths import AVATAR_DIR
+from . import paths
+from .charx import extract_charx_package, is_zip_container
+from .companion_db import add_companion_assets, create_companion
 
 
 def _read_png_chara_data(png_path: str) -> str:
@@ -199,7 +202,7 @@ def _extract_horde_avatar(raw: Dict, companion_id: str) -> Optional[str]:
         return None
     if not blob or len(blob) > 20 * 1024 * 1024:
         return None
-    avatars_dir = AVATAR_DIR
+    avatars_dir = paths.AVATAR_DIR
     avatars_dir.mkdir(parents=True, exist_ok=True)
     filename = f"{companion_id}.{ext}"
     (avatars_dir / filename).write_bytes(blob)
@@ -307,13 +310,99 @@ def import_png(png_path: str) -> str:
     return companion_id
 
 
+def import_charx(charx_path: str) -> str:
+    """
+    导入 CHARX（CCv3 ZIP 容器）角色卡，提取文本与多媒体资产（图片、音频等）。
+    不处理任何世界书字段。
+    返回: companion_id
+    """
+    companion_id = f"companion_{uuid.uuid4().hex[:12]}"
+    raw_card, assets, avatar_rel = extract_charx_package(Path(charx_path), companion_id)
+    normalized = _normalize_card_data(raw_card)
+
+    created = create_companion(
+        companion_id=companion_id,
+        fields=normalized,
+        avatar_path=avatar_rel,
+        raw_card_data=_safe_raw_card_dump(raw_card),
+    )
+    if not created:
+        shutil.rmtree(paths.COMPANION_ASSETS_DIR / companion_id, ignore_errors=True)
+        raise RuntimeError(f"Failed to persist companion {companion_id}")
+
+    if assets:
+        add_companion_assets(companion_id, assets)
+    return companion_id
+
+
+def import_card_file(file_path: str, file_type: Optional[str] = None) -> str:
+    """
+    从磁盘文件流式导入角色卡（支持 .charx / .zip / .png / .json）。
+    适用于大文件上传落盘后的解析，不将整个包体读入内存。
+    """
+    path = Path(file_path)
+    kind = (file_type or "").strip().lower().lstrip(".")
+    if not kind:
+        kind = path.suffix.lower().lstrip(".")
+
+    if kind in ("charx", "zip") or is_zip_container(path):
+        return import_charx(str(path))
+
+    if kind == "json":
+        with open(path, "r", encoding="utf-8") as f:
+            raw = json.load(f)
+        normalized = _normalize_card_data(raw)
+        companion_id = f"companion_{uuid.uuid4().hex[:12]}"
+        avatar_path = None
+        if raw.get("_format") == HORDE_FORMAT_TAG:
+            avatar_path = _extract_horde_avatar(raw, companion_id)
+        create_companion(
+            companion_id=companion_id,
+            fields=normalized,
+            avatar_path=avatar_path,
+            raw_card_data=_safe_raw_card_dump(raw),
+        )
+        return companion_id
+
+    if kind == "png":
+        json_str = _read_png_chara_data(str(path))
+        raw = json.loads(json_str)
+        normalized = _normalize_card_data(raw)
+        companion_id = f"companion_{uuid.uuid4().hex[:12]}"
+        avatars_dir = paths.AVATAR_DIR
+        avatars_dir.mkdir(parents=True, exist_ok=True)
+        avatar_filename = f"{companion_id}.png"
+        shutil.copyfile(path, avatars_dir / avatar_filename)
+        avatar_rel_path = f"uploads/companion_avatars/{avatar_filename}"
+        create_companion(
+            companion_id=companion_id,
+            fields=normalized,
+            avatar_path=avatar_rel_path,
+            raw_card_data=_safe_raw_card_dump(raw),
+        )
+        return companion_id
+
+    raise ValueError(f"Unsupported file_type: {kind or 'unknown'}. Use 'charx', 'png', or 'json'.")
+
+
 def import_from_bytes(file_bytes: bytes, file_type: str) -> str:
     """
     从字节流导入（用于API上传场景）。
-    file_type: 'json' 或 'png'
+    file_type: 'json'、'png' 或 'charx'
     返回: companion_id
     """
-    if file_type == 'json':
+    if file_type in ('charx', 'zip'):
+        with tempfile.NamedTemporaryFile(suffix='.charx', delete=False) as tmp:
+            tmp.write(file_bytes)
+            tmp_path = Path(tmp.name)
+        try:
+            return import_charx(str(tmp_path))
+        finally:
+            try:
+                tmp_path.unlink()
+            except OSError:
+                pass
+    elif file_type == 'json':
         raw = json.loads(file_bytes.decode('utf-8'))
         normalized = _normalize_card_data(raw)
         companion_id = f"companion_{uuid.uuid4().hex[:12]}"
@@ -336,7 +425,7 @@ def import_from_bytes(file_bytes: bytes, file_type: str) -> str:
         normalized = _normalize_card_data(raw)
         companion_id = f"companion_{uuid.uuid4().hex[:12]}"
         # 保存PNG到companions专属头像目录
-        avatars_dir = AVATAR_DIR
+        avatars_dir = paths.AVATAR_DIR
         avatars_dir.mkdir(parents=True, exist_ok=True)
         avatar_filename = f"{companion_id}.png"
         avatar_path_obj = avatars_dir / avatar_filename
@@ -352,7 +441,7 @@ def import_from_bytes(file_bytes: bytes, file_type: str) -> str:
         )
         return companion_id
     else:
-        raise ValueError(f"Unsupported file_type: {file_type}. Use 'json' or 'png'.")
+        raise ValueError(f"Unsupported file_type: {file_type}. Use 'json', 'png', or 'charx'.")
 
 
 def _read_png_bytes_chara_data(png_bytes: bytes) -> str:

@@ -2,7 +2,15 @@ import { getBaseURL, streamRequest, useSocket } from './client'
 import type { GenerationMeta } from '@/data/chat'
 
 export interface ChatChunk {
-  type: 'content' | 'thinking' | 'done' | 'error' | 'stt_transcript' | 'script_state' | 'speaker'
+  type:
+    | 'content'
+    | 'thinking'
+    | 'done'
+    | 'error'
+    | 'stt_transcript'
+    | 'script_state'
+    | 'card_hud'
+    | 'speaker'
   content?: string
   final_content?: string
   message?: string
@@ -10,8 +18,10 @@ export interface ChatChunk {
   speaker?: { companion_id?: string; name?: string }
   /** Present on a group turn's first frame when a user/narration line was persisted. */
   user_message?: { id: number; [key: string]: unknown }
-  /** Present on a script_state frame: the scene HUD and its completion flag. */
+  /** Present on script_state / card_hud frames: live HUD state. */
   hud?: Record<string, unknown>
+  /** Present on a card_hud frame: expression / scene / bgm / sfx triggers. */
+  media_cue?: Record<string, unknown>
   scene_done?: boolean
   turns_done?: number
   /** Present on the done frame: the id the assistant message was stored under. */

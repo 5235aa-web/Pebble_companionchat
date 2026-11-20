@@ -7,6 +7,7 @@ export interface CharacterCard {
   personality: string
   scenario: string
   firstMes: string
+  alternateGreetings: string[]
   mesExample: string
   advancedPrompt: string
   systemPrompt: string
@@ -30,6 +31,7 @@ export const characterCard: CharacterCard = {
   personality: '',
   scenario: '',
   firstMes: '',
+  alternateGreetings: [],
   mesExample: '',
   advancedPrompt: '',
   systemPrompt: '',

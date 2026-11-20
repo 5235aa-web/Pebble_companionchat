@@ -5,13 +5,24 @@ import { useSessionStore } from '@/stores/session'
 import { useFileUrl } from '@/composables/useFileUrl'
 import { useChatStore } from '@/stores/chat'
 import { usePictureStore } from '@/stores/pictures'
+import { useCardAudioStore } from '@/stores/cardAudio'
+import { useCardHudStore } from '@/stores/cardHud'
+import { useScriptStore } from '@/stores/script'
+import CardHudPanel from './CardHudPanel.vue'
 import { useI18n } from '@/i18n'
 
 const ui = useUiStore()
 const session = useSessionStore()
 const chat = useChatStore()
 const pictures = usePictureStore()
+const cardAudio = useCardAudioStore()
+const cardHud = useCardHudStore()
+const script = useScriptStore()
 const { t } = useI18n()
+
+const inScene = computed(
+  () => Boolean(script.playing && script.session?.branch_id === session.activeBranch),
+)
 
 const expanded = ref(false)
 const who = computed(() => chat.activeCast)
@@ -39,6 +50,10 @@ const slides = computed<Slide[]>(() => {
   }))
   const avatar = who.value?.avatar
   if (avatar) out.push({ key: 'avatar', url: avatar, kind: 'avatar' })
+  for (const a of session.imageAssets) {
+    if (!a.rel_path || a.rel_path === avatar) continue
+    out.push({ key: `asset-${a.id}`, url: a.rel_path, kind: 'avatar' })
+  }
   return out
 })
 
@@ -113,6 +128,22 @@ watch(
   () => slides.value.length,
   (n) => {
     if (slideIndex.value >= n) slideIndex.value = Math.max(0, n - 1)
+  },
+)
+
+// When the Stage HUD matches an expression or scene portrait, switch the
+// stage slide to that image automatically; clearing returns to main portrait.
+watch(
+  () => cardHud.stageOverrideRelPath,
+  (relPath) => {
+    if (!slides.value.length) return
+    if (relPath) {
+      const idx = slides.value.findIndex((s) => s.url === relPath)
+      if (idx >= 0) slideIndex.value = idx
+    } else {
+      const avatarIdx = slides.value.findIndex((s) => s.key === 'avatar')
+      slideIndex.value = avatarIdx >= 0 ? avatarIdx : 0
+    }
   },
 )
 
@@ -219,6 +250,7 @@ onMounted(() => {
 
 <template>
   <aside class="scene" :class="{ expanded }">
+    <CardHudPanel v-if="who && !inScene && ui.view !== 'group'" />
     <div
       class="scene-photo"
       :class="{ 'has-picture': !!shownUrl, dragging }"
@@ -306,6 +338,12 @@ onMounted(() => {
             <circle cx="9" cy="9.5" r="1.3" />
           </svg>
           <span>{{ pictures.doneItems.length }}</span>
+        </button>
+      </div>
+
+      <div v-if="cardAudio.bgmPlaying" class="scene-tools">
+        <button class="sc-open" type="button" @click="cardAudio.stopBgm()">
+          <span>♪ {{ cardAudio.bgmName }} · {{ t('card.assetStop') }}</span>
         </button>
       </div>
 

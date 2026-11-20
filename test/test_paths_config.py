@@ -8,6 +8,7 @@ which engine the user picked.
 import json
 import os
 import shutil
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -46,13 +47,29 @@ class PersistenceTest(unittest.TestCase):
         self.reg._active_id = 'qwen3_asr'
 
     def test_save_recreates_a_missing_config_dir(self):
-        shutil.rmtree(paths.CONFIG_DIR, ignore_errors=True)
-        self.assertFalse(paths.CONFIG_DIR.exists())
-        self.reg._active_id = 'confucius4_r2t2'
-        self.reg._save_active_to_file()
-        self.assertTrue(paths.STT_PROVIDERS_PATH.is_file())
-        with open(paths.STT_PROVIDERS_PATH, encoding='utf-8') as handle:
-            self.assertEqual(json.load(handle), {'active': 'confucius4_r2t2'})
+        """A fresh install has no config directory; the save has to create it.
+
+        The directory under test is a throwaway one. Deleting the shared
+        ``paths.CONFIG_DIR`` is what destroyed a real install once: run this
+        file directly and the data root is the user's own.
+        """
+        root = Path(tempfile.mkdtemp(prefix='pebble-config-'))
+        self.addCleanup(shutil.rmtree, root, ignore_errors=True)
+        target = root / 'config' / 'stt_providers.json'
+        original_file = stt_registry.CONFIG_FILE
+        original_path = stt_registry.STT_PROVIDERS_PATH
+        try:
+            stt_registry.CONFIG_FILE = str(target)
+            stt_registry.STT_PROVIDERS_PATH = target
+            self.assertFalse(target.parent.exists())
+            self.reg._active_id = 'confucius4_r2t2'
+            self.reg._save_active_to_file()
+            self.assertTrue(target.is_file())
+            with open(target, encoding='utf-8') as handle:
+                self.assertEqual(json.load(handle), {'active': 'confucius4_r2t2'})
+        finally:
+            stt_registry.CONFIG_FILE = original_file
+            stt_registry.STT_PROVIDERS_PATH = original_path
 
     def test_save_is_atomic_at_the_file_level(self):
         """The temp file must not survive a successful save."""

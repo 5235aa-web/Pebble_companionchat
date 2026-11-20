@@ -6,13 +6,16 @@ companion_db.py - 多AI伴侣独立数据库层。
 import sqlite3
 import json
 import logging
+import shutil
 import threading
+from pathlib import Path
 from typing import List, Dict, Optional
 from datetime import datetime
 
 logger = logging.getLogger(__name__)
 
 # 独立数据库路径（与 pebble.db 完全分离）
+from . import paths
 from .paths import DB_PATH
 
 
@@ -23,14 +26,14 @@ _schema_ready = False
 def _has_schema(conn: sqlite3.Connection) -> bool:
     """Cheap probe: are the core tables there?
 
-    Both tables are checked so an existing database that predates the script
+    All core tables are checked so an existing database that predates new
     tables still gets its schema pass once, instead of silently missing them.
     """
     row = conn.execute(
         "SELECT COUNT(*) FROM sqlite_master WHERE type='table' "
-        "AND name IN ('companions', 'scripts')"
+        "AND name IN ('companions', 'scripts', 'companion_assets')"
     ).fetchone()
-    return bool(row) and row[0] == 2
+    return bool(row) and row[0] == 3
 
 
 def _get_conn() -> sqlite3.Connection:
@@ -240,6 +243,24 @@ def _init_tables(conn: sqlite3.Connection) -> None:
         CREATE INDEX IF NOT EXISTS idx_compaction_history_time
             ON compaction_history(compacted_at);
 
+        -- 角色多媒体资产表（CHARX / 手动上传的图片、表情、背景、音乐、音效等）
+        CREATE TABLE IF NOT EXISTS companion_assets (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            companion_id TEXT NOT NULL,
+            asset_type TEXT NOT NULL DEFAULT 'other',
+            name TEXT NOT NULL DEFAULT '',
+            ext TEXT NOT NULL DEFAULT '',
+            mime_type TEXT NOT NULL DEFAULT '',
+            rel_path TEXT NOT NULL DEFAULT '',
+            source_uri TEXT NOT NULL DEFAULT '',
+            size_bytes INTEGER NOT NULL DEFAULT 0,
+            sort_order INTEGER NOT NULL DEFAULT 0,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (companion_id) REFERENCES companions(id) ON DELETE CASCADE
+        );
+        CREATE INDEX IF NOT EXISTS idx_companion_assets_owner
+            ON companion_assets(companion_id, asset_type, sort_order);
+
         -- 用户设置表（单行：只存本机用户身份）
         CREATE TABLE IF NOT EXISTS user_settings (
             id INTEGER PRIMARY KEY CHECK (id = 1),
@@ -295,11 +316,15 @@ def _init_tables(conn: sqlite3.Connection) -> None:
     except Exception as e:
         logger.warning(f"Migration warning for companions table: {e}")
 
-    # 迁移：分支记录记忆提取游标（最后一条已扫描的消息 id）
+    # 迁移：分支记录记忆提取游标（最后一条已扫描的消息 id）与单人对话 HUD 状态
     try:
         branch_columns = [row[1] for row in conn.execute("PRAGMA table_info(companion_branches)").fetchall()]
         if 'memory_cursor' not in branch_columns:
             conn.execute("ALTER TABLE companion_branches ADD COLUMN memory_cursor INTEGER NOT NULL DEFAULT 0")
+        if 'card_hud' not in branch_columns:
+            conn.execute("ALTER TABLE companion_branches ADD COLUMN card_hud TEXT DEFAULT '{}'")
+        if 'card_hud_enabled' not in branch_columns:
+            conn.execute("ALTER TABLE companion_branches ADD COLUMN card_hud_enabled INTEGER DEFAULT NULL")
     except Exception as e:
         logger.warning(f"Migration warning for companion_branches table: {e}")
 
@@ -415,6 +440,8 @@ def get_all_companions() -> List[Dict]:
                    c.tags, c.alternate_greetings, c.depth_prompt, c.avatar_path,
                    c.llm_provider_id, c.tts_config, c.created_at, c.updated_at,
                    c.advanced_prompt, c.user_info, c.pinned,
+                   (SELECT COUNT(*) FROM companion_assets
+                    WHERE companion_id = c.id) AS asset_count,
                    (SELECT content FROM companion_messages
                     WHERE companion_id = c.id
                     ORDER BY id DESC LIMIT 1) AS last_message
@@ -436,16 +463,40 @@ def get_all_companions() -> List[Dict]:
 
 
 def delete_companion(companion_id: str) -> bool:
-    """删除AI伴侣及其所有聊天记录和分支。"""
+    """删除AI伴侣及其所有聊天记录、分支与磁盘资产。"""
     conn = _get_conn()
+    avatar_rel = ""
     try:
+        row = conn.execute("SELECT avatar_path FROM companions WHERE id = ?", (companion_id,)).fetchone()
+        if row:
+            avatar_rel = str(row["avatar_path"] or "")
         conn.execute("DELETE FROM companion_messages WHERE companion_id = ?", (companion_id,))
         conn.execute("DELETE FROM companion_branches WHERE companion_id = ?", (companion_id,))
+        conn.execute("DELETE FROM companion_assets WHERE companion_id = ?", (companion_id,))
         cursor = conn.execute("DELETE FROM companions WHERE id = ?", (companion_id,))
         conn.commit()
-        return cursor.rowcount > 0
+        deleted = cursor.rowcount > 0
     finally:
         conn.close()
+
+    if deleted:
+        # Clean up disk assets belonging to this companion without risking anything outside DATA_ROOT.
+        try:
+            assets_root = paths.COMPANION_ASSETS_DIR.resolve()
+            comp_dir = (assets_root / companion_id).resolve()
+            if comp_dir.is_relative_to(assets_root) and comp_dir != assets_root and comp_dir.exists():
+                shutil.rmtree(comp_dir, ignore_errors=True)
+        except Exception as exc:
+            logger.warning("Failed to clean companion assets dir for %s: %s", companion_id, exc)
+        if avatar_rel and avatar_rel.startswith("uploads/companion_avatars/"):
+            try:
+                avatars_root = paths.AVATAR_DIR.resolve()
+                avatar_file = (paths.DATA_ROOT.resolve() / avatar_rel).resolve()
+                if avatar_file.is_relative_to(avatars_root) and avatar_file.is_file():
+                    avatar_file.unlink()
+            except Exception as exc:
+                logger.warning("Failed to clean companion avatar %s: %s", avatar_rel, exc)
+    return deleted
 
 
 def update_companion(companion_id: str, fields: Dict) -> bool:
@@ -478,6 +529,109 @@ def update_companion(companion_id: str, fields: Dict) -> bool:
         conn.execute(f"UPDATE companions SET {', '.join(set_parts)} WHERE id = ?", values)
         conn.commit()
         return True
+    finally:
+        conn.close()
+
+
+# ==================== Companion Assets CRUD ====================
+
+def add_companion_assets(companion_id: str, assets: List[Dict]) -> List[int]:
+    """批量写入角色多媒体资产记录，返回新插入的 id 列表。"""
+    if not assets:
+        return []
+    conn = _get_conn()
+    ids: List[int] = []
+    try:
+        for idx, item in enumerate(assets):
+            cur = conn.execute(
+                """
+                INSERT INTO companion_assets (
+                    companion_id, asset_type, name, ext, mime_type,
+                    rel_path, source_uri, size_bytes, sort_order
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    companion_id,
+                    str(item.get('asset_type') or 'other'),
+                    str(item.get('name') or ''),
+                    str(item.get('ext') or ''),
+                    str(item.get('mime_type') or ''),
+                    str(item.get('rel_path') or ''),
+                    str(item.get('source_uri') or ''),
+                    int(item.get('size_bytes') or 0),
+                    int(item.get('sort_order', idx)),
+                ),
+            )
+            if cur.lastrowid is not None:
+                ids.append(int(cur.lastrowid))
+        conn.commit()
+        return ids
+    finally:
+        conn.close()
+
+
+def add_companion_asset(companion_id: str, asset: Dict) -> int:
+    """写入单条角色多媒体资产记录。"""
+    ids = add_companion_assets(companion_id, [asset])
+    return ids[0] if ids else 0
+
+
+def get_companion_assets(companion_id: str, asset_type: Optional[str] = None) -> List[Dict]:
+    """按顺序获取指定角色的多媒体资产列表。"""
+    conn = _get_conn()
+    try:
+        if asset_type:
+            rows = conn.execute(
+                """
+                SELECT * FROM companion_assets
+                WHERE companion_id = ? AND asset_type = ?
+                ORDER BY sort_order ASC, id ASC
+                """,
+                (companion_id, asset_type),
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                """
+                SELECT * FROM companion_assets
+                WHERE companion_id = ?
+                ORDER BY sort_order ASC, id ASC
+                """,
+                (companion_id,),
+            ).fetchall()
+        return [dict(r) for r in rows]
+    finally:
+        conn.close()
+
+
+def get_companion_asset(companion_id: str, asset_id: int) -> Optional[Dict]:
+    """获取单条角色资产记录。"""
+    conn = _get_conn()
+    try:
+        row = conn.execute(
+            "SELECT * FROM companion_assets WHERE id = ? AND companion_id = ?",
+            (asset_id, companion_id),
+        ).fetchone()
+        return dict(row) if row else None
+    finally:
+        conn.close()
+
+
+def delete_companion_asset(companion_id: str, asset_id: int) -> Optional[Dict]:
+    """删除单条角色资产记录并返回被删除的行（供调用方清理磁盘文件）。"""
+    conn = _get_conn()
+    try:
+        row = conn.execute(
+            "SELECT * FROM companion_assets WHERE id = ? AND companion_id = ?",
+            (asset_id, companion_id),
+        ).fetchone()
+        if not row:
+            return None
+        conn.execute(
+            "DELETE FROM companion_assets WHERE id = ? AND companion_id = ?",
+            (asset_id, companion_id),
+        )
+        conn.commit()
+        return dict(row)
     finally:
         conn.close()
 
@@ -550,6 +704,74 @@ def get_branches(companion_id: str) -> List[Dict]:
         return [dict(row) for row in rows]
     finally:
         conn.close()
+
+
+def get_branch_hud(companion_id: str, branch_id: str = "main") -> Dict:
+    """Read single-chat card HUD state & enablement for one branch."""
+    conn = _get_conn()
+    try:
+        row = conn.execute(
+            "SELECT card_hud, card_hud_enabled FROM companion_branches WHERE companion_id = ? AND branch_id = ?",
+            (companion_id, branch_id),
+        ).fetchone()
+        asset_row = conn.execute(
+            "SELECT COUNT(*) AS cnt FROM companion_assets WHERE companion_id = ?",
+            (companion_id,),
+        ).fetchone()
+        has_assets = bool(asset_row and int(asset_row["cnt"] or 0) > 0)
+
+        raw_hud = (row["card_hud"] if row else "{}") or "{}"
+        try:
+            hud = json.loads(raw_hud)
+            if not isinstance(hud, dict):
+                hud = {}
+        except (ValueError, TypeError):
+            hud = {}
+
+        raw_enabled = row["card_hud_enabled"] if row else None
+        enabled: Optional[bool] = None if raw_enabled is None else bool(raw_enabled)
+        effective_enabled = has_assets if enabled is None else enabled
+        return {
+            "hud": hud,
+            "enabled": enabled,
+            "effective_enabled": effective_enabled,
+            "has_assets": has_assets,
+        }
+    finally:
+        conn.close()
+
+
+def update_branch_hud(
+    companion_id: str,
+    branch_id: str = "main",
+    hud: Optional[Dict] = None,
+    enabled: Optional[bool] = None,
+    *,
+    clear_enabled: bool = False,
+) -> Dict:
+    """Update branch card HUD values and/or explicit enablement flag."""
+    conn = _get_conn()
+    try:
+        sets = []
+        vals: List = []
+        if hud is not None:
+            sets.append("card_hud = ?")
+            vals.append(json.dumps(hud, ensure_ascii=False))
+        if clear_enabled:
+            sets.append("card_hud_enabled = NULL")
+        elif enabled is not None:
+            sets.append("card_hud_enabled = ?")
+            vals.append(1 if enabled else 0)
+        if sets:
+            vals.extend([companion_id, branch_id])
+            conn.execute(
+                f"UPDATE companion_branches SET {', '.join(sets)} WHERE companion_id = ? AND branch_id = ?",
+                vals,
+            )
+            conn.commit()
+    finally:
+        conn.close()
+    return get_branch_hud(companion_id, branch_id)
 
 
 def delete_branch(companion_id: str, branch_id: str) -> bool:

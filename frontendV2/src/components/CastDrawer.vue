@@ -4,7 +4,7 @@ import { useUiStore } from '@/stores/ui'
 import { useChatStore } from '@/stores/chat'
 import { useSessionStore } from '@/stores/session'
 import { useFileUrls } from '@/composables/useFileUrl'
-import { exportCompanion, importTavernJson, importTavernPng } from '@/api/companion'
+import { exportCompanion, importCharacterCard } from '@/api/companion'
 import { useI18n } from '@/i18n'
 
 const ui = useUiStore()
@@ -37,8 +37,10 @@ function edit(id: string) {
 
 const fileInput = ref<HTMLInputElement | null>(null)
 const error = ref('')
+const busyLabel = ref('')
 
 function pickFile() {
+  if (busyLabel.value) return
   fileInput.value?.click()
 }
 
@@ -48,31 +50,42 @@ async function onFilePicked(e: Event) {
   input.value = ''
   if (!file) return
   error.value = ''
+  busyLabel.value = t('card.importing', { pct: 0 })
   try {
-    const r = file.name.toLowerCase().endsWith('.png')
-      ? await importTavernPng(file)
-      : await importTavernJson(file)
+    const r = await importCharacterCard(file, (pct) => {
+      busyLabel.value = t('card.importing', { pct })
+    })
     await session.loadCompanions()
     if (r?.companion_id) await session.selectCompanion(r.companion_id)
   } catch (err) {
     error.value = err instanceof Error ? err.message : String(err)
+  } finally {
+    busyLabel.value = ''
   }
 }
 
 async function exportActive() {
   const id = session.activeCompanionId
-  if (!id) return
+  if (!id || busyLabel.value) return
   error.value = ''
+  const active = chat.cast.find((c) => c.id === id)
+  const kind = (active?.assetCount ?? 0) > 0 ? 'charx' : 'json'
+  const safeName = (active?.name || id).replace(/[\\/:*?"<>|]/g, '_').trim() || id
+  busyLabel.value = t('card.exporting', { pct: 0 })
   try {
-    const blob = await exportCompanion(id, 'json')
+    const blob = await exportCompanion(id, kind, (pct) => {
+      busyLabel.value = t('card.exporting', { pct })
+    })
     const url = URL.createObjectURL(blob)
     const a = document.createElement('a')
     a.href = url
-    a.download = id + '.json'
+    a.download = `${safeName}.${kind}`
     a.click()
     URL.revokeObjectURL(url)
   } catch (err) {
     error.value = err instanceof Error ? err.message : String(err)
+  } finally {
+    busyLabel.value = ''
   }
 }
 
@@ -152,10 +165,22 @@ function askDelete(id: string) {
     </div>
 
     <div class="d-foot">
-      <button class="mini-btn primary" @click="pickFile">{{ t('cast.import') }}</button>
-      <input ref="fileInput" type="file" accept=".json,.png" hidden @change="onFilePicked" />
-      <button class="mini-btn" @click="ui.startNewCast()">{{ t('cast.new') }}</button>
-      <button class="mini-btn" @click="exportActive">{{ t('cast.export') }}</button>
+      <button class="mini-btn primary" :disabled="!!busyLabel" @click="pickFile">
+        {{ busyLabel || t('cast.import') }}
+      </button>
+      <input
+        ref="fileInput"
+        type="file"
+        accept=".json,.png,.charx,.zip"
+        hidden
+        @change="onFilePicked"
+      />
+      <button class="mini-btn" :disabled="!!busyLabel" @click="ui.startNewCast()">
+        {{ t('cast.new') }}
+      </button>
+      <button class="mini-btn" :disabled="!!busyLabel" @click="exportActive">
+        {{ t('cast.export') }}
+      </button>
     </div>
   </aside>
 </template>
