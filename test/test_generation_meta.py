@@ -99,6 +99,7 @@ class MergeGenerationTest(unittest.TestCase):
         self.assertEqual(merged['elapsed_ms'], 150)
         self.assertEqual(merged['completion_tokens'], 15)
         self.assertEqual(merged['total_tokens'], 30)
+        self.assertEqual(merged['context_tokens'], 10)
 
     def test_estimated_sticks_once_seen(self):
         previous = {'elapsed_ms': 1, 'tokens_source': 'estimated'}

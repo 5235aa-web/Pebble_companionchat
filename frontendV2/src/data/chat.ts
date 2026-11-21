@@ -20,6 +20,7 @@ export interface GenerationMeta {
   prompt_tokens?: number | null
   completion_tokens?: number | null
   total_tokens?: number | null
+  context_tokens?: number | null
   tokens_source?: 'usage' | 'estimated' | 'none' | string
   status?: string
   at?: string

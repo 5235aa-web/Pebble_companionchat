@@ -30,6 +30,7 @@ from .companion_db import (
     update_message_content,
     get_user_settings, update_user_settings, replace_branch_messages, get_branch_stats,
     set_message_swipe_id, get_last_assistant_message, search_messages,
+    is_last_active_message,
     # 新增：压缩历史和消息重要性
     save_compaction_history, get_compaction_history, get_compaction_stats,
     set_message_importance, get_important_messages,
@@ -2074,6 +2075,10 @@ async def companion_chat_regenerate_stream(request: RegenerateStreamRequest):
     if not companion_data:
         raise HTTPException(status_code=404, detail="Companion not found")
 
+    record_branch_usage = is_last_active_message(
+        request.companion_id, request.branch_id, request.message_id
+    )
+
     async def event_generator():
         try:
             companion = Companion(request.companion_id)
@@ -2085,7 +2090,10 @@ async def companion_chat_regenerate_stream(request: RegenerateStreamRequest):
                 temperature=request.temperature,
                 top_p=request.top_p,
             ):
-                _record_usage_chunk(chunk, request.companion_id, request.branch_id)
+                if record_branch_usage:
+                    _record_usage_chunk(chunk, request.companion_id, request.branch_id)
+                elif isinstance(chunk, dict) and chunk.get("type") == "usage":
+                    token_engine.clear_recorded_usage(request.companion_id, request.branch_id)
                 yield f"data: {json.dumps(chunk, ensure_ascii=False)}\n\n"
             yield "data: [DONE]\n\n"
         except Exception as e:
@@ -2161,7 +2169,27 @@ async def swipe_message(request: SwipeRequest):
     )
     if not result:
         raise HTTPException(status_code=404, detail="Message not found or invalid swipe_id")
-    token_engine.clear_recorded_usage(request.companion_id, request.branch_id)
+    gen = result.get("generation") if result.get("is_last") else None
+    if isinstance(gen, dict) and gen.get("tokens_source") == "usage":
+        prompt = int(gen.get("prompt_tokens") or 0)
+        completion = int(gen.get("completion_tokens") or 0)
+        ctx_total = int(gen.get("context_tokens") or gen.get("total_tokens") or 0)
+        if ctx_total <= 0 and prompt > 0:
+            ctx_total = prompt + completion
+        if ctx_total > 0 or prompt > 0:
+            token_engine.record_usage(
+                request.companion_id,
+                request.branch_id,
+                {
+                    "prompt_tokens": prompt,
+                    "completion_tokens": completion,
+                    "total_tokens": ctx_total,
+                },
+            )
+        else:
+            token_engine.clear_recorded_usage(request.companion_id, request.branch_id)
+    else:
+        token_engine.clear_recorded_usage(request.companion_id, request.branch_id)
     return {"status": "success", "content": result["content"], "swipe_id": result["swipe_id"], "swipes": result["swipes"]}
 
 

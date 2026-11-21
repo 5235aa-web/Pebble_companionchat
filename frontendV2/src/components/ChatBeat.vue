@@ -12,6 +12,7 @@ import { swipeMessage } from '@/api/companion'
 import { useSessionStore } from '@/stores/session'
 import { useCallStore } from '@/stores/call'
 import { useCardAudioStore } from '@/stores/cardAudio'
+import { useLlmStore } from '@/stores/llm'
 import { parseLines } from '@/stores/chat'
 import { extractInlineMediaFromText } from '@/utils/inlineMedia'
 import { plainTextForSpeech } from '@/utils/richText'
@@ -134,6 +135,7 @@ async function swipe(step: number) {
     // original stream no longer belongs to what is on screen.
     props.beat.tail = undefined
     props.beat.swipeIndex = r.swipe_id
+    void session.loadTokens(useLlmStore().tokenQuery)
   } catch {
     // leave the current variant in place
   }
@@ -176,12 +178,28 @@ const metaTip = computed(() => {
   const g = generation.value
   if (!g) return ''
   const bits: string[] = []
+  const hasUsage = g.tokens_source === 'usage'
   if (g.provider) bits.push(g.provider)
-  if (typeof g.prompt_tokens === 'number' && g.prompt_tokens > 0) {
+  if (hasUsage && typeof g.prompt_tokens === 'number' && g.prompt_tokens > 0) {
     bits.push(t('beat.promptTokens', { n: g.prompt_tokens }))
   }
-  if (typeof g.total_tokens === 'number' && g.total_tokens > 0) {
-    bits.push(t('beat.totalTokens', { n: g.total_tokens }))
+  const ctxTokens =
+    typeof g.context_tokens === 'number' && g.context_tokens > 0
+      ? g.context_tokens
+      : hasUsage && typeof g.total_tokens === 'number' && g.total_tokens > 0
+        ? g.total_tokens
+        : 0
+  if (ctxTokens > 0) {
+    bits.push(t('beat.totalTokens', { n: ctxTokens }))
+  }
+  if (
+    hasUsage &&
+    typeof g.context_tokens === 'number' &&
+    g.context_tokens > 0 &&
+    typeof g.total_tokens === 'number' &&
+    g.total_tokens > g.context_tokens
+  ) {
+    bits.push(t('beat.billedTokens', { n: g.total_tokens }))
   }
   const ttft = fmtDuration(g.ttft_ms)
   if (ttft) bits.push(t('beat.firstToken', { t: ttft }))

@@ -372,8 +372,8 @@ function askDeleteBranch(id: string) {
     <div class="rail-r">
       <div v-if="ctxTotal || inScene" class="rail-ctx">
         <span v-if="ctxTotal" class="rail-ctx-n">
-          <b>{{ ctxUsed.toLocaleString('en-US').replace(',', ' ') }}</b> /
-          {{ ctxTotal.toLocaleString('en-US').replace(',', ' ') }}
+          <b>{{ ctxUsed.toLocaleString('en-US').replace(/,/g, ' ') }}</b> /
+          {{ ctxTotal.toLocaleString('en-US').replace(/,/g, ' ') }}
         </span>
         <span v-if="ctxTotal" class="rail-ctx-bar"><i :style="{ width: ctxPct + '%' }"></i></span>
         <span v-if="ctxTotal" class="rail-ctx-pct">{{ ctxPctText }}%</span>

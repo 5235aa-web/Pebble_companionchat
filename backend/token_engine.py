@@ -726,39 +726,69 @@ def describe(provider_type: Optional[str] = None, model: Optional[str] = None, b
 # is strictly better than anything reconstructed locally, so the UI prefers it
 # and falls back to the local counter only when no request has run yet.
 
-_USAGE_CACHE: Dict[Tuple[str, str], Dict] = {}
+_USAGE_CACHE: Dict[Tuple[str, str, str], Dict] = {}
 USAGE_TTL_SECONDS = 3600
+
+
+def _usage_cache_key(companion_id: str, branch_id: str) -> Tuple[str, str, str]:
+    from . import companion_db
+
+    return (str(companion_db.DB_PATH), companion_id, branch_id)
 
 
 def record_usage(companion_id: str, branch_id: str, usage: Dict) -> Dict:
     """Store the accounting a provider returned for this branch."""
+    from . import companion_db
+
     entry = {
         "prompt_tokens": int(usage.get("prompt_tokens") or 0),
         "completion_tokens": int(usage.get("completion_tokens") or 0),
         "total_tokens": int(usage.get("total_tokens") or 0),
         "recorded_at": time.time(),
     }
-    _USAGE_CACHE[(companion_id, branch_id)] = entry
+    _USAGE_CACHE[(str(companion_db.DB_PATH), companion_id, branch_id)] = entry
+    try:
+        companion_db.set_branch_token_usage(companion_id, branch_id, entry)
+    except Exception as exc:  # pragma: no cover - defensive DB persistence
+        logger.debug("persist branch token_usage skipped: %s", exc)
     return entry
 
 
 def get_recorded_usage(
     companion_id: str,
     branch_id: str,
-    max_age: int = USAGE_TTL_SECONDS,
+    max_age: Optional[int] = None,
 ) -> Optional[Dict]:
-    """Last measured usage for a branch, or None when absent or stale."""
-    entry = _USAGE_CACHE.get((companion_id, branch_id))
+    """Last measured usage for a branch, or None when absent/cleared."""
+    from . import companion_db
+
+    key = _usage_cache_key(companion_id, branch_id)
+    entry = _USAGE_CACHE.get(key)
+    if not entry:
+        try:
+            entry = companion_db.get_branch_token_usage(companion_id, branch_id)
+        except Exception as exc:  # pragma: no cover
+            logger.debug("read branch token_usage skipped: %s", exc)
+            entry = None
+        if entry:
+            _USAGE_CACHE[key] = entry
     if not entry:
         return None
-    if max_age > 0 and time.time() - entry["recorded_at"] > max_age:
-        return None
+    if max_age is not None and max_age > 0 and entry.get("recorded_at", 0) > 0:
+        if time.time() - entry["recorded_at"] > max_age:
+            return None
     return entry
 
 
 def clear_recorded_usage(companion_id: str, branch_id: str) -> None:
-    """Drop the cached measurement, for example after the branch was compacted."""
-    _USAGE_CACHE.pop((companion_id, branch_id), None)
+    """Drop the cached and persisted measurement, e.g. after branch mutation."""
+    from . import companion_db
+
+    _USAGE_CACHE.pop((str(companion_db.DB_PATH), companion_id, branch_id), None)
+    try:
+        companion_db.set_branch_token_usage(companion_id, branch_id, None)
+    except Exception as exc:  # pragma: no cover
+        logger.debug("clear branch token_usage skipped: %s", exc)
 
 
 # ==================== Context limit correction ====================

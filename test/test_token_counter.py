@@ -123,6 +123,56 @@ class BranchTokenStatsTest(unittest.TestCase):
         asyncio.run(api_routes.delete_branch_message('c1', 'main', msg_id))
         self.assertIsNone(token_engine.get_recorded_usage('c1', 'main'))
 
+    def test_recorded_usage_survives_memory_cache_clear(self):
+        token_engine.record_usage('c1', 'main', {
+            'prompt_tokens': 900,
+            'completion_tokens': 200,
+            'total_tokens': 1100,
+        })
+        token_engine._USAGE_CACHE.clear()
+        res = asyncio.run(api_routes.get_branch_token_stats('c1', 'main'))
+        self.assertEqual(res['token_count'], 1100)
+        self.assertEqual(res['method'], 'provider usage')
+
+    def test_legacy_trailing_assistant_generation_backfills_usage(self):
+        # Simulate a pre-migration branch whose token_usage column is still ''.
+        conn = companion_db._get_conn()
+        try:
+            conn.execute(
+                "UPDATE companion_branches SET token_usage = '' WHERE companion_id = 'c1' AND branch_id = 'main'"
+            )
+            conn.commit()
+        finally:
+            conn.close()
+        gen = {
+            'prompt_tokens': 3634,
+            'completion_tokens': 406,
+            'total_tokens': 4040,
+            'tokens_source': 'usage',
+        }
+        companion_db.save_message_with_swipes(
+            'c1', 'main', 'assistant', 'reply', ['reply'], 0,
+            metadata={'generation': [gen]},
+        )
+        token_engine._USAGE_CACHE.clear()
+        res = asyncio.run(api_routes.get_branch_token_stats('c1', 'main'))
+        self.assertEqual(res['token_count'], 4040)
+        self.assertEqual(res['method'], 'provider usage')
+
+    def test_swipe_on_trailing_message_syncs_usage(self):
+        g0 = {'prompt_tokens': 100, 'completion_tokens': 20, 'total_tokens': 120, 'tokens_source': 'usage'}
+        g1 = {'prompt_tokens': 100, 'completion_tokens': 45, 'total_tokens': 145, 'tokens_source': 'usage'}
+        msg_id = companion_db.save_message_with_swipes(
+            'c1', 'main', 'assistant', 'first', ['first'], 0,
+            metadata={'generation': [g0]},
+        )
+        companion_db.add_swipe_to_message('c1', 'main', msg_id, 'second', generation=g1)
+        asyncio.run(api_routes.swipe_message(api_routes.SwipeRequest(
+            companion_id='c1', branch_id='main', message_id=msg_id, swipe_id=0,
+        )))
+        res = asyncio.run(api_routes.get_branch_token_stats('c1', 'main'))
+        self.assertEqual(res['token_count'], 120)
+
 
 if __name__ == '__main__':
     unittest.main()

@@ -120,6 +120,7 @@ export const zh: Record<keyof typeof en, string> = {
   /* ---- 生成信息 ---- */
   'beat.promptTokens': '提示词 {n}',
   'beat.totalTokens': '总计 {n}',
+  'beat.billedTokens': '累计 {n}',
   'beat.firstToken': '首字 {t}',
   'beat.estimated': '本地估算',
   'beat.thinking': '思考',

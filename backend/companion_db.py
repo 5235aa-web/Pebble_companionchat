@@ -95,6 +95,7 @@ def _init_tables(conn: sqlite3.Connection) -> None:
             branch_name TEXT DEFAULT '新分支',
             parent_branch_id TEXT DEFAULT '',
             fork_from_message_id INTEGER DEFAULT NULL,
+            token_usage TEXT DEFAULT '',
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
             UNIQUE(companion_id, branch_id),
             FOREIGN KEY (companion_id) REFERENCES companions(id) ON DELETE CASCADE
@@ -340,6 +341,8 @@ def _init_tables(conn: sqlite3.Connection) -> None:
             conn.execute("ALTER TABLE companion_branches ADD COLUMN card_hud TEXT DEFAULT '{}'")
         if 'card_hud_enabled' not in branch_columns:
             conn.execute("ALTER TABLE companion_branches ADD COLUMN card_hud_enabled INTEGER DEFAULT NULL")
+        if 'token_usage' not in branch_columns:
+            conn.execute("ALTER TABLE companion_branches ADD COLUMN token_usage TEXT DEFAULT ''")
     except Exception as e:
         logger.warning(f"Migration warning for companion_branches table: {e}")
 
@@ -789,6 +792,116 @@ def update_branch_hud(
     finally:
         conn.close()
     return get_branch_hud(companion_id, branch_id)
+
+
+def get_branch_token_usage(companion_id: str, branch_id: str = "main") -> Optional[Dict]:
+    """Return persisted provider token usage for *branch_id*, or None if cleared/absent.
+
+    When ``token_usage`` has never been populated (e.g. branches created before
+    persistence existed), fall back to the active swipe's ``generation`` record
+    on the trailing active assistant message so pre-existing threads stay aligned
+    with their reply footer.
+    """
+    conn = _get_conn()
+    try:
+        row = conn.execute(
+            "SELECT token_usage FROM companion_branches WHERE companion_id = ? AND branch_id = ?",
+            (companion_id, branch_id),
+        ).fetchone()
+        raw = (row["token_usage"] if row else "") or ""
+        if raw:
+            try:
+                data = json.loads(raw)
+            except (ValueError, TypeError):
+                data = None
+            if isinstance(data, dict):
+                if data.get("cleared"):
+                    return None
+                prompt = int(data.get("prompt_tokens") or 0)
+                completion = int(data.get("completion_tokens") or 0)
+                total = int(data.get("total_tokens") or 0)
+                if total > 0 or prompt > 0:
+                    return {
+                        "prompt_tokens": prompt,
+                        "completion_tokens": completion,
+                        "total_tokens": total,
+                        "recorded_at": float(data.get("recorded_at") or 0),
+                    }
+            return None
+
+        last = conn.execute(
+            """
+            SELECT role, swipe_id, metadata
+            FROM companion_messages
+            WHERE companion_id = ? AND branch_id = ? AND is_compacted = 0
+            ORDER BY id DESC LIMIT 1
+            """,
+            (companion_id, branch_id),
+        ).fetchone()
+        if not last or last["role"] != "assistant":
+            return None
+        meta = _load_metadata(last["metadata"])
+        slots = meta.get("generation")
+        swipe_id = int(last["swipe_id"] or 0)
+        if not isinstance(slots, list) or not (0 <= swipe_id < len(slots)):
+            return None
+        gen = slots[swipe_id]
+        if not isinstance(gen, dict) or gen.get("tokens_source") != "usage":
+            return None
+        prompt = int(gen.get("prompt_tokens") or 0)
+        completion = int(gen.get("completion_tokens") or 0)
+        total = int(gen.get("context_tokens") or gen.get("total_tokens") or 0)
+        if total <= 0 and prompt > 0:
+            total = prompt + completion
+        if total <= 0 and prompt <= 0:
+            return None
+        return {
+            "prompt_tokens": prompt,
+            "completion_tokens": completion,
+            "total_tokens": total,
+            "recorded_at": 0.0,
+        }
+    finally:
+        conn.close()
+
+
+def set_branch_token_usage(
+    companion_id: str,
+    branch_id: str,
+    usage: Optional[Dict],
+) -> None:
+    """Persist measured provider usage on the branch row (or mark it cleared)."""
+    payload = (
+        json.dumps({"cleared": True}, ensure_ascii=False)
+        if usage is None
+        else json.dumps(usage, ensure_ascii=False)
+    )
+    conn = _get_conn()
+    try:
+        conn.execute(
+            "UPDATE companion_branches SET token_usage = ? WHERE companion_id = ? AND branch_id = ?",
+            (payload, companion_id, branch_id),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def is_last_active_message(companion_id: str, branch_id: str, message_id: int) -> bool:
+    """Return True if *message_id* is the trailing non-compacted message on *branch_id*."""
+    conn = _get_conn()
+    try:
+        row = conn.execute(
+            """
+            SELECT id FROM companion_messages
+            WHERE companion_id = ? AND branch_id = ? AND is_compacted = 0
+            ORDER BY id DESC LIMIT 1
+            """,
+            (companion_id, branch_id),
+        ).fetchone()
+        return bool(row and int(row["id"]) == int(message_id))
+    finally:
+        conn.close()
 
 
 def delete_branch(companion_id: str, branch_id: str) -> bool:
@@ -1331,7 +1444,7 @@ def set_message_swipe_id(companion_id: str, branch_id: str, message_id: int, swi
     conn = _get_conn()
     try:
         row = conn.execute(
-            "SELECT content, swipes, swipe_id FROM companion_messages WHERE companion_id = ? AND branch_id = ? AND id = ?",
+            "SELECT content, swipes, swipe_id, metadata FROM companion_messages WHERE companion_id = ? AND branch_id = ? AND id = ?",
             (companion_id, branch_id, message_id)
         ).fetchone()
         if not row:
@@ -1346,8 +1459,25 @@ def set_message_swipe_id(companion_id: str, branch_id: str, message_id: int, swi
             "UPDATE companion_messages SET content = ?, swipe_id = ? WHERE companion_id = ? AND branch_id = ? AND id = ?",
             (new_content, swipe_id, companion_id, branch_id, message_id)
         )
+        last_row = conn.execute(
+            """
+            SELECT id FROM companion_messages
+            WHERE companion_id = ? AND branch_id = ? AND is_compacted = 0
+            ORDER BY id DESC LIMIT 1
+            """,
+            (companion_id, branch_id),
+        ).fetchone()
         conn.commit()
-        return {"swipes": swipes, "swipe_id": swipe_id, "content": new_content}
+        meta = _load_metadata(row['metadata'])
+        slots = meta.get('generation')
+        generation = slots[swipe_id] if isinstance(slots, list) and 0 <= swipe_id < len(slots) else None
+        return {
+            "swipes": swipes,
+            "swipe_id": swipe_id,
+            "content": new_content,
+            "is_last": bool(last_row and int(last_row["id"]) == int(message_id)),
+            "generation": generation if isinstance(generation, dict) else None,
+        }
     finally:
         conn.close()
 

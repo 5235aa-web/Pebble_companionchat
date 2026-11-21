@@ -125,6 +125,7 @@ export const en = {
   /* ---- generation footprint ---- */
   'beat.promptTokens': 'prompt {n}',
   'beat.totalTokens': 'total {n}',
+  'beat.billedTokens': 'billed {n}',
   'beat.firstToken': 'first token {t}',
   'beat.estimated': 'estimated',
   'beat.thinking': 'Thinking',

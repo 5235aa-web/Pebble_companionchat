@@ -573,7 +573,7 @@ export const useChatStore = defineStore('chat', () => {
         max_important_messages: 20,
       })
       await loadMessages()
-      await session.loadTokens()
+      await session.loadTokens(useLlmStore().tokenQuery)
       if (r && r.success === false) return { ok: false, message: r.error || '' }
       return { ok: true, message: '' }
     } catch (e) {
@@ -620,6 +620,7 @@ export const useChatStore = defineStore('chat', () => {
     if (!cid || !bid || id < 0) return
     try {
       await deleteSingleMessage(cid, bid, id)
+      void session.loadTokens(useLlmStore().tokenQuery)
     } catch (e) {
       error.value = e instanceof Error ? e.message : String(e)
     }
@@ -635,6 +636,7 @@ export const useChatStore = defineStore('chat', () => {
     if (!cid || !bid || id < 0) return
     try {
       await updateMessage(cid, bid, id, { content: text })
+      void session.loadTokens(useLlmStore().tokenQuery)
     } catch (e) {
       error.value = e instanceof Error ? e.message : String(e)
     }

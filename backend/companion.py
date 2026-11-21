@@ -26,7 +26,7 @@ from .memory_engine import build_memory_block, schedule_extraction, resolve_user
 from .placeholders import substitute
 from .global_prompts import load_global_prompts
 from .attachment_parser import format_documents_for_prompt, resolve_image_path
-from .token_engine import count_text as count_text_tokens
+from .token_engine import clear_recorded_usage, count_text as count_text_tokens
 from .script_db import (
     get_session as get_script_session,
     update_session_hud as update_script_session_hud,
@@ -193,6 +193,8 @@ def _generation_record(
             prompt = usage.get("prompt_tokens")
             completion = used
             total = usage.get("total_tokens")
+            if not (isinstance(total, int) and total > 0) and isinstance(prompt, int) and prompt > 0:
+                total = prompt + used
             source = "usage"
 
     config = llm_config or {}
@@ -253,6 +255,17 @@ def _merge_generation(previous: Optional[Dict], addition: Dict) -> Dict:
             merged[key] = old
     if previous.get("tokens_source") == "estimated":
         merged["tokens_source"] = "estimated"
+    # Keep cumulative total_tokens for billing/cost while preserving the latest
+    # single-request context size so the message footer and branch meter align
+    # after a continuation.
+    if (
+        addition.get("tokens_source") == "usage"
+        and isinstance(addition.get("total_tokens"), int)
+        and addition["total_tokens"] > 0
+    ):
+        merged["context_tokens"] = addition["total_tokens"]
+    else:
+        merged.pop("context_tokens", None)
     return merged
 
 
@@ -852,6 +865,7 @@ class Companion:
             message_type="narration" if is_narration else "chat",
             metadata=user_meta or None,
         )
+        clear_recorded_usage(self.id, branch_id)
         logger.info(f"User message saved: id={user_message_id}")
         
         # 2. 获取该分支的完整上下文
@@ -1380,6 +1394,7 @@ class Companion:
             return
 
         dropped = delete_messages_after(self.id, branch_id, message_id)
+        clear_recorded_usage(self.id, branch_id)
         logger.info(f"Reedit: rewrote msg {message_id}, dropped {dropped} later messages")
 
         history = get_messages(self.id, branch_id)
