@@ -1,6 +1,6 @@
 import { defineStore } from 'pinia'
 import { computed, ref } from 'vue'
-import type { Beat, BeatLine, GenerationMeta } from '@/data/chat'
+import type { Beat, BeatAttachment, BeatLine, GenerationMeta } from '@/data/chat'
 import {
   deleteCompanion,
   deleteSingleMessage,
@@ -82,6 +82,15 @@ function mergeSceneCards(
 function pickGenerations(meta: Record<string, unknown> | undefined): GenerationMeta[] | undefined {
   const raw = meta?.generation
   return Array.isArray(raw) && raw.length ? (raw as GenerationMeta[]) : undefined
+}
+
+function mapBeatAttachments(
+  list: Array<{ kind?: unknown; url?: unknown; name?: unknown }> | undefined,
+): BeatAttachment[] | undefined {
+  const mapped = list
+    ?.filter((a) => a && a.kind === 'image' && typeof a.url === 'string' && a.url)
+    .map((a) => ({ src: String(a.url), alt: String(a.name ?? 'image') }))
+  return mapped?.length ? mapped : undefined
 }
 
 /** A line that opens with a parenthesis is a stage direction, not speech. */
@@ -241,6 +250,7 @@ export const useChatStore = defineStore('chat', () => {
           }
           const narration = m.message_type === 'narration'
           const you = m.role === 'user' && !narration
+          const resolved = withNames(m.content)
           return {
             uid: nextUid++,
             id: m.id,
@@ -248,16 +258,17 @@ export const useChatStore = defineStore('chat', () => {
             speaker: narration ? 'Narration' : you ? 'You' : name,
             time: nowTime(m.created_at),
             thinking: null,
-            lines: parseLines(withNames(m.content)),
+            lines: parseLines(resolved),
+            raw: resolved,
             swipe: m.swipes?.length ? m.swipes[m.swipe_id ?? 0] ?? null : null,
             swipes: m.swipes ?? [],
             swipeIndex: m.swipe_id ?? 0,
             generations: pickGenerations(m.metadata),
             voice: Boolean(m.metadata?.voice),
             marked: m.is_important,
-            attachments: (m.metadata?.attachments as Array<Record<string, unknown>> | undefined)
-              ?.filter((a) => a && a.kind === 'image' && typeof a.url === 'string')
-              .map((a) => ({ src: String(a.url), alt: String(a.name ?? 'image') })),
+            attachments: mapBeatAttachments(
+              m.metadata?.attachments as Array<Record<string, unknown>> | undefined,
+            ),
           }
         })
       beats.value = mergeSceneCards(
@@ -280,7 +291,8 @@ export const useChatStore = defineStore('chat', () => {
     pending.value = false
   }
 
-  function pushUserBeat(text: string): Beat {
+  function pushUserBeat(text: string, attachments: AttachmentRef[] = []): Beat {
+    const resolved = withNames(text)
     beats.value.push({
       uid: nextUid++,
       id: tempId--,
@@ -288,8 +300,10 @@ export const useChatStore = defineStore('chat', () => {
       speaker: narrationMode.value ? 'Narration' : 'You',
       time: nowTime(),
       thinking: null,
-      lines: parseLines(withNames(text)),
+      lines: parseLines(resolved),
+      raw: resolved,
       swipe: null,
+      attachments: mapBeatAttachments(attachments),
     })
     return beats.value[beats.value.length - 1]
   }
@@ -303,6 +317,7 @@ export const useChatStore = defineStore('chat', () => {
       time: nowTime(),
       thinking: null,
       lines: [],
+      raw: '',
       swipe: null,
     })
     // Return the reactive proxy, not the literal: mutating the raw object
@@ -334,6 +349,7 @@ export const useChatStore = defineStore('chat', () => {
         if (chunk.type === 'content') {
           pending.value = false
           buffer += chunk.content ?? ''
+          target.raw = buffer
           committed = commitLines(target, buffer, committed)
         } else if (chunk.type === 'stt_transcript') {
           // The engine's transcript for this voice turn. Kept on the beat so
@@ -341,6 +357,7 @@ export const useChatStore = defineStore('chat', () => {
           // placeholder because the beat is flagged as voice.
           if (userBeat && typeof chunk.content === 'string') {
             userBeat.lines = parseLines(chunk.content)
+            userBeat.raw = chunk.content
           }
         } else if (chunk.type === 'thinking') {
           pending.value = false
@@ -415,7 +432,7 @@ export const useChatStore = defineStore('chat', () => {
       return
     }
     const text = rawText.trim()
-    if (!text) return
+    if (!text && !attachments.length) return
     const cid = session.activeCompanionId
     const bid = session.activeBranch
     if (!cid || !bid) {
@@ -423,7 +440,7 @@ export const useChatStore = defineStore('chat', () => {
       return
     }
 
-    const userBeat = pushUserBeat(text)
+    const userBeat = pushUserBeat(text, attachments)
     const target = pushAiBeat()
     buffer = ''
     busy.value = true
@@ -523,6 +540,7 @@ export const useChatStore = defineStore('chat', () => {
 
     const edited = beats.value[idx]
     edited.lines = parseLines(text)
+    edited.raw = text
     beats.value.splice(idx + 1)
 
     const target = pushAiBeat()
@@ -611,6 +629,7 @@ export const useChatStore = defineStore('chat', () => {
     const b = beats.value.find((x) => x.id === id)
     if (!b) return
     b.lines = parseLines(text)
+    b.raw = text
     const cid = session.activeCompanionId
     const bid = session.activeBranch
     if (!cid || !bid || id < 0) return

@@ -76,7 +76,13 @@
   margin-bottom:38px;
 }
 .beat.lit{animation:focusIn .95s var(--ease) forwards;}
-.beat.lit .say{animation:inkDry 1.9s ease-out forwards;}
+.beat.instant,.beat.lit.instant{opacity:1;filter:none;transform:none;animation:none;}
+.beat.lit:not(.instant) .rich-msg:not(.streaming) .say,
+.beat.lit:not(.instant) .voice-bubble{animation:inkDry 1.9s ease-out forwards;}
+.beat-lines.settled{
+  content-visibility:auto;
+  contain-intrinsic-size:auto 72px;
+}
 .node{
   position:absolute;left:-27px;top:9px;
   width:6px;height:6px;border-radius:50%;

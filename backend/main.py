@@ -7,7 +7,7 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
@@ -153,6 +153,24 @@ logger.info("ws bridge installed, routes=%d", len(app.routes))
 
 app.mount("/uploads", StaticFiles(directory=str(UPLOAD_ROOT)), name="uploads")
 
+_UPLOAD_ACTIVE_EXTS = (".svg", ".svgz", ".html", ".htm", ".xhtml", ".xml")
+_SANDBOX_CSP = "sandbox; default-src 'none'; style-src 'unsafe-inline'"
+
+
+@app.middleware("http")
+async def _harden_upload_responses(request: Request, call_next):
+    response = await call_next(request)
+    path = request.url.path.lower()
+    if path.startswith("/uploads/") or path.startswith("/thumbs/"):
+        response.headers.setdefault("X-Content-Type-Options", "nosniff")
+        if path.endswith(_UPLOAD_ACTIVE_EXTS):
+            # Neutralize inline scripts/active content in uploaded SVGs or HTML/XML.
+            response.headers["Content-Security-Policy"] = _SANDBOX_CSP
+            if path.startswith("/uploads/"):
+                response.headers.setdefault("Content-Disposition", "attachment")
+    return response
+
+
 THUMB_ROOT = DATA_ROOT / "thumbs"
 
 
@@ -184,7 +202,7 @@ def _write_thumb(src: Path, dst: Path, width: int) -> None:
 
 # Formats the thumbnailer may serve. Anything else under the uploads tree, and
 # everything outside it, is rejected before a byte is read.
-THUMB_SERVABLE_SUFFIXES = {".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp", ".avif", ".apng"}
+THUMB_SERVABLE_SUFFIXES = {".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp", ".avif", ".apng", ".svg"}
 
 
 @app.get("/thumbs/{path:path}")
@@ -208,8 +226,19 @@ async def serve_thumb(path: str, w: int = 256):
     src = (root / path).resolve()
     if not src.is_relative_to(uploads) or not src.is_file():
         raise HTTPException(status_code=404, detail="not found")
-    if src.suffix.lower() not in THUMB_SERVABLE_SUFFIXES:
+    suffix = src.suffix.lower()
+    if suffix not in THUMB_SERVABLE_SUFFIXES:
         raise HTTPException(status_code=404, detail="not found")
+    if suffix == ".svg":
+        body = await anyio.to_thread.run_sync(src.read_bytes)
+        return Response(
+            content=body,
+            media_type="image/svg+xml",
+            headers={
+                "X-Content-Type-Options": "nosniff",
+                "Content-Security-Policy": _SANDBOX_CSP,
+            },
+        )
 
     # The scene column is roughly 450x860 CSS px and draws with object-fit:
     # cover, so a 512 copy is upscaled ~1.7x and reads as soft. 2048 leaves

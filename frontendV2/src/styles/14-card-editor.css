@@ -138,6 +138,9 @@ img.pf-avatar-big{object-fit:cover;display:block;}
   flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;
   font-family:var(--serif);font-size:13px;color:var(--ink-2);
 }
+.pf-video-list{display:flex;flex-direction:column;gap:10px;margin-top:6px;}
+.pf-video-item{display:flex;flex-direction:column;gap:4px;}
+.pf-video-foot{display:flex;align-items:center;justify-content:space-between;padding:0 2px;}
 .pf-sub-group{margin-bottom:12px;}
 .pf-sub-toggle{
   display:flex;align-items:center;gap:8px;width:100%;padding:6px 0;

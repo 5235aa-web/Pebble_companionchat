@@ -1,12 +1,14 @@
 <script setup lang="ts">
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import ChatBeat from './ChatBeat.vue'
-import { parseLines, useChatStore } from '@/stores/chat'
+import RichMessage from './RichMessage.vue'
+import InlineVideoCard from './InlineVideoCard.vue'
+import { useChatStore } from '@/stores/chat'
 import { useSessionStore } from '@/stores/session'
 import { useUiStore } from '@/stores/ui'
 import { useCardAudioStore } from '@/stores/cardAudio'
 import { useFileUrls } from '@/composables/useFileUrl'
-import { resolveInlineMedia } from '@/utils/inlineMedia'
+import { extractInlineMediaFromText } from '@/utils/inlineMedia'
 import { useI18n } from '@/i18n'
 import { summaryText } from '@/data/chat'
 
@@ -18,14 +20,26 @@ const { t } = useI18n()
 
 const greetingMedia = computed(() => {
   const raw = session.emptyLine
-  if (!raw) return { images: [], audios: [], cleanedLines: [] }
-  return resolveInlineMedia(parseLines(raw), (refText) => session.findAssetByRef(refText))
+  if (!raw) return { images: [], htmlImages: [], audios: [], videos: [], cleanedText: '' }
+  return extractInlineMediaFromText(raw, (refText) => session.findAssetByRef(refText))
 })
 
 const greetingImageMap = useFileUrls(
-  () => greetingMedia.value.images.map((a) => a.rel_path).filter(Boolean),
+  () =>
+    [...greetingMedia.value.images, ...greetingMedia.value.htmlImages]
+      .map((a) => a.rel_path)
+      .filter(Boolean),
   512,
 )
+
+const greetingAssetUrls = computed<Record<number, string>>(() => {
+  const out: Record<number, string> = {}
+  for (const a of greetingMedia.value.htmlImages) {
+    const url = greetingImageMap.value[a.rel_path]
+    if (url) out[a.id] = url
+  }
+  return out
+})
 
 function openGreetingImage(src: string) {
   ui.galleryTarget = src
@@ -33,6 +47,8 @@ function openGreetingImage(src: string) {
 }
 
 const scroller = ref<HTMLElement | null>(null)
+const threadEl = ref<HTMLElement | null>(null)
+let stickToBottom = true
 
 function atBottom(): boolean {
   const el = scroller.value
@@ -69,6 +85,10 @@ function markScrolling() {
   scrollbarTimer = window.setTimeout(() => (scrolling.value = false), 1200)
 }
 
+function onWheel(e: WheelEvent) {
+  if (e.deltaY < 0) stickToBottom = false
+}
+
 /**
  * Throttle to one sync per frame.
  *
@@ -83,11 +103,17 @@ function onScroll() {
   if (raf) return
   raf = requestAnimationFrame(() => {
     raf = 0
-    chat.showJump = !atBottom()
+    const bottom = atBottom()
+    chat.showJump = !bottom
+    stickToBottom = bottom
   })
 }
 
+let resizeObserver: ResizeObserver | null = null
+
 onUnmounted(() => {
+  resizeObserver?.disconnect()
+  resizeObserver = null
   if (raf) cancelAnimationFrame(raf)
   window.clearTimeout(scrollbarTimer)
 })
@@ -95,41 +121,43 @@ onUnmounted(() => {
 watch(
   () => chat.beats.length,
   async () => {
+    stickToBottom = true
     await nextTick()
     scrollToEnd(true)
   },
 )
 
 watch(
-  // Two cheap signals instead of joining the whole reply on every delta: the
-  // line count changes when a paragraph closes, the tail changes while one is
-  // still being written.
-  () => {
-    const last = chat.beats[chat.beats.length - 1]
-    return `${last?.lines.length ?? 0}\u0000${last?.tail ?? ''}`
-  },
-  async () => {
-    if (atBottom()) {
-      await nextTick()
-      scrollToEnd()
-    }
-  },
-)
-
-watch(
   () => chat.scrollRequest,
-  () => scrollToEnd(true),
+  () => {
+    stickToBottom = true
+    scrollToEnd(true)
+  },
 )
 
 onMounted(async () => {
   await nextTick()
   scrollToEnd()
+  if (threadEl.value && typeof ResizeObserver !== 'undefined') {
+    // Follow height growth once per rendered frame rather than probing
+    // scrollHeight synchronously on every incoming token.
+    resizeObserver = new ResizeObserver(() => {
+      if (stickToBottom && chat.busy) scrollToEnd()
+    })
+    resizeObserver.observe(threadEl.value)
+  }
 })
 </script>
 
 <template>
-  <main ref="scroller" class="scroller" :class="{ scrolling }" @scroll.passive="onScroll">
-    <div class="thread">
+  <main
+    ref="scroller"
+    class="scroller"
+    :class="{ scrolling }"
+    @scroll.passive="onScroll"
+    @wheel.passive="onWheel"
+  >
+    <div ref="threadEl" class="thread">
       <div class="axis"></div>
 
       <div v-if="!chat.beats.length" class="empty-stage show">
@@ -168,6 +196,13 @@ onMounted(async () => {
             <img v-if="greetingImageMap[a.rel_path]" :src="greetingImageMap[a.rel_path]" :alt="a.name" />
           </div>
         </div>
+        <div v-if="greetingMedia.videos.length" class="inline-video-list es-media">
+          <InlineVideoCard
+            v-for="video in greetingMedia.videos"
+            :key="video.id"
+            :asset="video"
+          />
+        </div>
         <div v-if="greetingMedia.audios.length" class="inline-audio-row es-media">
           <button
             v-for="item in greetingMedia.audios"
@@ -184,13 +219,14 @@ onMounted(async () => {
             <span>♪ {{ item.asset.name }}</span>
           </button>
         </div>
-        <div v-if="greetingMedia.cleanedLines.length" class="es-lines">
-          <p v-for="(line, i) in greetingMedia.cleanedLines" :key="i" class="es-line">
-            {{ line.text }}
-          </p>
-        </div>
+        <RichMessage
+          v-if="greetingMedia.cleanedText"
+          :content="greetingMedia.cleanedText"
+          variant="greeting"
+          :asset-urls="greetingAssetUrls"
+        />
         <p
-          v-else-if="!greetingMedia.images.length && !greetingMedia.audios.length"
+          v-else-if="!greetingMedia.images.length && !greetingMedia.audios.length && !greetingMedia.videos.length"
           class="es-line"
         >
           {{ session.emptyLine || t('empty.noMessages') }}

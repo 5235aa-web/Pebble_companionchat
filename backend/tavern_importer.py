@@ -287,6 +287,7 @@ def import_json(json_path: str) -> str:
         fields=normalized,
         avatar_path=avatar_path,
         raw_card_data=_safe_raw_card_dump(raw),
+        card_format='json',
     )
     return companion_id
 
@@ -306,6 +307,7 @@ def import_png(png_path: str) -> str:
         fields=normalized,
         avatar_path=png_path,
         raw_card_data=json_str,
+        card_format='png',
     )
     return companion_id
 
@@ -325,6 +327,7 @@ def import_charx(charx_path: str) -> str:
         fields=normalized,
         avatar_path=avatar_rel,
         raw_card_data=_safe_raw_card_dump(raw_card),
+        card_format='charx',
     )
     if not created:
         shutil.rmtree(paths.COMPANION_ASSETS_DIR / companion_id, ignore_errors=True)
@@ -361,6 +364,7 @@ def import_card_file(file_path: str, file_type: Optional[str] = None) -> str:
             fields=normalized,
             avatar_path=avatar_path,
             raw_card_data=_safe_raw_card_dump(raw),
+            card_format="json",
         )
         return companion_id
 
@@ -379,6 +383,7 @@ def import_card_file(file_path: str, file_type: Optional[str] = None) -> str:
             fields=normalized,
             avatar_path=avatar_rel_path,
             raw_card_data=_safe_raw_card_dump(raw),
+            card_format="png",
         )
         return companion_id
 
@@ -414,6 +419,7 @@ def import_from_bytes(file_bytes: bytes, file_type: str) -> str:
             fields=normalized,
             avatar_path=avatar_path,
             raw_card_data=_safe_raw_card_dump(raw),
+            card_format='json',
         )
         return companion_id
     elif file_type == 'png':
@@ -438,6 +444,7 @@ def import_from_bytes(file_bytes: bytes, file_type: str) -> str:
             fields=normalized,
             avatar_path=avatar_rel_path,
             raw_card_data=json_str,
+            card_format='png',
         )
         return companion_id
     else:

@@ -81,6 +81,7 @@ def _init_tables(conn: sqlite3.Connection) -> None:
             llm_provider_id TEXT DEFAULT '',
             tts_config TEXT DEFAULT '{}',
             raw_card_data TEXT DEFAULT '',
+            card_format TEXT DEFAULT '',
             pinned INTEGER NOT NULL DEFAULT 0,
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
             updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
@@ -313,6 +314,20 @@ def _init_tables(conn: sqlite3.Connection) -> None:
             conn.execute("ALTER TABLE companions ADD COLUMN user_info TEXT DEFAULT ''")
         if 'pinned' not in companion_columns:
             conn.execute("ALTER TABLE companions ADD COLUMN pinned INTEGER NOT NULL DEFAULT 0")
+        if 'card_format' not in companion_columns:
+            conn.execute("ALTER TABLE companions ADD COLUMN card_format TEXT DEFAULT ''")
+            # Backfill existing CHARX imports from extracted assets or CCv3 embedded asset URIs.
+            conn.execute("""
+                UPDATE companions
+                SET card_format = 'charx'
+                WHERE card_format = ''
+                  AND (
+                    EXISTS (SELECT 1 FROM companion_assets WHERE companion_id = companions.id)
+                    OR avatar_path LIKE 'companion_assets/%'
+                    OR raw_card_data LIKE '%embeded://%'
+                    OR raw_card_data LIKE '%embedded://%'
+                  )
+            """)
     except Exception as e:
         logger.warning(f"Migration warning for companions table: {e}")
 
@@ -362,6 +377,7 @@ def create_companion(
     fields: Dict,
     avatar_path: Optional[str] = None,
     raw_card_data: str = "",
+    card_format: str = "",
 ) -> bool:
     """创建新的AI伴侣。"""
     conn = _get_conn()
@@ -371,8 +387,8 @@ def create_companion(
                 id, name, description, personality, scenario, first_mes,
                 mes_example, advanced_prompt, user_info, creator_notes, system_prompt, post_history_instructions,
                 creator, character_version, tags, alternate_greetings, depth_prompt,
-                avatar_path, raw_card_data, tts_config
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                avatar_path, raw_card_data, card_format, tts_config
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, (
             companion_id,
             fields.get('name', 'Unknown'),
@@ -393,6 +409,7 @@ def create_companion(
             json.dumps(fields.get('depth_prompt', {}), ensure_ascii=False),
             avatar_path or '',
             raw_card_data,
+            card_format or '',
             json.dumps(fields.get('tts_config', {}), ensure_ascii=False),
         ))
         # 自动创建main分支
@@ -439,7 +456,7 @@ def get_all_companions() -> List[Dict]:
                    c.post_history_instructions, c.creator, c.character_version,
                    c.tags, c.alternate_greetings, c.depth_prompt, c.avatar_path,
                    c.llm_provider_id, c.tts_config, c.created_at, c.updated_at,
-                   c.advanced_prompt, c.user_info, c.pinned,
+                   c.advanced_prompt, c.user_info, c.pinned, c.card_format,
                    (SELECT COUNT(*) FROM companion_assets
                     WHERE companion_id = c.id) AS asset_count,
                    (SELECT content FROM companion_messages

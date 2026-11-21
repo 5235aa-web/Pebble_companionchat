@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, onMounted, ref, watch } from 'vue'
+import { isCharxCard } from '@/data/chat'
 import { useUiStore } from '@/stores/ui'
 import { useSessionStore } from '@/stores/session'
 import { useFileUrl } from '@/composables/useFileUrl'
@@ -26,11 +27,22 @@ const inScene = computed(
 
 const expanded = ref(false)
 const who = computed(() => chat.activeCast)
+const isCharx = computed(() => Boolean(who.value && isCharxCard(who.value)))
 
 type Slide = {
   key: string
   url: string
   kind: 'picture' | 'avatar'
+}
+
+const MAX_STAGE_ASSET_SLIDES = 24
+
+function stageAssetRank(assetType: string): number {
+  const t = assetType.toLowerCase()
+  if (t === 'background') return 0
+  if (t === 'emotion') return 1
+  if (t === 'portrait' || t === 'icon') return 2
+  return 3
 }
 
 /**
@@ -41,18 +53,48 @@ type Slide = {
  * adds a slide in front, and the strip reads "newest picture ... older
  * pictures, portrait". Deleting every picture then leaves the stage exactly as
  * it looked before the feature existed.
+ *
+ * On massive 2,000+ sprite CHARX cards, keep the manual strip bounded while
+ * guaranteeing any active HUD expression override is always present.
  */
 const slides = computed<Slide[]>(() => {
-  const out: Slide[] = pictures.doneItems.map((p) => ({
-    key: `p${p.id}`,
-    url: p.url,
-    kind: 'picture',
-  }))
+  // CHARX cards already bring curated portraits/expressions; keep generated
+  // pictures in the album gallery instead of pushing them onto the stage strip.
+  const out: Slide[] = isCharx.value
+    ? []
+    : pictures.doneItems.map((p) => ({
+        key: `p${p.id}`,
+        url: p.url,
+        kind: 'picture',
+      }))
+  const seenUrls = new Set(out.map((s) => s.url))
   const avatar = who.value?.avatar
-  if (avatar) out.push({ key: 'avatar', url: avatar, kind: 'avatar' })
-  for (const a of session.imageAssets) {
-    if (!a.rel_path || a.rel_path === avatar) continue
+  if (avatar && !seenUrls.has(avatar)) {
+    out.push({ key: 'avatar', url: avatar, kind: 'avatar' })
+    seenUrls.add(avatar)
+  }
+
+  const overridePath = cardHud.stageOverrideRelPath
+  if (overridePath && !seenUrls.has(overridePath)) {
+    const matched = session.imageAssets.find((a) => a.rel_path === overridePath)
+    out.push({
+      key: matched ? `asset-${matched.id}` : 'hud-override',
+      url: overridePath,
+      kind: 'avatar',
+    })
+    seenUrls.add(overridePath)
+  }
+
+  const orderedAssets = [...session.imageAssets].sort(
+    (a, b) => stageAssetRank(a.asset_type) - stageAssetRank(b.asset_type),
+  )
+  let addedAssets = 0
+  for (const a of orderedAssets) {
+    if (addedAssets >= MAX_STAGE_ASSET_SLIDES) break
+    if (!a.rel_path || seenUrls.has(a.rel_path)) continue
     out.push({ key: `asset-${a.id}`, url: a.rel_path, kind: 'avatar' })
+    seenUrls.add(a.rel_path)
+    addedAssets += 1
   }
   return out
 })
@@ -110,7 +152,7 @@ const slideAlt = computed(() =>
 watch(
   () => pictures.doneItems[0]?.id,
   (id, prev) => {
-    if (id && id !== prev) slideIndex.value = 0
+    if (id && id !== prev && !isCharx.value) slideIndex.value = 0
   },
 )
 
@@ -133,18 +175,24 @@ watch(
 
 // When the Stage HUD matches an expression or scene portrait, switch the
 // stage slide to that image automatically; clearing returns to main portrait.
+// Also watches `slides.length` with `immediate: true` so switching views or
+// async asset/picture loading never drops an active override.
 watch(
-  () => cardHud.stageOverrideRelPath,
-  (relPath) => {
+  () => [cardHud.stageOverrideRelPath, slides.value.length] as const,
+  ([relPath], prev) => {
     if (!slides.value.length) return
     if (relPath) {
       const idx = slides.value.findIndex((s) => s.url === relPath)
       if (idx >= 0) slideIndex.value = idx
-    } else {
+      return
+    }
+    const wasActive = Boolean(prev?.[0])
+    if (wasActive) {
       const avatarIdx = slides.value.findIndex((s) => s.key === 'avatar')
       slideIndex.value = avatarIdx >= 0 ? avatarIdx : 0
     }
   },
+  { immediate: true },
 )
 
 function goSlide(step: number) {

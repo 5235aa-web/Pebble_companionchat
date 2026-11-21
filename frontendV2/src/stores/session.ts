@@ -126,6 +126,7 @@ const toCast = (c: Companion): CastMember => ({
   active: false,
   pinned: Boolean(c.pinned),
   assetCount: Number(c.asset_count ?? 0),
+  cardFormat: c.card_format || '',
   ttsVoice: readVoice(c.tts_config),
 })
 
@@ -210,6 +211,11 @@ export const useSessionStore = defineStore('session', () => {
   const audioAssets = computed(() =>
     companionAssets.value.filter((a) => (a.mime_type || '').startsWith('audio/')),
   )
+  const videoAssets = computed(() =>
+    companionAssets.value.filter(
+      (a) => (a.mime_type || '').startsWith('video/') || a.asset_type === 'video',
+    ),
+  )
 
   async function loadCompanionAssets(id = activeCompanionId.value) {
     if (!id) {
@@ -224,25 +230,46 @@ export const useSessionStore = defineStore('session', () => {
     }
   }
 
-  function findAssetByRef(refText: string): CompanionAsset | undefined {
-    const q = (refText || '').trim().toLowerCase()
-    if (!q) return undefined
-    const stripped = q
+  function safeDecodeUri(value: string): string {
+    try {
+      return decodeURIComponent(value)
+    } catch {
+      return value
+    }
+  }
+
+  function normalizeAssetRef(value: string): string {
+    return safeDecodeUri((value || '').trim())
+      .split(/[?#]/, 1)[0]
+      .trim()
+      .toLowerCase()
       .replace(/^embeded:\/\//, '')
       .replace(/^embedded:\/\//, '')
       .replace(/^__asset:/, '')
+      .replace(/^\.?\//, '')
+  }
+
+  function findAssetByRef(refText: string): CompanionAsset | undefined {
+    const rawQ = (refText || '').trim().toLowerCase()
+    const q = safeDecodeUri(refText || '').split(/[?#]/, 1)[0].trim().toLowerCase()
+    if (!q) return undefined
+    const stripped = normalizeAssetRef(refText)
+    if (!stripped) return undefined
     const base = stripped.split('/').pop() || stripped
     const stem = base.replace(/\.[^.]+$/, '')
     return companionAssets.value.find((a) => {
       const name = (a.name || '').toLowerCase()
-      const uri = (a.source_uri || '').toLowerCase()
-      const relBase = (a.rel_path.split('/').pop() || '').toLowerCase()
+      const uriRaw = (a.source_uri || '').toLowerCase()
+      const uriNorm = normalizeAssetRef(a.source_uri || '')
+      const relBase = safeDecodeUri(a.rel_path.split('/').pop() || '').toLowerCase()
       return (
         name === q ||
+        name === stripped ||
         name === base ||
         name === stem ||
-        uri === q ||
-        uri.endsWith('/' + stripped) ||
+        uriRaw === rawQ ||
+        uriRaw === q ||
+        (uriNorm && (uriNorm === stripped || uriNorm.endsWith('/' + stripped))) ||
         relBase === base
       )
     })
@@ -470,6 +497,7 @@ export const useSessionStore = defineStore('session', () => {
     companionAssets,
     imageAssets,
     audioAssets,
+    videoAssets,
     loadCompanionAssets,
     findAssetByRef,
     selectCompanion,

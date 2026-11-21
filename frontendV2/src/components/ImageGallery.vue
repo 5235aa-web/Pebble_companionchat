@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref, watch } from 'vue'
+import { computed, onUnmounted, ref, watch } from 'vue'
 import { useUiStore } from '@/stores/ui'
 import { useSessionStore } from '@/stores/session'
 import { useI18n } from '@/i18n'
@@ -200,14 +200,138 @@ async function retryScene() {
   }
 }
 
-async function generateHere() {
-  fileError.value = ''
-  try {
-    await pictures.generate()
-  } catch (e) {
-    fileError.value = e instanceof Error ? e.message : String(e)
+/* ---- centered image lightbox viewer ---- */
+const lightboxOpen = ref(false)
+const lightboxSrc = ref('')
+const lightboxAlt = ref('')
+const zoom = ref(1)
+const panX = ref(0)
+const panY = ref(0)
+const dragging = ref(false)
+let panPointerId: number | null = null
+let dragStartX = 0
+let dragStartY = 0
+let basePanX = 0
+let basePanY = 0
+let didPan = false
+
+const MIN_ZOOM = 0.25
+const MAX_ZOOM = 4
+const ZOOM_STEP = 0.25
+
+const lightboxStyle = computed(() => ({
+  transform: `translate3d(${panX.value}px, ${panY.value}px, 0) scale(${zoom.value})`,
+}))
+
+function resetZoom() {
+  zoom.value = 1
+  panX.value = 0
+  panY.value = 0
+}
+
+function setZoom(next: number) {
+  const clamped = Math.max(MIN_ZOOM, Math.min(MAX_ZOOM, Math.round(next * 100) / 100))
+  zoom.value = clamped
+  if (clamped <= 1) {
+    panX.value = 0
+    panY.value = 0
   }
 }
+
+function zoomBy(delta: number) {
+  setZoom(zoom.value + delta)
+}
+
+function openLightbox(src: string, alt: string) {
+  if (!src) return
+  lightboxSrc.value = src
+  lightboxAlt.value = alt
+  resetZoom()
+  lightboxOpen.value = true
+}
+
+function closeLightbox() {
+  lightboxOpen.value = false
+  dragging.value = false
+  panPointerId = null
+  resetZoom()
+}
+
+function onLightboxWheel(e: WheelEvent) {
+  const delta = e.deltaY < 0 ? ZOOM_STEP : -ZOOM_STEP
+  zoomBy(delta)
+}
+
+function onLightboxDoubleClick() {
+  if (zoom.value > 1) resetZoom()
+  else setZoom(2)
+}
+
+function onLightboxPointerDown(e: PointerEvent) {
+  if (zoom.value <= 1) return
+  panPointerId = e.pointerId
+  dragStartX = e.clientX
+  dragStartY = e.clientY
+  basePanX = panX.value
+  basePanY = panY.value
+  didPan = false
+  dragging.value = true
+  ;(e.currentTarget as HTMLElement).setPointerCapture(e.pointerId)
+}
+
+function onLightboxPointerMove(e: PointerEvent) {
+  if (panPointerId === null || e.pointerId !== panPointerId) return
+  const dx = e.clientX - dragStartX
+  const dy = e.clientY - dragStartY
+  if (Math.abs(dx) > 3 || Math.abs(dy) > 3) didPan = true
+  panX.value = basePanX + dx
+  panY.value = basePanY + dy
+}
+
+function onLightboxPointerUp(e: PointerEvent) {
+  if (panPointerId === null || e.pointerId !== panPointerId) return
+  panPointerId = null
+  dragging.value = false
+  try {
+    ;(e.currentTarget as HTMLElement).releasePointerCapture(e.pointerId)
+  } catch {
+    /* ignore */
+  }
+}
+
+function onStageBackdropClick() {
+  if (didPan) {
+    didPan = false
+    return
+  }
+  closeLightbox()
+}
+
+function onKeyDown(e: KeyboardEvent) {
+  if (!lightboxOpen.value) return
+  if (e.key === 'Escape') {
+    e.preventDefault()
+    closeLightbox()
+  } else if (e.key === '+' || e.key === '=') {
+    e.preventDefault()
+    zoomBy(ZOOM_STEP)
+  } else if (e.key === '-' || e.key === '_') {
+    e.preventDefault()
+    zoomBy(-ZOOM_STEP)
+  } else if (e.key === '0') {
+    e.preventDefault()
+    resetZoom()
+  }
+}
+
+watch(lightboxOpen, (open) => {
+  if (open) window.addEventListener('keydown', onKeyDown)
+  else window.removeEventListener('keydown', onKeyDown)
+})
+
+onUnmounted(() => {
+  window.removeEventListener('keydown', onKeyDown)
+})
 
 watch(tab, () => {
   // Each album has its own length; an index kept from the previous one would
@@ -227,7 +351,10 @@ watch(
 watch(
   () => ui.isOpen('gallery'),
   async (open) => {
-    if (!open) return
+    if (!open) {
+      closeLightbox()
+      return
+    }
     await Promise.all([loadFiles(), loadGroup(), pictures.ensureLoaded()])
     sceneId.value = null
 
@@ -278,12 +405,6 @@ watch(
         <span>{{ t('picture.tabGroup') }}</span>
         <span class="album-tab-n">{{ groupItems.length }}</span>
       </button>
-      <button class="album-tab-action" @click="generateHere">
-        <svg viewBox="0 0 24 24" stroke-linecap="round" stroke-linejoin="round">
-          <path d="M4 8h3l1.5-2h7L17 8h3v11H4z" />
-          <circle cx="12" cy="13.2" r="3.2" />
-        </svg>
-      </button>
     </div>
 
     <div class="d-body album-body">
@@ -307,7 +428,12 @@ watch(
 
         <template v-else>
           <div class="album-stage">
-            <img v-if="sceneUrl" :src="sceneUrl" :alt="scene?.prompt || 'scene'" />
+            <img
+              v-if="sceneUrl"
+              :src="sceneUrl"
+              :alt="scene?.prompt || 'scene'"
+              @click="openLightbox(sceneUrl, scene?.prompt || 'scene')"
+            />
             <div v-else class="album-loading">{{ t('picture.loading') }}</div>
           </div>
 
@@ -367,7 +493,12 @@ watch(
 
         <template v-else>
           <div class="album-stage">
-            <img v-if="fileCurrent" :src="fileCurrent" :alt="fileName" />
+            <img
+              v-if="fileCurrent"
+              :src="fileCurrent"
+              :alt="fileName"
+              @click="openLightbox(fileCurrent, fileName)"
+            />
             <div v-else class="album-loading">{{ t('picture.loading') }}</div>
           </div>
 
@@ -417,5 +548,73 @@ watch(
         </template>
       </template>
     </div>
+
+    <Teleport to="body">
+      <div
+        v-if="lightboxOpen"
+        class="album-lightbox"
+        role="dialog"
+        aria-modal="true"
+        @wheel.prevent="onLightboxWheel"
+      >
+        <div class="album-lb-bar" @click.stop>
+          <button
+            type="button"
+            class="album-lb-btn"
+            :disabled="zoom <= MIN_ZOOM"
+            :aria-label="t('picture.zoomOut')"
+            :title="t('picture.zoomOut')"
+            @click="zoomBy(-ZOOM_STEP)"
+          >
+            <svg viewBox="0 0 24 24"><path d="M6 12h12" /></svg>
+          </button>
+          <button
+            type="button"
+            class="album-lb-btn album-lb-pct"
+            :title="t('picture.zoomReset')"
+            @click="resetZoom"
+          >
+            {{ Math.round(zoom * 100) }}%
+          </button>
+          <button
+            type="button"
+            class="album-lb-btn"
+            :disabled="zoom >= MAX_ZOOM"
+            :aria-label="t('picture.zoomIn')"
+            :title="t('picture.zoomIn')"
+            @click="zoomBy(ZOOM_STEP)"
+          >
+            <svg viewBox="0 0 24 24"><path d="M12 6v12M6 12h12" /></svg>
+          </button>
+        </div>
+
+        <button
+          type="button"
+          class="album-lb-close"
+          :aria-label="t('picture.closeViewer')"
+          :title="t('picture.closeViewer')"
+          @click="closeLightbox"
+        >
+          <svg viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18" /></svg>
+        </button>
+
+        <div class="album-lb-stage" @click="onStageBackdropClick">
+          <img
+            class="album-lb-img"
+            :class="{ zoomed: zoom > 1, dragging }"
+            :src="lightboxSrc"
+            :alt="lightboxAlt"
+            :style="lightboxStyle"
+            draggable="false"
+            @click.stop
+            @dblclick.stop="onLightboxDoubleClick"
+            @pointerdown="onLightboxPointerDown"
+            @pointermove="onLightboxPointerMove"
+            @pointerup="onLightboxPointerUp"
+            @pointercancel="onLightboxPointerUp"
+          />
+        </div>
+      </div>
+    </Teleport>
   </aside>
 </template>

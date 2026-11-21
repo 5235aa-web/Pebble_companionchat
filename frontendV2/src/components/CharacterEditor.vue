@@ -19,6 +19,7 @@ import {
 } from '@/api/companion'
 import { useFileUrl, useFileUrls } from '@/composables/useFileUrl'
 import { getTtsVoices } from '@/api/tts'
+import InlineVideoCard from './InlineVideoCard.vue'
 
 const ui = useUiStore()
 const session = useSessionStore()
@@ -69,6 +70,7 @@ const collapsed = reactive({
   assets: true,
   assetsImages: true,
   assetsAudio: true,
+  assetsVideos: true,
   tts: true,
   hood: true,
 })
@@ -150,6 +152,7 @@ async function load() {
     // Keep image/audio sub-groups collapsed by default so large 2000+ asset
     // cards never lag or bury the rest of the editor.
     collapsed.assetsImages = true
+    collapsed.assetsVideos = true
     collapsed.assetsAudio = session.audioAssets.length === 0
   } catch (e) {
     error.value = e instanceof Error ? e.message : String(e)
@@ -290,9 +293,11 @@ async function onAssetFilesPicked(e: Event) {
     for (const file of files) {
       const kind = file.type.startsWith('audio/')
         ? 'audio'
-        : file.type.startsWith('image/')
-          ? 'image'
-          : 'other'
+        : file.type.startsWith('video/')
+          ? 'video'
+          : file.type.startsWith('image/')
+            ? 'image'
+            : 'other'
       await uploadCompanionAsset(id, file, kind)
     }
     await Promise.all([session.loadCompanionAssets(id), session.loadCompanions()])
@@ -631,6 +636,39 @@ function removeGreeting(index: number) {
                     >
                       ×
                     </button>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <div v-if="session.videoAssets.length" class="pf-sub-group">
+              <button
+                type="button"
+                class="pf-sub-toggle"
+                :class="{ collapsed: collapsed.assetsVideos }"
+                @click="collapsed.assetsVideos = !collapsed.assetsVideos"
+              >
+                <svg class="caret" viewBox="0 0 24 24"><path d="M6 9l6 6 6-6" /></svg>
+                <span>{{ t('card.assetsVideos') }} ({{ session.videoAssets.length }})</span>
+              </button>
+              <div
+                v-if="ui.isOpen('profile') && !collapsed.assets && !collapsed.assetsVideos"
+                class="pf-sub-body"
+              >
+                <div class="pf-video-list">
+                  <div v-for="a in session.videoAssets" :key="a.id" class="pf-video-item">
+                    <InlineVideoCard :asset="a" compact />
+                    <div class="pf-video-foot">
+                      <span class="pf-asset-type">{{ a.asset_type }}</span>
+                      <button
+                        type="button"
+                        class="pf-asset-btn danger"
+                        aria-label="delete video asset"
+                        @click="removeAsset(a)"
+                      >
+                        ×
+                      </button>
+                    </div>
                   </div>
                 </div>
               </div>

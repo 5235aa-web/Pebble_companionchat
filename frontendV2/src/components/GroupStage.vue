@@ -7,7 +7,7 @@ import { useFileUrls } from '@/composables/useFileUrl'
 import { useI18n } from '@/i18n'
 import ChatAttachmentPicker from './ChatAttachmentPicker.vue'
 import type { PickedAttachment } from '@/api/gallery'
-import type { BeatLine } from '@/data/chat'
+import { isCharxCard, type BeatLine } from '@/data/chat'
 import {
   addGroupMember,
   clearGroupMessages,
@@ -455,12 +455,12 @@ const filteredCommands = computed(() => {
   return SLASH_COMMANDS.filter((c) => c.cmd.startsWith(prefix))
 })
 
-/** Cast members not already in the room, filtered by optional `/invite <name>`. */
+/** Eligible cast members (excluding charx cards and those already in room), filtered by `/invite <name>`. */
 const inviteCandidates = computed(() => {
   const joined = new Set(members.value.map((m) => m.companion_id))
   const q = parsedSlash.value?.stage === 'invite' ? parsedSlash.value.arg : ''
   return session.companions
-    .filter((c) => !joined.has(c.id))
+    .filter((c) => !joined.has(c.id) && !isCharxCard(c))
     .filter(
       (c) =>
         !q ||
@@ -550,6 +550,11 @@ function insertMention(member: GroupMember): void {
 
 async function invite(companionId: string): Promise<void> {
   if (!room.value) return
+  const target = castById.value.get(companionId)
+  if (target && isCharxCard(target)) {
+    inviteOpen.value = false
+    return
+  }
   if (members.value.length >= MAX_MEMBERS) {
     error.value = `A room holds at most ${MAX_MEMBERS} characters.`
     inviteOpen.value = false
@@ -1750,7 +1755,13 @@ onMounted(async () => {
             A room holds at most {{ MAX_MEMBERS }} characters.
           </div>
           <div v-else-if="!inviteCandidates.length" class="gc-mention-empty">
-            Everyone in the cast is already here.
+            {{
+              parsedSlash?.stage === 'invite' && parsedSlash.arg
+                ? 'No matching character card to invite.'
+                : session.companions.some((c) => !isCharxCard(c))
+                  ? 'Everyone in the cast is already here.'
+                  : 'No standard character cards available (charx cards are excluded).'
+            }}
           </div>
           <template v-else>
             <button

@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue'
+import { isCharxCard, type CastMember } from '@/data/chat'
 import { useUiStore } from '@/stores/ui'
 import { useChatStore } from '@/stores/chat'
 import { useSessionStore } from '@/stores/session'
@@ -25,6 +26,33 @@ const visible = computed(() => {
   return chat.cast.filter(
     (c) => c.name.toLowerCase().includes(q) || c.desc.toLowerCase().includes(q),
   )
+})
+
+interface CastGroup {
+  key: 'charx' | 'standard'
+  title: string
+  items: CastMember[]
+}
+
+const groups = computed<CastGroup[]>(() => {
+  const charxItems: CastMember[] = []
+  const standardItems: CastMember[] = []
+  for (const c of visible.value) {
+    if (isCharxCard(c)) charxItems.push(c)
+    else standardItems.push(c)
+  }
+  const out: CastGroup[] = []
+  if (charxItems.length) {
+    out.push({ key: 'charx', title: t('cast.groupCharx'), items: charxItems })
+  }
+  if (standardItems.length) {
+    out.push({
+      key: 'standard',
+      title: charxItems.length ? t('cast.groupStandard') : '',
+      items: standardItems,
+    })
+  }
+  return out
 })
 
 function pick(id: string) {
@@ -69,7 +97,7 @@ async function exportActive() {
   if (!id || busyLabel.value) return
   error.value = ''
   const active = chat.cast.find((c) => c.id === id)
-  const kind = (active?.assetCount ?? 0) > 0 ? 'charx' : 'json'
+  const kind = active && (isCharxCard(active) || (active.assetCount ?? 0) > 0) ? 'charx' : 'json'
   const safeName = (active?.name || id).replace(/[\\/:*?"<>|]/g, '_').trim() || id
   busyLabel.value = t('card.exporting', { pct: 0 })
   try {
@@ -114,49 +142,55 @@ function askDelete(id: string) {
     </div>
 
     <div class="d-body">
-      <div
-        v-for="c in visible"
-        :key="c.id"
-        class="cast-item"
-        :class="{ active: c.active }"
-        role="button"
-        tabindex="0"
-        @click="pick(c.id)"
-        @keydown.enter="pick(c.id)"
-        @keydown.space.prevent="pick(c.id)"
-      >
-        <div class="cast-avatar">
-          <img v-if="c.avatar" :src="avatarMap[c.avatar]" :alt="c.name" />
-          <span v-else>{{ c.letter }}</span>
+      <section v-for="group in groups" :key="group.key" class="cast-group" :data-group="group.key">
+        <div v-if="group.title" class="cast-group-head">
+          <span class="cast-group-title">{{ group.title }}</span>
+          <span class="cast-group-count">{{ group.items.length }}</span>
         </div>
-        <div class="cast-main">
-          <div class="cast-head">
-            <div class="cast-name">{{ c.name }}</div>
-            <button
-              class="cast-pin"
-              :class="{ on: c.pinned }"
-              :aria-label="c.pinned ? t('cast.unpin') : t('cast.pin')"
-              :data-tip="c.pinned ? t('cast.unpin') : t('cast.pin')"
-              :aria-pressed="c.pinned ? 'true' : 'false'"
-              @click.stop="session.togglePin(c.id)"
-            >
-              <svg viewBox="0 0 24 24">
-                <path
-                  d="M12 3.6l2.6 5.3 5.8.8-4.2 4.1 1 5.8L12 16.9l-5.2 2.7 1-5.8L3.6 9.7l5.8-.8z"
-                />
-              </svg>
-            </button>
-            <button class="cast-edit" :aria-label="t('cast.editCard')" @click.stop="edit(c.id)">
-              <svg viewBox="0 0 24 24"><path d="M4 20h4L18 10l-4-4L4 16v4z" /><path d="M14 6l4 4" /></svg>
-            </button>
+        <div
+          v-for="c in group.items"
+          :key="c.id"
+          class="cast-item"
+          :class="{ active: c.active }"
+          role="button"
+          tabindex="0"
+          @click="pick(c.id)"
+          @keydown.enter="pick(c.id)"
+          @keydown.space.prevent="pick(c.id)"
+        >
+          <div class="cast-avatar">
+            <img v-if="c.avatar" :src="avatarMap[c.avatar]" :alt="c.name" />
+            <span v-else>{{ c.letter }}</span>
           </div>
-          <div class="cast-desc">{{ c.desc }}</div>
-          <div class="cast-meta">{{ c.meta }}</div>
+          <div class="cast-main">
+            <div class="cast-head">
+              <div class="cast-name">{{ c.name }}</div>
+              <button
+                class="cast-pin"
+                :class="{ on: c.pinned }"
+                :aria-label="c.pinned ? t('cast.unpin') : t('cast.pin')"
+                :data-tip="c.pinned ? t('cast.unpin') : t('cast.pin')"
+                :aria-pressed="c.pinned ? 'true' : 'false'"
+                @click.stop="session.togglePin(c.id)"
+              >
+                <svg viewBox="0 0 24 24">
+                  <path
+                    d="M12 3.6l2.6 5.3 5.8.8-4.2 4.1 1 5.8L12 16.9l-5.2 2.7 1-5.8L3.6 9.7l5.8-.8z"
+                  />
+                </svg>
+              </button>
+              <button class="cast-edit" :aria-label="t('cast.editCard')" @click.stop="edit(c.id)">
+                <svg viewBox="0 0 24 24"><path d="M4 20h4L18 10l-4-4L4 16v4z" /><path d="M14 6l4 4" /></svg>
+              </button>
+            </div>
+            <div class="cast-desc">{{ c.desc }}</div>
+            <div class="cast-meta">{{ c.meta }}</div>
+          </div>
+          <button class="cast-del" aria-label="delete character" @click.stop="askDelete(c.id)">
+            <svg viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18" /></svg>
+          </button>
         </div>
-        <button class="cast-del" aria-label="delete character" @click.stop="askDelete(c.id)">
-          <svg viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18" /></svg>
-        </button>
-      </div>
+      </section>
       <div v-if="error" class="empty-block"><div class="eb-hint">{{ error }}</div></div>
       <div v-if="!visible.length" class="empty-block">
         <div class="eb-title">{{ t('empty.noCast') }}</div>

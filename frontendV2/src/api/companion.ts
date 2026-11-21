@@ -35,6 +35,7 @@ export interface Companion {
   raw_card_data?: string
   pinned?: boolean
   asset_count?: number
+  card_format?: string
   created_at: string
   updated_at: string
 }

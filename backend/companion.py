@@ -1129,7 +1129,10 @@ class Companion:
         
         # 3. 构建消息上下文，LLM看到完整的对话历史（含自己的上一条回复）
         memories: List[Dict] = []
-        messages = self._build_messages(history, branch_id, memories)
+        card_hud_state = self._resolve_card_hud_state(branch_id)
+        messages = self._build_messages(
+            history, branch_id, memories, include_card_hud=bool(card_hud_state)
+        )
         
         # 4. 追加续写指令——告诉LLM接着上一条回复继续写，而不是重新回答
         messages.append({
@@ -1151,6 +1154,7 @@ class Companion:
         usage_info: Optional[Dict] = None
         started = time.perf_counter()
         first_token_ms: Optional[float] = None
+        hud_filter = CardHudStreamFilter() if card_hud_state else None
         async for chunk in call_llm_stream(
             provider_type=llm_config["provider_type"],
             api_key=llm_config["api_key"],
@@ -1171,7 +1175,13 @@ class Companion:
             if chunk["type"] == "content":
                 if first_token_ms is None:
                     first_token_ms = (time.perf_counter() - started) * 1000
-                full_content += chunk["content"]
+                text = chunk["content"]
+                if hud_filter is not None:
+                    text = hud_filter.feed(text)
+                    if not text:
+                        continue
+                    chunk = {**chunk, "content": text}
+                full_content += text
                 yield chunk
             elif chunk["type"] == "thinking":
                 yield chunk
@@ -1182,6 +1192,15 @@ class Companion:
                 logger.error(f"LLM error: {chunk.get('message')}")
                 yield chunk
                 return
+
+        card_hud_event: Optional[Dict] = None
+        if hud_filter is not None and card_hud_state is not None:
+            tail, card_hud_event = self._finalize_card_hud(
+                branch_id, hud_filter, card_hud_state.get("hud") or {}
+            )
+            if tail:
+                full_content += tail
+                yield {"type": "content", "content": tail}
         
         logger.info(f"Continue stream complete, content_len={len(full_content)}")
         record = _generation_record(
@@ -1207,6 +1226,8 @@ class Companion:
             )
             logger.info(f"AI response appended, total_len={len(appended_content)}")
         
+        if card_hud_event is not None:
+            yield card_hud_event
         yield {"type": "done", "final_content": full_content, "message_id": last_ai_msg['id'], "memories": _in_play_payload(memories), "generation": generation}
     
     async def generate_regenerate_stream(

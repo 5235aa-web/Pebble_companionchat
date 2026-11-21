@@ -191,20 +191,45 @@ def build_card_hud_prompt(
     return "\n".join(lines)
 
 
+_STATE_START_RE = re.compile(
+    r"(?:(?<=^)|(?<=\n))[ \t]*```[a-zA-Z0-9_-]*[ \t]*\r?\n[ \t]*<<<\s*state\s*>>>"
+    r"|<<<\s*state\s*>>>",
+    re.IGNORECASE,
+)
+_STATE_END_RE = re.compile(r"<<<\s*(?:end|/\s*state)\s*>>>", re.IGNORECASE)
+_CLOSING_FENCE_RE = re.compile(r"^[ \t]*\r?\n?[ \t]*```[ \t]*(?:\r?\n|$)")
+_CLOSING_FENCE_PARTIAL_RE = re.compile(r"^[ \t]*\r?\n?[ \t]*(?:`{1,3}[ \t]*)?$")
+_HOLD_TAIL_RE = re.compile(
+    r"(?:"
+    r"(?:(?<=^)|(?<=\n))[ \t]*`{1,3}[a-zA-Z0-9_-]*[ \t]*(?:\r?\n[ \t]*)?"
+    r"(?:<(?:<(?:<(?:\s*(?:s(?:t(?:a(?:t(?:e(?:\s*>{0,2})?)?)?)?)?)?)?)?)?)?"
+    r"|"
+    r"<(?:<(?:<(?:\s*(?:s(?:t(?:a(?:t(?:e(?:\s*>{0,2})?)?)?)?)?)?)?)?)?"
+    r")$",
+    re.IGNORECASE,
+)
+
+
 class CardHudStreamFilter:
-    """Strip the trailing <<<STATE>>>...<<<END>>> block from a token stream."""
+    """Strip the trailing <<<STATE>>>...<<<END>>> block from a token stream.
+
+    Tolerates LLM format drift such as mixed case (`<<<state>>>`), inner spaces
+    (`<<< STATE >>>`), `<<< /STATE >>>` closers, and Markdown code fences
+    wrapping the state block without delaying normal Markdown code blocks.
+    """
 
     def __init__(self) -> None:
         self._buf = ""
         self._in_state = False
+        self._closing_fence_pending = False
         self._state_raw = ""
 
     def _partial_marker_len(self) -> int:
-        limit = min(len(self._buf), len(HUD_STATE_START) - 1)
-        for size in range(limit, 0, -1):
-            if HUD_STATE_START.startswith(self._buf[-size:]):
-                return size
-        return 0
+        m = _HOLD_TAIL_RE.search(self._buf)
+        if not m:
+            return 0
+        # Do not hold an empty match.
+        return len(m.group(0))
 
     def feed(self, text: str) -> str:
         if not text:
@@ -212,21 +237,37 @@ class CardHudStreamFilter:
         self._buf += text
         out: List[str] = []
         while True:
-            if self._in_state:
-                end = self._buf.find(HUD_STATE_END)
-                if end < 0:
-                    self._state_raw += self._buf
-                    self._buf = ""
+            if self._closing_fence_pending:
+                m_close = _CLOSING_FENCE_RE.match(self._buf)
+                if m_close:
+                    self._buf = self._buf[m_close.end():]
+                    self._closing_fence_pending = False
+                    continue
+                if _CLOSING_FENCE_PARTIAL_RE.match(self._buf):
                     return "".join(out)
-                self._state_raw += self._buf[:end]
-                self._buf = self._buf[end + len(HUD_STATE_END):]
+                self._closing_fence_pending = False
+
+            if self._in_state:
+                m_end = _STATE_END_RE.search(self._buf)
+                if not m_end:
+                    last_lt = self._buf.rfind("<")
+                    if last_lt >= 0 and len(self._buf) - last_lt <= 24:
+                        self._state_raw += self._buf[:last_lt]
+                        self._buf = self._buf[last_lt:]
+                    else:
+                        self._state_raw += self._buf
+                        self._buf = ""
+                    return "".join(out)
+                self._state_raw += self._buf[:m_end.start()]
+                self._buf = self._buf[m_end.end():]
                 self._in_state = False
+                self._closing_fence_pending = True
                 continue
 
-            start = self._buf.find(HUD_STATE_START)
-            if start >= 0:
-                out.append(self._buf[:start])
-                self._buf = self._buf[start + len(HUD_STATE_START):]
+            m_start = _STATE_START_RE.search(self._buf)
+            if m_start:
+                out.append(self._buf[:m_start.start()])
+                self._buf = self._buf[m_start.end():]
                 self._in_state = True
                 continue
 
@@ -244,9 +285,18 @@ class CardHudStreamFilter:
         if self._in_state:
             self._state_raw += self._buf
             tail = ""
+        elif self._closing_fence_pending:
+            m_close = _CLOSING_FENCE_RE.match(self._buf)
+            if m_close:
+                tail = self._buf[m_close.end():]
+            elif _CLOSING_FENCE_PARTIAL_RE.match(self._buf):
+                tail = ""
+            else:
+                tail = self._buf
         else:
             tail = self._buf
         self._buf = ""
+        self._closing_fence_pending = False
         hud_update, media_cue = (
             parse_hud_block(self._state_raw) if self._state_raw else ({}, {})
         )

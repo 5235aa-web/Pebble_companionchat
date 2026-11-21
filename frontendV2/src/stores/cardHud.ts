@@ -204,6 +204,10 @@ export const useCardHudStore = defineStore('cardHud', () => {
     const res = await updateBranchHud(cid, bid, { enabled: next })
     enabled.value = res.enabled
     effectiveEnabled.value = Boolean(res.effective_enabled)
+    if (!effectiveEnabled.value) {
+      affectionDelta.value = null
+      clearStageOverride()
+    }
   }
 
   async function reset() {

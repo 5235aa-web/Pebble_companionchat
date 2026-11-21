@@ -198,6 +198,8 @@ export const en = {
   'cast.pin': 'Pin to top',
   'cast.unpin': 'Unpin',
   'cast.searchPlaceholder': 'search cast',
+  'cast.groupCharx': 'charx',
+  'cast.groupStandard': 'Character cards',
 
   /* ---- script mode ---- */
   'rail.script': 'Scripts',
@@ -397,10 +399,12 @@ export const en = {
   'card.identity': 'Identity',
   'card.voice': 'Dialogue',
   'card.assets': 'Media assets',
-  'card.assetsEmpty': 'No bundled images or audio yet. Import a .charx card or upload files here.',
+  'card.assetsEmpty': 'No bundled images, video, or audio yet. Import a .charx card or upload files here.',
   'card.assetsAdd': 'Upload asset',
   'card.assetsImages': 'Images',
   'card.assetsAudio': 'Music & SFX',
+  'card.assetsVideos': 'Videos',
+  'card.assetPlayVideo': 'Play video',
   'card.assetsShowMore': 'Show more ({left} left)',
   'card.assetsFilterPlaceholder': 'filter by name or type',
   'card.assetSetAvatar': 'Set avatar',
@@ -617,6 +621,10 @@ export const en = {
   'picture.comfyNeedCkpt': 'Pick a checkpoint before generating.',
   'picture.cancel': 'Cancel',
   'picture.cancelTip': 'Stop this generation',
+  'picture.zoomIn': 'Zoom in',
+  'picture.zoomOut': 'Zoom out',
+  'picture.zoomReset': 'Reset zoom',
+  'picture.closeViewer': 'Close viewer',
 
   /* ---- empty state ---- */
   'empty.hints': 'hints',

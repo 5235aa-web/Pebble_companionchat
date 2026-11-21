@@ -48,12 +48,24 @@ export function useFileUrl(
 export function useFileUrls(source: Ref<string[]> | (() => string[]), width = 256) {
   const map = ref<Record<string, string>>({})
   const read = typeof source === 'function' ? source : () => source.value
+  let lastKey = ''
+  let generation = 0
 
-  const load = async (paths: string[]) => {
+  const load = async (paths: string[], force = false) => {
+    const clean = (paths || []).filter(Boolean)
+    const nextKey = clean.join('\u0000')
+    if (!force && nextKey === lastKey) return
+    lastKey = nextKey
+    const token = ++generation
+
+    if (!clean.length) {
+      if (Object.keys(map.value).length) map.value = {}
+      return
+    }
+
     const next: Record<string, string> = {}
     await Promise.all(
-      (paths || []).map(async (path) => {
-        if (!path) return
+      clean.map(async (path) => {
         try {
           next[path] = await fileUrl(path, width)
         } catch {
@@ -61,14 +73,15 @@ export function useFileUrls(source: Ref<string[]> | (() => string[]), width = 25
         }
       }),
     )
+    if (token !== generation) return
     map.value = next
   }
 
-  watch(read, load, { immediate: true, deep: true })
+  watch(read, (paths) => void load(paths), { immediate: true, deep: true })
 
   onScopeDispose(
     onSocketReady(() => {
-      void load(read())
+      void load(read(), true)
     }),
   )
 

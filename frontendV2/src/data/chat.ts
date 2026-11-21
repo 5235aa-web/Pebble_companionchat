@@ -40,6 +40,11 @@ export interface Beat {
   thinking: string | null
   lines: BeatLine[]
   /**
+   * Unsplit message source, preserving blank lines and indentation so the
+   * single-chat Markdown / controlled HTML renderer can parse block syntax.
+   */
+  raw?: string
+  /**
    * The part of a streaming reply that has no newline after it yet.
    *
    * Kept apart from `lines` so a delta only rewrites this one string instead of
@@ -84,6 +89,7 @@ export interface CastMember {
   active: boolean
   pinned?: boolean
   assetCount?: number
+  cardFormat?: string
   /**
    * Voice this character speaks in, stored on the companion row as
    * `tts_config`. Only identity is kept here; the engine and its sampling
@@ -91,6 +97,11 @@ export interface CastMember {
    * everyone at once.
    */
   ttsVoice?: { ref: string; id: string }
+}
+
+/** True when this cast member was imported from a CHARX package. */
+export function isCharxCard(c: Pick<CastMember, 'cardFormat' | 'assetCount'>): boolean {
+  return c.cardFormat === 'charx' || (!c.cardFormat && (c.assetCount ?? 0) > 0)
 }
 
 export interface Branch {

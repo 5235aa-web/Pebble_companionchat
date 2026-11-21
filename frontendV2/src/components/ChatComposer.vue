@@ -69,7 +69,7 @@ function doSend() {
   const el = input.value
   if (!el) return
   const val = el.value
-  if (!val.trim()) return
+  if (!val.trim() && !chips.value.length) return
   chat.send(
     val,
     chips.value.map((c) => ({

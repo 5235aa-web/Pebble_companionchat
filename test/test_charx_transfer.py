@@ -188,6 +188,42 @@ class CharxRoundTripTest(unittest.TestCase):
         cid3 = tavern_importer.import_charx(str(reimported_path))
         self.assertEqual(len(companion_db.get_companion_assets(cid3)), 4)
 
+    def test_import_charx_sets_card_format_distinct_from_standard_cards(self):
+        charx_path = _make_sample_charx(self.tmp / "rin_fmt.charx")
+        cid_charx = tavern_importer.import_charx(str(charx_path))
+
+        json_path = self.tmp / "plain.json"
+        json_path.write_text(json.dumps({"name": "Plain", "description": "text"}), encoding="utf-8")
+        cid_json = tavern_importer.import_json(str(json_path))
+        companion_db.create_companion("c_manual", {"name": "Manual"})
+
+        by_id = {c["id"]: c for c in companion_db.get_all_companions()}
+        self.assertEqual(by_id[cid_charx]["card_format"], "charx")
+        self.assertEqual(by_id[cid_json]["card_format"], "json")
+        self.assertEqual(by_id["c_manual"]["card_format"], "")
+
+    def test_svg_uploads_and_thumbs_are_sandboxed_and_servable(self):
+        from fastapi.testclient import TestClient
+        from backend import main as backend_main
+
+        svg_rel = Path("companion_assets") / "c_svg" / "icon" / "0000_badge.svg"
+        svg_abs = paths.UPLOAD_ROOT / svg_rel
+        svg_abs.parent.mkdir(parents=True, exist_ok=True)
+        svg_abs.write_text('<svg xmlns="http://www.w3.org/2000/svg"><script>alert(1)</script></svg>', encoding="utf-8")
+
+        client = TestClient(backend_main.app)
+        up_res = client.get(f"/uploads/{svg_rel.as_posix()}")
+        self.assertEqual(up_res.status_code, 200)
+        self.assertEqual(up_res.headers.get("x-content-type-options"), "nosniff")
+        self.assertIn("sandbox", up_res.headers.get("content-security-policy", ""))
+        self.assertIn("attachment", up_res.headers.get("content-disposition", ""))
+
+        th_res = client.get(f"/thumbs/uploads/{svg_rel.as_posix()}?w=256")
+        self.assertEqual(th_res.status_code, 200)
+        self.assertTrue(th_res.headers.get("content-type", "").startswith("image/svg+xml"))
+        self.assertIn("sandbox", th_res.headers.get("content-security-policy", ""))
+        self.assertEqual(th_res.headers.get("x-content-type-options"), "nosniff")
+
 
 if __name__ == "__main__":
     unittest.main()

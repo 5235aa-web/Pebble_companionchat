@@ -1,10 +1,12 @@
 # -*- coding: utf-8 -*-
 """Single-chat Stage HUD protocol, stream filter, and branch persistence tests."""
 
+import asyncio
 import shutil
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 from backend import card_hud, companion, companion_db, world_book_db
 
@@ -42,6 +44,31 @@ class StreamFilterTest(unittest.TestCase):
         self.assertEqual(visible + tail, "Hello there!")
         self.assertEqual(hud_update, {})
         self.assertEqual(media_cue, {})
+
+    def test_tolerates_case_spaces_split_end_and_code_fences(self):
+        flt = card_hud.CardHudStreamFilter()
+        payload = (
+            "Normal prose.\n"
+            "```python\nprint('keep me')\n```\n"
+            "Ending line.\n"
+            "```yaml\n"
+            "<<< sTaTe >>>\n"
+            "mood: playful\n"
+            "affection: 88\n"
+            "<<< /STATE >>>\n"
+            "```"
+        )
+        # Feed 2 chars at a time to stress every marker/fence boundary.
+        visible = "".join(flt.feed(payload[i : i + 2]) for i in range(0, len(payload), 2))
+        tail, hud_update, _ = flt.finish()
+        visible += tail
+
+        self.assertEqual(
+            visible.strip(),
+            "Normal prose.\n```python\nprint('keep me')\n```\nEnding line.",
+        )
+        self.assertEqual(hud_update["mood"], "playful")
+        self.assertEqual(hud_update["affection"], 88)
 
 
 class PromptBudgetTest(unittest.TestCase):
@@ -104,6 +131,68 @@ class BranchHudDbTest(unittest.TestCase):
         hud_prompt = companion.Companion("c_rich").build_system_prompt(include_card_hud=True)
         self.assertIn("[Stage HUD]", hud_prompt)
         self.assertIn("happy", hud_prompt)
+
+    def test_continue_stream_filters_state_and_emits_card_hud(self):
+        companion_db.create_companion("c_cont", {"name": "Iris"})
+        companion_db.update_branch_hud("c_cont", "main", enabled=True, hud={"mood": "calm"})
+        companion_db.save_message_with_swipes("c_cont", "main", "user", "Go on.", [], 0)
+        msg_id = companion_db.save_message_with_swipes(
+            "c_cont", "main", "assistant", "She paused near the door.", ["She paused near the door."], 0
+        )
+
+        captured_messages = []
+
+        async def fake_stream(**kwargs):
+            captured_messages.extend(kwargs["messages"])
+            for part in [
+                {"type": "content", "content": " Then she smiled."},
+                {"type": "content", "content": "\n<<<STA"},
+                {"type": "content", "content": "TE>>>\nmood: warm\naffection: 65\n<<<END>>>"},
+            ]:
+                yield part
+
+        async def run():
+            events = []
+            with mock.patch.object(companion, "call_llm_stream", side_effect=fake_stream):
+                comp = companion.Companion("c_cont")
+                async for ev in comp.generate_continue_stream(
+                    branch_id="main",
+                    llm_config={
+                        "provider_type": "openai",
+                        "api_key": "k",
+                        "base_url": "http://localhost:1234/v1",
+                        "model": "test-model",
+                    },
+                ):
+                    events.append(ev)
+            return events
+
+        events = asyncio.run(run())
+        content_text = "".join(e["content"] for e in events if e["type"] == "content")
+        self.assertEqual(content_text.strip(), "Then she smiled.")
+
+        hud_events = [e for e in events if e["type"] == "card_hud"]
+        self.assertEqual(len(hud_events), 1)
+        self.assertEqual(hud_events[0]["hud"]["mood"], "warm")
+        self.assertEqual(hud_events[0]["hud"]["affection"], 65)
+
+        done_events = [e for e in events if e["type"] == "done"]
+        self.assertEqual(len(done_events), 1)
+        self.assertEqual(done_events[0]["message_id"], msg_id)
+        self.assertNotIn("<<<STATE>>>", done_events[0]["final_content"])
+
+        # System prompt includes Stage HUD instructions when enabled on the branch.
+        self.assertIn("[Stage HUD]", captured_messages[0]["content"])
+
+        # Stored message appends only the visible continuation prose.
+        msgs = companion_db.get_messages("c_cont", "main")
+        self.assertEqual(msgs[-1]["content"].strip(), "She paused near the door. Then she smiled.")
+        self.assertNotIn("<<<STATE>>>", msgs[-1]["content"])
+
+        # Branch HUD persisted the update.
+        branch_hud = companion_db.get_branch_hud("c_cont", "main")
+        self.assertEqual(branch_hud["hud"]["mood"], "warm")
+        self.assertEqual(branch_hud["hud"]["affection"], 65)
 
 
 if __name__ == "__main__":

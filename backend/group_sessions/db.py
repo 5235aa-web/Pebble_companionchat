@@ -353,6 +353,19 @@ def add_member(session_id: int, companion_id: str) -> Dict:
         ).fetchone()
         if existing:
             return {"ok": True, "already": True}
+        row = conn.execute(
+            """
+            SELECT c.card_format,
+                   (SELECT COUNT(*) FROM companion_assets WHERE companion_id = c.id) AS asset_count
+            FROM companions c
+            WHERE c.id = ?
+            """,
+            (companion_id,),
+        ).fetchone()
+        if row is not None:
+            fmt = str(row["card_format"] or "").lower()
+            if fmt == "charx" or (not fmt and int(row["asset_count"] or 0) > 0):
+                return {"ok": False, "error": "charx cards cannot be invited to group chat."}
         count = conn.execute(
             "SELECT COUNT(*) FROM group_members WHERE session_id = ?", (session_id,)
         ).fetchone()[0]

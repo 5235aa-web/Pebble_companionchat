@@ -193,6 +193,8 @@ export const zh: Record<keyof typeof en, string> = {
   'cast.pin': '置顶',
   'cast.unpin': '取消置顶',
   'cast.searchPlaceholder': '搜索演员',
+  'cast.groupCharx': 'charx',
+  'cast.groupStandard': '普通角色卡',
 
   /* ---- 剧本模式 ---- */
   'rail.script': '剧本',
@@ -396,10 +398,12 @@ export const zh: Record<keyof typeof en, string> = {
   'card.tags': '标签',
   'card.voice': '对话',
   'card.assets': '多媒体资产',
-  'card.assetsEmpty': '暂无打包图片或音乐音效，可导入 .charx 角色卡或点击上传。',
+  'card.assetsEmpty': '暂无打包图片、视频或音乐音效，可导入 .charx 角色卡或点击上传。',
   'card.assetsAdd': '上传资产',
   'card.assetsImages': '立绘与图片',
   'card.assetsAudio': '音乐与音效',
+  'card.assetsVideos': '视频',
+  'card.assetPlayVideo': '播放视频',
   'card.assetsShowMore': '加载更多（剩余 {left} 项）',
   'card.assetsFilterPlaceholder': '按名称或类型筛选',
   'card.assetSetAvatar': '设为头像',
@@ -607,6 +611,10 @@ export const zh: Record<keyof typeof en, string> = {
   'picture.comfyNeedCkpt': '还没有选择模型，选好之后才能生成。',
   'picture.cancel': '取消',
   'picture.cancelTip': '停止这次生成',
+  'picture.zoomIn': '放大',
+  'picture.zoomOut': '缩小',
+  'picture.zoomReset': '重置缩放',
+  'picture.closeViewer': '关闭预览',
 
   'empty.hints': 'hints',
 

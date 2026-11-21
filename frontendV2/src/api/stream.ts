@@ -85,6 +85,60 @@ export interface StreamHandlers {
 }
 
 /**
+ * Shared SSE line parser that coalesces adjacent `content` and `thinking`
+ * deltas arriving in the same read/frame batch to reduce Vue reactivity churn.
+ */
+function createSseLineParser(onChunk: (chunk: ChatChunk) => void): (text: string) => void {
+  let buffer = ''
+  return (text: string) => {
+    buffer += text
+    const lines = buffer.split('\n')
+    buffer = lines.pop() ?? ''
+
+    let pendingContent = ''
+    let pendingThinking = ''
+
+    const flushContent = () => {
+      if (!pendingContent) return
+      onChunk({ type: 'content', content: pendingContent })
+      pendingContent = ''
+    }
+    const flushThinking = () => {
+      if (!pendingThinking) return
+      onChunk({ type: 'thinking', content: pendingThinking })
+      pendingThinking = ''
+    }
+
+    for (const line of lines) {
+      const trimmed = line.trim()
+      if (!trimmed.startsWith('data:')) continue
+      const payload = trimmed.slice(5).trim()
+      if (!payload || payload === '[DONE]') continue
+      let parsed: ChatChunk
+      try {
+        parsed = JSON.parse(payload) as ChatChunk
+      } catch {
+        // A malformed frame must not tear down the stream.
+        continue
+      }
+      if (parsed.type === 'content') {
+        flushThinking()
+        pendingContent += parsed.content ?? ''
+      } else if (parsed.type === 'thinking') {
+        flushContent()
+        pendingThinking += parsed.content ?? ''
+      } else {
+        flushContent()
+        flushThinking()
+        onChunk(parsed)
+      }
+    }
+    flushContent()
+    flushThinking()
+  }
+}
+
+/**
  * Reads an SSE response and turns `data:` lines into chunks.
  * Streaming endpoints talk to the backend directly: the Vite proxy buffers
  * the body and collapses the stream into one delivery.
@@ -98,27 +152,12 @@ async function consume(res: Response, h: StreamHandlers): Promise<void> {
 
   const reader = res.body.getReader()
   const decoder = new TextDecoder()
-  let buffer = ''
+  const feed = createSseLineParser(h.onChunk)
 
   for (;;) {
     const { done, value } = await reader.read()
     if (done) break
-    buffer += decoder.decode(value, { stream: true })
-
-    const lines = buffer.split('\n')
-    buffer = lines.pop() ?? ''
-
-    for (const line of lines) {
-      const trimmed = line.trim()
-      if (!trimmed.startsWith('data:')) continue
-      const payload = trimmed.slice(5).trim()
-      if (!payload || payload === '[DONE]') continue
-      try {
-        h.onChunk(JSON.parse(payload) as ChatChunk)
-      } catch {
-        // A malformed frame must not tear down the stream.
-      }
-    }
+    feed(decoder.decode(value, { stream: true }))
   }
   h.onComplete()
 }
@@ -134,26 +173,7 @@ export function run(
   h: StreamHandlers,
   controller: AbortController = new AbortController(),
 ): AbortController {
-  let buffer = ''
-
-  // The socket delivers raw bytes; the payloads are still SSE frames, so the
-  // same line parser applies whether they arrive over fetch or the socket.
-  const feed = (text: string) => {
-    buffer += text
-    const lines = buffer.split('\n')
-    buffer = lines.pop() ?? ''
-    for (const line of lines) {
-      const trimmed = line.trim()
-      if (!trimmed.startsWith('data:')) continue
-      const payload = trimmed.slice(5).trim()
-      if (!payload || payload === '[DONE]') continue
-      try {
-        h.onChunk(JSON.parse(payload) as ChatChunk)
-      } catch {
-        // A malformed frame must not tear down the stream.
-      }
-    }
-  }
+  const feed = createSseLineParser(h.onChunk)
 
   streamRequest(path, body, feed, { signal: controller.signal })
     .then(() => h.onComplete())

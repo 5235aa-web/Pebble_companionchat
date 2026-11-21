@@ -13,7 +13,10 @@ import { useSessionStore } from '@/stores/session'
 import { useCallStore } from '@/stores/call'
 import { useCardAudioStore } from '@/stores/cardAudio'
 import { parseLines } from '@/stores/chat'
-import { resolveInlineMedia } from '@/utils/inlineMedia'
+import { extractInlineMediaFromText } from '@/utils/inlineMedia'
+import { plainTextForSpeech } from '@/utils/richText'
+import RichMessage from './RichMessage.vue'
+import InlineVideoCard from './InlineVideoCard.vue'
 
 const props = defineProps<{ beat: Beat; index: number }>()
 const chat = useChatStore()
@@ -26,16 +29,87 @@ const call = useCallStore()
 const cardAudio = useCardAudioStore()
 const { t } = useI18n()
 
+const rawSource = computed(() => {
+  if (typeof props.beat.raw === 'string') return props.beat.raw
+  return [props.beat.lines.map((l) => l.text).join('\n'), props.beat.tail ?? '']
+    .filter(Boolean)
+    .join('\n')
+})
+
+const isStreaming = computed(
+  () => chat.busy && props.beat.role === 'ai' && chat.lastBeat?.uid === props.beat.uid,
+)
+
+const displaySource = ref(rawSource.value)
+let mediaRafId = 0
+let mediaTimerId = 0
+let lastMediaSync = 0
+
+function clearMediaSchedule() {
+  if (mediaTimerId) {
+    window.clearTimeout(mediaTimerId)
+    mediaTimerId = 0
+  }
+  if (mediaRafId) {
+    cancelAnimationFrame(mediaRafId)
+    mediaRafId = 0
+  }
+}
+
+watch(
+  [rawSource, isStreaming],
+  ([src, streaming]) => {
+    if (!streaming) {
+      clearMediaSchedule()
+      lastMediaSync = performance.now()
+      displaySource.value = src
+      return
+    }
+    if (mediaTimerId || mediaRafId) return
+    const minInterval = src.length > 6000 ? 110 : src.length > 2500 ? 75 : 48
+    const wait = Math.max(0, minInterval - (performance.now() - lastMediaSync))
+    const queueFrame = () => {
+      mediaRafId = requestAnimationFrame(() => {
+        mediaRafId = 0
+        lastMediaSync = performance.now()
+        displaySource.value = rawSource.value
+      })
+    }
+    if (wait > 0) {
+      mediaTimerId = window.setTimeout(() => {
+        mediaTimerId = 0
+        queueFrame()
+      }, wait)
+    } else {
+      queueFrame()
+    }
+  },
+  { immediate: true },
+)
+
 const inlineMedia = computed(() =>
-  resolveInlineMedia(props.beat.lines, (ref) => session.findAssetByRef(ref)),
+  extractInlineMediaFromText(displaySource.value, (ref) => session.findAssetByRef(ref)),
 )
 
 const inlineImageMap = useFileUrls(
-  () => inlineMedia.value.images.map((a) => a.rel_path).filter(Boolean),
+  () =>
+    [...inlineMedia.value.images, ...inlineMedia.value.htmlImages]
+      .map((a) => a.rel_path)
+      .filter(Boolean),
   512,
 )
 
+const inlineAssetUrls = computed<Record<number, string>>(() => {
+  const out: Record<number, string> = {}
+  for (const a of inlineMedia.value.htmlImages) {
+    const url = inlineImageMap.value[a.rel_path]
+    if (url) out[a.id] = url
+  }
+  return out
+})
+
 const lit = ref(false)
+const instant = ref(false)
 const thinkingOpen = ref(false)
 const editing = ref(false)
 const draft = ref('')
@@ -55,6 +129,7 @@ async function swipe(step: number) {
     const r = await swipeMessage(cid, bid, props.beat.id, next - 1)
     swipeCur.value = next
     props.beat.lines = parseLines(r.content)
+    props.beat.raw = r.content
     // A swipe replaces the whole reply, so any half-written tail from the
     // original stream no longer belongs to what is on screen.
     props.beat.tail = undefined
@@ -147,6 +222,13 @@ onMounted(() => {
   // still carries a negative temp id) must appear at once: waiting behind the
   // index-based delay made the message show up after the reply had started.
   const fresh = props.beat.id < 0
+  // Off-screen older history skips the blur entrance animation to avoid
+  // allocating dozens of blurred GPU layers when opening a long thread.
+  if (!fresh && chat.beats.length - props.index > 12) {
+    instant.value = true
+    lit.value = true
+    return
+  }
   setTimeout(() => (lit.value = true), fresh ? 0 : Math.min(140 + props.index * 115, 600))
 })
 
@@ -185,7 +267,7 @@ async function readAloud() {
   // to. Falls back to the panel's config when the character has none.
   const cfg = tts.activeFor(chat.activeCast?.ttsVoice)
   if (!cfg) return
-  const text = props.beat.lines.map((l) => l.text).join('\n').trim()
+  const text = plainTextForSpeech(inlineMedia.value.cleanedText || rawSource.value)
   if (!text) return
   playing.value = true
 
@@ -234,11 +316,12 @@ function openImage(src: string) {
 // Leaving the AudioContext open would keep the sound going with no button left
 // to stop it.
 onUnmounted(() => {
+  clearMediaSchedule()
   if (playing.value) stopSpeech()
 })
 
 function startEdit() {
-  draft.value = props.beat.lines.map((l) => l.text).join('\n')
+  draft.value = rawSource.value
   editing.value = true
 }
 
@@ -255,8 +338,7 @@ function cancelEdit() {
 }
 
 function copyLine() {
-  const text = props.beat.lines.map((l) => l.text).join('\n')
-  void navigator.clipboard?.writeText(text)
+  void navigator.clipboard?.writeText(rawSource.value)
   copied.value = true
   setTimeout(() => (copied.value = false), 1200)
 }
@@ -288,7 +370,7 @@ function copyLine() {
   <article
     v-else
     class="beat"
-    :class="{ lit, spot: chat.spotId === beat.id }"
+    :class="{ lit, instant, spot: chat.spotId === beat.id }"
     :data-role="beat.role"
     :data-beat-id="beat.id"
   >
@@ -338,6 +420,13 @@ function copyLine() {
             <img v-if="inlineImageMap[a.rel_path]" :src="inlineImageMap[a.rel_path]" :alt="a.name" />
           </div>
         </div>
+        <div v-if="inlineMedia.videos.length" class="inline-video-list">
+          <InlineVideoCard
+            v-for="video in inlineMedia.videos"
+            :key="video.id"
+            :asset="video"
+          />
+        </div>
         <div v-if="inlineMedia.audios.length" class="inline-audio-row">
           <button
             v-for="item in inlineMedia.audios"
@@ -357,11 +446,12 @@ function copyLine() {
         <div v-if="beat.voice" class="beat-lines">
           <p class="say voice-bubble">{{ t('chat.voiceMessage') }}</p>
         </div>
-        <div v-else class="beat-lines">
-          <p v-for="(line, i) in inlineMedia.cleanedLines" :key="i" :class="line.kind">{{ line.text }}</p>
-          <!-- The unterminated tail of a live reply. Kept as its own paragraph
-               so a delta rewrites one text node instead of the whole list. -->
-          <p v-if="beat.tail" class="say tail">{{ beat.tail }}<span class="caret"></span></p>
+        <div v-else class="beat-lines" :class="{ settled: !isStreaming }">
+          <RichMessage
+            :content="inlineMedia.cleanedText"
+            :streaming="isStreaming"
+            :asset-urls="inlineAssetUrls"
+          />
         </div>
       </div>
 

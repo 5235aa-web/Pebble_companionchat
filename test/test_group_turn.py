@@ -393,6 +393,12 @@ class TurnLockAndPendingMessageTest(unittest.TestCase):
 
         asyncio.run(scenario())
 
+    def test_charx_companion_cannot_be_invited_to_group_room(self):
+        companion_db.create_companion("c_charx", {"name": "Rin"}, card_format="charx")
+        res = db.add_member(self.session_id, "c_charx")
+        self.assertFalse(res.get("ok"))
+        self.assertIn("charx", (res.get("error") or "").lower())
+
 
 class GroupRouteSurfaceTest(unittest.TestCase):
     def test_no_duplicate_group_routes(self):

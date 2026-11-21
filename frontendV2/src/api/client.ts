@@ -534,7 +534,10 @@ const MIME_BY_EXT: Record<string, string> = {
   m4a: 'audio/mp4',
   flac: 'audio/flac',
   mp4: 'video/mp4',
+  m4v: 'video/mp4',
   webm: 'video/webm',
+  mov: 'video/quicktime',
+  mkv: 'video/x-matroska',
 }
 
 function mimeFor(path: string): string {
@@ -561,11 +564,14 @@ export async function fileUrl(path: string, width = 0): Promise<string> {
   }
 
   const clean = path.startsWith('/') ? path.slice(1) : path
+  const mime = mimeFor(clean)
+  const isSvg = mime === 'image/svg+xml'
   // A non-zero width asks the backend for a scaled copy. Uploads are stored at
   // full size (one avatar here is 21 MB) and a cast card draws at 40 px, so the
-  // original costs orders of magnitude more to ship over the socket.
-  const request = width > 0 ? `/thumbs/${clean}?w=${width}` : `/${clean}`
-  const key = `${width}:${clean}`
+  // original costs orders of magnitude more to ship over the socket. SVGs stay
+  // vector and keep image/svg+xml rather than going through WebP rasterization.
+  const request = width > 0 && !isSvg ? `/thumbs/${clean}?w=${width}` : `/${clean}`
+  const key = `${isSvg ? 0 : width}:${clean}`
 
   const hit = blobCache.get(key)
   if (hit) {
@@ -578,7 +584,7 @@ export async function fileUrl(path: string, width = 0): Promise<string> {
   const bytes = await socket.binary(request)
   // Scaled copies come back as WebP regardless of the source format, so the
   // Blob type has to follow the request rather than the path's extension.
-  const type = width > 0 ? 'image/webp' : mimeFor(clean)
+  const type = width > 0 && !isSvg ? 'image/webp' : mime
   const url = URL.createObjectURL(new Blob([bytes as BlobPart], { type }))
   rememberBlobUrl(key, url)
   return url
