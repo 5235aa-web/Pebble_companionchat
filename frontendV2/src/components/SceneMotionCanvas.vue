@@ -4,7 +4,6 @@ import { onBeforeUnmount, onMounted, ref, watch } from 'vue'
 const props = withDefaults(
   defineProps<{
     src: string
-    focusY?: number
     pointerX?: number
     pointerY?: number
     hovering?: boolean
@@ -12,7 +11,6 @@ const props = withDefaults(
     intensity?: number
   }>(),
   {
-    focusY: 0.5,
     pointerX: 0,
     pointerY: 0,
     hovering: false,
@@ -40,52 +38,67 @@ uniform float u_time;
 uniform float u_intensity;
 uniform vec2 u_anchor;
 uniform vec2 u_pointer;
+uniform vec2 u_canvasSize;
+uniform vec2 u_currSize;
+
+vec2 toImgUv(vec2 uv, vec2 boxSize, vec2 texSize) {
+  float boxAspect = max(boxSize.x, 1.0) / max(boxSize.y, 1.0);
+  float texAspect = max(texSize.x, 1.0) / max(texSize.y, 1.0);
+  vec2 scale = texAspect > boxAspect
+    ? vec2(1.0, texAspect / boxAspect)
+    : vec2(boxAspect / texAspect, 1.0);
+  return (uv - 0.5) * scale + 0.5;
+}
 
 void main() {
   v_uv = a_pos;
 
-  // Strictly lock all four outer borders to zero so frames never tear.
-  float edgeX = sin(3.14159265 * a_pos.x);
-  float edgeY = sin(3.14159265 * a_pos.y);
-  float edgeLock = pow(max(edgeX, 0.0), 0.72) * pow(max(edgeY, 0.0), 0.85);
+  vec2 imgUv = toImgUv(a_pos, u_canvasSize, u_currSize);
+  float inBounds = step(0.0, imgUv.x) * step(imgUv.x, 1.0) * step(0.0, imgUv.y) * step(imgUv.y, 1.0);
+  vec2 clampedUv = clamp(imgUv, 0.0, 1.0);
+
+  // Strictly lock all four real borders of the uncropped image to zero displacement.
+  float edgeX = sin(3.14159265 * clampedUv.x);
+  float edgeY = sin(3.14159265 * clampedUv.y);
+  float edgeLock = inBounds * pow(max(edgeX, 0.0), 0.72) * pow(max(edgeY, 0.0), 0.85);
 
   vec2 disp = vec2(0.0);
 
   // 1. Torso / chest breathing anchored below detected subject focus
   vec2 chestCenter = vec2(u_anchor.x, clamp(u_anchor.y + 0.24, 0.45, 0.74));
-  vec2 dChest = vec2((a_pos.x - chestCenter.x) / 0.28, (a_pos.y - chestCenter.y) / 0.20);
+  vec2 dChest = vec2((clampedUv.x - chestCenter.x) / 0.28, (clampedUv.y - chestCenter.y) / 0.20);
   float chestMask = exp(-dot(dChest, dChest));
   float phase = u_time * 1.48;
   float breathWave = sin(phase) * 0.5 + sin(phase * 2.0 - 1.5707963) * 0.09;
   disp.y += chestMask * breathWave * 0.015;
-  disp.x += (a_pos.x - chestCenter.x) * chestMask * breathWave * 0.022;
+  disp.x += (clampedUv.x - chestCenter.x) * chestMask * breathWave * 0.022;
 
   // 2. Gentle upper-body / head figure-eight idle sway
   float headMask = exp(
-    -pow((a_pos.x - u_anchor.x) / 0.36, 2.0)
-    -pow((a_pos.y - u_anchor.y) / 0.30, 2.0)
+    -pow((clampedUv.x - u_anchor.x) / 0.36, 2.0)
+    -pow((clampedUv.y - u_anchor.y) / 0.30, 2.0)
   );
   disp.x += sin(u_time * 0.72) * 0.0085 * headMask;
   disp.y += cos(u_time * 1.44) * 0.0038 * headMask;
 
   // 3. Soft hair & cloth breeze while shielding facial center rigidity
   float faceDist2 =
-    pow((a_pos.x - u_anchor.x) / 0.145, 2.0) +
-    pow((a_pos.y - u_anchor.y) / 0.135, 2.0);
+    pow((clampedUv.x - u_anchor.x) / 0.145, 2.0) +
+    pow((clampedUv.y - u_anchor.y) / 0.135, 2.0);
   float faceProtect = 1.0 - 0.85 * exp(-faceDist2);
-  float drapeMask = exp(-pow((a_pos.x - u_anchor.x) / 0.45, 2.0))
-    * smoothstep(0.08, 0.88, a_pos.y)
+  float drapeMask = exp(-pow((clampedUv.x - u_anchor.x) / 0.45, 2.0))
+    * smoothstep(0.08, 0.88, clampedUv.y)
     * faceProtect;
-  float wave = sin(a_pos.y * 8.2 - u_time * 1.85 + a_pos.x * 3.1);
+  float wave = sin(clampedUv.y * 8.2 - u_time * 1.85 + clampedUv.x * 3.1);
   disp.x += wave * 0.0056 * drapeMask;
-  disp.y += cos(a_pos.x * 6.0 + u_time * 1.25) * 0.0024 * drapeMask;
+  disp.y += cos(clampedUv.x * 6.0 + u_time * 1.25) * 0.0024 * drapeMask;
 
   // 4. Subtle macro mesh perspective lean synced with cursor parallax
   vec2 ambientPtr = vec2(sin(u_time * 0.42) * 0.18, cos(u_time * 0.33) * 0.11);
   vec2 ptr = u_pointer + ambientPtr;
   float leanMask = exp(
-    -pow((a_pos.x - u_anchor.x) / 0.46, 2.0)
-    -pow((a_pos.y - 0.48) / 0.48, 2.0)
+    -pow((clampedUv.x - u_anchor.x) / 0.46, 2.0)
+    -pow((clampedUv.y - 0.48) / 0.48, 2.0)
   );
   disp.x -= ptr.x * 0.010 * leanMask;
   disp.y += ptr.y * 0.007 * leanMask;
@@ -112,39 +125,38 @@ uniform sampler2D u_maskPrev;
 uniform vec2 u_canvasSize;
 uniform vec2 u_currSize;
 uniform vec2 u_prevSize;
-uniform float u_currFocusY;
-uniform float u_prevFocusY;
 uniform float u_mix;
 uniform float u_time;
 uniform float u_intensity;
 uniform vec2 u_pointer;
 
-vec2 coverUv(vec2 uv, vec2 boxSize, vec2 texSize, float focusY) {
+vec2 containUv(vec2 uv, vec2 boxSize, vec2 texSize, out float inBounds) {
   float boxAspect = max(boxSize.x, 1.0) / max(boxSize.y, 1.0);
   float texAspect = max(texSize.x, 1.0) / max(texSize.y, 1.0);
-  vec2 scale = vec2(1.0);
-  vec2 offset = vec2(0.0);
-  if (texAspect > boxAspect) {
-    scale.x = boxAspect / texAspect;
-    offset.x = (1.0 - scale.x) * 0.5;
-  } else {
-    scale.y = texAspect / boxAspect;
-    offset.y = (1.0 - scale.y) * focusY;
-  }
-  return clamp(uv * scale + offset, 0.001, 0.999);
+  vec2 scale = texAspect > boxAspect
+    ? vec2(1.0, texAspect / boxAspect)
+    : vec2(boxAspect / texAspect, 1.0);
+  vec2 mapped = (uv - 0.5) * scale + 0.5;
+  vec2 edgeDist = min(mapped, 1.0 - mapped);
+  inBounds = smoothstep(0.0, 0.003, min(edgeDist.x, edgeDist.y));
+  return clamp(mapped, 0.001, 0.999);
 }
 
-// Sample color + depth-aware 2.5D parallax & foreground rim signal
+// Sample full uncropped image + depth-aware 2.5D parallax & foreground rim signal
 vec4 sampleLayer(
   sampler2D tex,
   sampler2D mask,
   vec2 texSize,
-  float focusY,
-  vec2 parallaxDelta,
+  vec2 parallaxDir,
   out float outDepth,
-  out float outRim
+  out float outRim,
+  out float outBounds
 ) {
-  vec2 baseUv = coverUv(v_uv, u_canvasSize, texSize, focusY);
+  float bounds = 0.0;
+  vec2 baseUv = containUv(v_uv, u_canvasSize, texSize, bounds);
+  float imgEdgeFade = sin(3.14159265 * baseUv.x) * sin(3.14159265 * baseUv.y);
+  vec2 parallaxDelta = parallaxDir * imgEdgeFade;
+
   float d0 = texture2D(mask, baseUv).r;
   vec2 halfShift = parallaxDelta * (d0 - 0.14) * 0.5;
   vec2 midUv = clamp(baseUv + halfShift, 0.002, 0.998);
@@ -154,7 +166,6 @@ vec4 sampleLayer(
   vec2 shiftedUv = clamp(baseUv + parallaxDelta * (depth - 0.14), 0.002, 0.998);
   vec4 col = texture2D(tex, shiftedUv);
 
-  // Local mask slope highlights the character's outer contour under directional sheen
   float eps = 0.016;
   float mx = texture2D(mask, clamp(shiftedUv + vec2(eps, 0.0), 0.002, 0.998)).r
            - texture2D(mask, clamp(shiftedUv - vec2(eps, 0.0), 0.002, 0.998)).r;
@@ -162,6 +173,7 @@ vec4 sampleLayer(
            - texture2D(mask, clamp(shiftedUv - vec2(0.0, eps), 0.002, 0.998)).r;
   outDepth = depth;
   outRim = clamp(length(vec2(mx, my)) * 2.2, 0.0, 1.0);
+  outBounds = bounds;
   return col;
 }
 
@@ -208,48 +220,55 @@ vec3 grade(vec3 rgb) {
 }
 
 void main() {
-  float edgeFade = sin(3.14159265 * v_uv.x) * sin(3.14159265 * v_uv.y);
   vec2 ambientPtr = vec2(sin(u_time * 0.42) * 0.18, cos(u_time * 0.33) * 0.11);
   vec2 ptr = u_pointer + ambientPtr;
 
-  // Mask-separated 2.5D depth shift in image UV space
-  vec2 parallaxDelta = vec2(-ptr.x, -ptr.y) * 0.022 * edgeFade * u_intensity;
+  vec2 parallaxDir = vec2(-ptr.x, -ptr.y) * 0.022 * u_intensity;
 
   float depthCurr = 0.0;
   float rimCurr = 0.0;
+  float boundsCurr = 0.0;
   vec4 curr = sampleLayer(
     u_texCurr,
     u_maskCurr,
     u_currSize,
-    u_currFocusY,
-    parallaxDelta,
+    parallaxDir,
     depthCurr,
-    rimCurr
+    rimCurr,
+    boundsCurr
   );
 
+  float alphaCurr = curr.a * boundsCurr;
   float depth = depthCurr;
   float rim = rimCurr;
-  vec4 blended = curr;
+  vec3 baseRgb = curr.rgb;
+  float outAlpha = alphaCurr;
 
   if (u_mix < 0.999) {
     float depthPrev = 0.0;
     float rimPrev = 0.0;
+    float boundsPrev = 0.0;
     vec4 prev = sampleLayer(
       u_texPrev,
       u_maskPrev,
       u_prevSize,
-      u_prevFocusY,
-      parallaxDelta,
+      parallaxDir,
       depthPrev,
-      rimPrev
+      rimPrev,
+      boundsPrev
     );
+    float alphaPrev = prev.a * boundsPrev;
     float t = smoothstep(0.0, 1.0, u_mix);
-    blended = mix(prev, curr, t);
-    depth = mix(depthPrev, depthCurr, t);
-    rim = mix(rimPrev, rimCurr, t);
+    float wPrev = (1.0 - t) * alphaPrev;
+    float wCurr = t * alphaCurr;
+    float wSum = max(wPrev + wCurr, 0.0001);
+    baseRgb = (prev.rgb * wPrev + curr.rgb * wCurr) / wSum;
+    outAlpha = wPrev + wCurr;
+    depth = (depthPrev * wPrev + depthCurr * wCurr) / wSum;
+    rim = (rimPrev * wPrev + rimCurr * wCurr) / wSum;
   }
 
-  vec3 color = grade(blended.rgb);
+  vec3 color = grade(baseRgb);
 
   // Subtle ambient directional sheen & rim highlight responding to tilt + breath
   float breathGlow = 0.5 + 0.5 * sin(u_time * 1.48);
@@ -259,24 +278,17 @@ void main() {
   color += warmAir * sheenBand * (0.018 + 0.012 * breathGlow) * u_intensity;
   color += warmAir * rim * sheenBand * 0.085 * u_intensity;
 
-  // Three-plane 2.5D atmospheric particles (preserve text readability at bottom)
+  // Three-plane 2.5D atmospheric particles across the full uncropped image
   float aspect = max(u_canvasSize.x, 1.0) / max(u_canvasSize.y, 1.0);
   vec2 bokehUv = vec2(v_uv.x * aspect, v_uv.y);
-  float topMask = smoothstep(0.92, 0.25, v_uv.y);
 
-  // Plane A: softer distant bokeh orbs behind / around the subject
   float backBokeh = bokehField(bokehUv + ptr * 0.025 * u_intensity, 3.6, 0.045, 0.16, 0.80);
-  color += vec3(0.95, 0.88, 0.78) * backBokeh * (1.0 - depth * 0.78) * topMask * 0.11 * u_intensity;
+  color += vec3(0.95, 0.88, 0.78) * backBokeh * (1.0 - depth * 0.78) * 0.11 * u_intensity;
 
-  // Plane C: finer foreground air dust gliding faster across the lens
   float frontMotes = bokehField(bokehUv + ptr * 0.11 * u_intensity + vec2(3.1, 1.7), 7.5, 0.095, 0.05, 0.84);
-  color += vec3(1.0, 0.96, 0.88) * frontMotes * topMask * 0.16 * u_intensity;
+  color += vec3(1.0, 0.96, 0.88) * frontMotes * 0.16 * u_intensity;
 
-  // Gentle living vignette
-  float vignette = 1.0 - dot(v_uv - 0.5, v_uv - 0.5) * (0.14 - 0.03 * breathGlow * u_intensity);
-  color *= clamp(vignette, 0.82, 1.0);
-
-  gl_FragColor = vec4(clamp(color, 0.0, 1.0), blended.a);
+  gl_FragColor = vec4(clamp(color, 0.0, 1.0), clamp(outAlpha, 0.0, 1.0));
 }
 `
 
@@ -301,8 +313,6 @@ let uPointerLoc: WebGLUniformLocation | null = null
 let uCanvasSizeLoc: WebGLUniformLocation | null = null
 let uCurrSizeLoc: WebGLUniformLocation | null = null
 let uPrevSizeLoc: WebGLUniformLocation | null = null
-let uCurrFocusYLoc: WebGLUniformLocation | null = null
-let uPrevFocusYLoc: WebGLUniformLocation | null = null
 let uMixLoc: WebGLUniformLocation | null = null
 let uTexCurrLoc: WebGLUniformLocation | null = null
 let uTexPrevLoc: WebGLUniformLocation | null = null
@@ -311,8 +321,6 @@ let uMaskPrevLoc: WebGLUniformLocation | null = null
 
 let currSize: [number, number] = [1, 1]
 let prevSize: [number, number] = [1, 1]
-let currFocusY = 0.5
-let prevFocusY = 0.5
 let currImgAnchor: [number, number] = [0.5, 0.34]
 let smoothAnchorX = 0.5
 let smoothAnchorY = 0.34
@@ -494,33 +502,6 @@ function analyzePortraitMask(img: HTMLImageElement): {
   }
 }
 
-/** Map an image-space focal anchor into current cover-cropped screen coordinates. */
-function mapAnchorToScreen(
-  imgAnchor: [number, number],
-  boxW: number,
-  boxH: number,
-  texW: number,
-  texH: number,
-  focusY: number,
-): [number, number] {
-  const boxAspect = Math.max(boxW, 1) / Math.max(boxH, 1)
-  const texAspect = Math.max(texW, 1) / Math.max(texH, 1)
-  let scaleX = 1
-  let scaleY = 1
-  let offsetX = 0
-  let offsetY = 0
-  if (texAspect > boxAspect) {
-    scaleX = boxAspect / texAspect
-    offsetX = (1 - scaleX) * 0.5
-  } else {
-    scaleY = texAspect / boxAspect
-    offsetY = (1 - scaleY) * focusY
-  }
-  const sx = clamp((imgAnchor[0] - offsetX) / scaleX, 0.28, 0.72)
-  const sy = clamp((imgAnchor[1] - offsetY) / scaleY, 0.22, 0.46)
-  return [sx, sy]
-}
-
 function compileShader(context: WebGLRenderingContext, type: number, source: string): WebGLShader | null {
   const shader = context.createShader(type)
   if (!shader) return null
@@ -645,23 +626,17 @@ function drawFrame(now: number) {
   smoothPtrX += (targetX - smoothPtrX) * ptrLerp
   smoothPtrY += (targetY - smoothPtrY) * ptrLerp
 
-  const targetAnchor = mapAnchorToScreen(
-    currImgAnchor,
-    canvasCssW,
-    canvasCssH,
-    currSize[0],
-    currSize[1],
-    currFocusY,
-  )
   const slowLerp = 1 - Math.exp(-dt * 4.0)
-  smoothAnchorX += (targetAnchor[0] - smoothAnchorX) * slowLerp
-  smoothAnchorY += (targetAnchor[1] - smoothAnchorY) * slowLerp
+  smoothAnchorX += (currImgAnchor[0] - smoothAnchorX) * slowLerp
+  smoothAnchorY += (currImgAnchor[1] - smoothAnchorY) * slowLerp
   smoothIntensity += (props.intensity - smoothIntensity) * slowLerp
 
   const elapsedSec = ((now - startTimeMs) / 1000) % 6283.1853
   const mixVal = hasPrev ? Math.min(1, (now - swapStartMs) / SWAP_DURATION_MS) : 1
   if (mixVal >= 1) hasPrev = false
 
+  gl.clearColor(0, 0, 0, 0)
+  gl.clear(gl.COLOR_BUFFER_BIT)
   gl.useProgram(program)
   gl.uniform1f(uTimeLoc, elapsedSec)
   gl.uniform1f(uIntensityLoc, smoothIntensity)
@@ -670,8 +645,6 @@ function drawFrame(now: number) {
   gl.uniform2f(uCanvasSizeLoc, canvasCssW, canvasCssH)
   gl.uniform2f(uCurrSizeLoc, currSize[0], currSize[1])
   gl.uniform2f(uPrevSizeLoc, prevSize[0], prevSize[1])
-  gl.uniform1f(uCurrFocusYLoc, currFocusY)
-  gl.uniform1f(uPrevFocusYLoc, prevFocusY)
   gl.uniform1f(uMixLoc, mixVal)
 
   gl.activeTexture(gl.TEXTURE0)
@@ -713,7 +686,7 @@ function stopLoop() {
   }
 }
 
-function loadTextureFromUrl(url: string, targetFocusY: number) {
+function loadTextureFromUrl(url: string) {
   if (!gl || !url) return
   const token = ++loadSeq
   const img = new Image()
@@ -735,7 +708,6 @@ function loadTextureFromUrl(url: string, targetFocusY: number) {
       maskCurr = swappedMask
 
       prevSize = [currSize[0], currSize[1]]
-      prevFocusY = currFocusY
       hasPrev = true
       swapStartMs = performance.now()
     } else {
@@ -774,13 +746,11 @@ function loadTextureFromUrl(url: string, targetFocusY: number) {
     )
 
     currSize = [w, h]
-    currFocusY = targetFocusY
     currImgAnchor = anchor
     syncCanvasSize()
     if (!hasCurr) {
-      const initAnchor = mapAnchorToScreen(anchor, canvasCssW, canvasCssH, w, h, targetFocusY)
-      smoothAnchorX = initAnchor[0]
-      smoothAnchorY = initAnchor[1]
+      smoothAnchorX = anchor[0]
+      smoothAnchorY = anchor[1]
       smoothIntensity = props.intensity
     }
     hasCurr = true
@@ -800,10 +770,11 @@ function initWebGl(): boolean {
   const canvas = canvasRef.value
   if (!canvas) return false
   const context = canvas.getContext('webgl', {
-    alpha: false,
+    alpha: true,
     antialias: true,
     depth: false,
     stencil: false,
+    premultipliedAlpha: false,
     powerPreference: 'default',
   })
   if (!context) return false
@@ -850,8 +821,6 @@ function initWebGl(): boolean {
   uCanvasSizeLoc = context.getUniformLocation(prog, 'u_canvasSize')
   uCurrSizeLoc = context.getUniformLocation(prog, 'u_currSize')
   uPrevSizeLoc = context.getUniformLocation(prog, 'u_prevSize')
-  uCurrFocusYLoc = context.getUniformLocation(prog, 'u_currFocusY')
-  uPrevFocusYLoc = context.getUniformLocation(prog, 'u_prevFocusY')
   uMixLoc = context.getUniformLocation(prog, 'u_mix')
   uTexCurrLoc = context.getUniformLocation(prog, 'u_texCurr')
   uTexPrevLoc = context.getUniformLocation(prog, 'u_texPrev')
@@ -916,15 +885,15 @@ onMounted(() => {
   resizeObserver.observe(canvas)
 
   if (props.src) {
-    loadTextureFromUrl(props.src, props.focusY)
+    loadTextureFromUrl(props.src)
   }
 })
 
 watch(
-  () => [props.src, props.focusY] as const,
-  ([nextSrc, nextFocusY]) => {
+  () => props.src,
+  (nextSrc) => {
     if (!nextSrc || !gl) return
-    loadTextureFromUrl(nextSrc, nextFocusY)
+    loadTextureFromUrl(nextSrc)
   },
 )
 

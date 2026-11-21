@@ -5,7 +5,7 @@
 
 /* ---- scene stage: generated picture ---- */
 .scene-photo{cursor:pointer;touch-action:pan-y;}
-.scene-photo.has-picture img{
+.scene-photo.has-picture img.scene-main{
   /* Set by the drag handler; the base transform lives in 08-scene.css, so the
      hover zoom keeps working by composing on the same property. */
   transform:translateX(var(--scene-drag,0px));
@@ -13,7 +13,7 @@
 /* Only generated pictures are re-framed upward. The portrait keeps the
    centring it has always had, so adding this feature does not silently
    recompose the character's face. */
-.scene-photo img.scene-gen{object-position:center 30%;}
+.scene-photo img.scene-main.scene-gen{object-position:center center;}
 
 /* ---- slide swap ----
    Both images are absolutely positioned, so a plain src change pops. The
@@ -21,35 +21,46 @@
    reads as a dissolve without touching transform (that property belongs to the
    drag).
 
-   The `.scene-photo img` prefix is required, not decorative: 08-scene.css sets
-   its own `transition` and `filter` on that selector, and a bare class here
-   would lose the cascade and animate nothing. */
-.scene-photo img.scene-swap-enter-active,
-.scene-photo img.scene-swap-leave-active{
+   The `.scene-photo img.scene-main` prefix is required, not decorative:
+   08-scene.css sets its own `transition` and `filter` on that selector, and a
+   bare class here would lose the cascade and animate nothing. */
+.scene-photo img.scene-backdrop.scene-backdrop-swap-enter-active,
+.scene-photo img.scene-backdrop.scene-backdrop-swap-leave-active{
+  transition:opacity .55s var(--ease-out);
+  will-change:opacity;
+}
+.scene-photo img.scene-backdrop.scene-backdrop-swap-enter-from,
+.scene-photo img.scene-backdrop.scene-backdrop-swap-leave-to{opacity:0;}
+.scene-photo img.scene-main.scene-swap-enter-active,
+.scene-photo img.scene-main.scene-swap-leave-active{
   transition:opacity .52s var(--ease-out), filter .52s ease;
   will-change:opacity, filter;
 }
-.scene-photo img.scene-swap-enter-active{z-index:2;}
-.scene-photo img.scene-swap-leave-active{z-index:1;}
-.scene-photo img.scene-swap-enter-from{opacity:0;filter:blur(10px) saturate(.86);}
-.scene-photo img.scene-swap-leave-to{opacity:0;filter:blur(6px) saturate(.94);}
+.scene-photo img.scene-main.scene-swap-enter-active{z-index:2;}
+.scene-photo img.scene-main.scene-swap-leave-active{z-index:1;}
+.scene-photo img.scene-main.scene-swap-enter-from{opacity:0;filter:blur(10px) saturate(.86);}
+.scene-photo img.scene-main.scene-swap-leave-to{opacity:0;filter:blur(6px) saturate(.94);}
 /* Same specificity as the base hover rule, but later in the cascade: without
    this the generated picture would be the only image that never breathes. */
-.scene:hover .scene-photo.has-picture img{
+.scene:hover .scene-photo.has-picture img.scene-main{
   transform:translateX(var(--scene-drag,0px)) scale(1.025);
 }
 .scene-motion-canvas{
   position:absolute;inset:0;width:100%;height:100%;display:block;
   pointer-events:none;z-index:2;opacity:0;
+  filter:drop-shadow(0 14px 32px rgb(var(--shadow-rgb) / .52));
   transform:translateX(var(--scene-drag,0px));
   transition:opacity .35s ease,transform 1.4s var(--ease-out);
 }
+html[data-theme="day"] .scene-motion-canvas{
+  filter:drop-shadow(0 12px 28px rgb(var(--shadow-rgb) / .22));
+}
+.scene-photo.motion-ready img.scene-main{opacity:0;}
 .scene-photo.motion-ready .scene-motion-canvas{opacity:1;}
-.scene-photo::after{z-index:2;}
 .scene:hover .scene-photo.has-picture .scene-motion-canvas{
   transform:translateX(var(--scene-drag,0px)) scale(1.025);
 }
-.scene-photo.dragging img,
+.scene-photo.dragging img.scene-main,
 .scene-photo.dragging .scene-motion-canvas{transition:none;}
 .scene-photo.dragging{cursor:grabbing;}
 

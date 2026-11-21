@@ -143,7 +143,6 @@ let captured = false
 const motionReady = ref(false)
 const isAnimatedSlide = computed(() => /\.gif(?:$|[?#])/i.test(slide.value?.url || ''))
 const motionActive = computed(() => ui.sceneMotion && Boolean(shownUrl.value) && !isAnimatedSlide.value)
-const motionFocusY = computed(() => (shownKind.value === 'picture' ? 0.3 : 0.5))
 const motionIntensity = computed(() => (ui.sceneMotionLevel === 'subtle' ? 0.48 : 1))
 
 watch(motionActive, (active) => {
@@ -350,19 +349,29 @@ onMounted(() => {
       @pointerleave="onPointerUp"
     >
       <div v-if="!shownUrl" class="scene-glow"></div>
+      <Transition name="scene-backdrop-swap">
+        <img
+          v-if="shownUrl"
+          :key="shownKey + '-bg'"
+          :src="shownUrl"
+          alt=""
+          aria-hidden="true"
+          class="scene-backdrop"
+        />
+      </Transition>
       <Transition name="scene-swap">
         <img
           v-if="shownUrl"
           :key="shownKey"
           :src="shownUrl"
           :alt="slideAlt"
+          class="scene-main"
           :class="{ 'scene-gen': shownKind === 'picture' }"
         />
       </Transition>
       <SceneMotionCanvas
         v-if="motionActive"
         :src="shownUrl"
-        :focus-y="motionFocusY"
         :pointer-x="scenePointerX"
         :pointer-y="scenePointerY"
         :hovering="sceneHovering"
