@@ -106,6 +106,11 @@ export const en = {
   'scene.lore': 'Lore',
   'scene.lastSeen': 'Updated',
   'scene.branch': 'Branch',
+  'scene.motion': '2.5D Motion',
+  'scene.motionTip': 'Toggle 2.5D mesh micro-motion on the scene image',
+  'scene.motionVivid': 'Vivid',
+  'scene.motionSubtle': 'Subtle',
+  'scene.motionLevelTip': 'Switch 2.5D motion and lighting parallax intensity',
 
   /* ---- thread ---- */
   'thread.previously': 'Previously',

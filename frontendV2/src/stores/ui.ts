@@ -4,6 +4,7 @@ import { ref } from 'vue'
 export type ThemeName = 'night' | 'day'
 export type AccentName = 'amber' | 'ember' | 'celadon' | 'moon' | 'plum' | 'jade' | 'rose'
 export type FontStyle = 'wenkai' | 'song' | 'hei'
+export type SceneMotionLevel = 'subtle' | 'vivid'
 /**
  * Which stage is on screen. One app, two views: the single-companion thread and
  * the group room. The rail, the theme and every panel stay where they are; only
@@ -28,6 +29,8 @@ const THEME_KEY = 'dialogue.theme'
 const FONT_KEY = 'dialogue.font'
 const ACCENT_KEY = 'dialogue.accent'
 const VIEW_KEY = 'dialogue.view'
+const SCENE_MOTION_KEY = 'dialogue.sceneMotion'
+const SCENE_MOTION_LEVEL_KEY = 'dialogue.sceneMotionLevel'
 
 function readStored(key: string): string | null {
   try {
@@ -52,6 +55,10 @@ export const useUiStore = defineStore('ui', () => {
   const fontStyle = ref<FontStyle>('wenkai')
   const panel = ref<PanelId>(null)
   const view = ref<AppView>(readStored(VIEW_KEY) === 'group' ? 'group' : 'single')
+  const sceneMotion = ref<boolean>(readStored(SCENE_MOTION_KEY) !== '0')
+  const sceneMotionLevel = ref<SceneMotionLevel>(
+    readStored(SCENE_MOTION_LEVEL_KEY) === 'subtle' ? 'subtle' : 'vivid',
+  )
   /**
    * Token footprint of the open room's next turn. Reported by the group stage
    * because only it knows which room is open; the rail only displays it.
@@ -245,6 +252,18 @@ export const useUiStore = defineStore('ui', () => {
     setView(view.value === 'group' ? 'single' : 'group')
   }
 
+  /** Toggle 2.5D WebGL mesh micro-motion on the right-hand scene portrait. */
+  function toggleSceneMotion(): void {
+    sceneMotion.value = !sceneMotion.value
+    writeStored(SCENE_MOTION_KEY, sceneMotion.value ? '1' : '0')
+  }
+
+  /** Cycle 2.5D WebGL motion intensity between vivid and subtle. */
+  function toggleSceneMotionLevel(): void {
+    sceneMotionLevel.value = sceneMotionLevel.value === 'vivid' ? 'subtle' : 'vivid'
+    writeStored(SCENE_MOTION_LEVEL_KEY, sceneMotionLevel.value)
+  }
+
   /** Open the card editor on a blank card. The character is created on save. */
   function startNewCast() {
     newCastDraft.value = true
@@ -293,6 +312,10 @@ export const useUiStore = defineStore('ui', () => {
     view,
     setView,
     toggleView,
+    sceneMotion,
+    toggleSceneMotion,
+    sceneMotionLevel,
+    toggleSceneMotionLevel,
     groupTokens,
     setGroupTokens,
     groupRoomId,

@@ -10,6 +10,7 @@ import { useCardAudioStore } from '@/stores/cardAudio'
 import { useCardHudStore } from '@/stores/cardHud'
 import { useScriptStore } from '@/stores/script'
 import CardHudPanel from './CardHudPanel.vue'
+import SceneMotionCanvas from './SceneMotionCanvas.vue'
 import { useI18n } from '@/i18n'
 
 const ui = useUiStore()
@@ -138,6 +139,39 @@ const dragging = ref(false)
 let startX = 0
 let pointerId: number | null = null
 let captured = false
+
+const motionReady = ref(false)
+const isAnimatedSlide = computed(() => /\.gif(?:$|[?#])/i.test(slide.value?.url || ''))
+const motionActive = computed(() => ui.sceneMotion && Boolean(shownUrl.value) && !isAnimatedSlide.value)
+const motionFocusY = computed(() => (shownKind.value === 'picture' ? 0.3 : 0.5))
+const motionIntensity = computed(() => (ui.sceneMotionLevel === 'subtle' ? 0.48 : 1))
+
+watch(motionActive, (active) => {
+  if (!active) motionReady.value = false
+})
+
+const sceneHovering = ref(false)
+const scenePointerX = ref(0)
+const scenePointerY = ref(0)
+
+function onScenePointerMove(event: PointerEvent) {
+  if (!motionActive.value) return
+  const el = event.currentTarget as HTMLElement | null
+  if (!el) return
+  const rect = el.getBoundingClientRect()
+  if (rect.width <= 0 || rect.height <= 0) return
+  const nx = ((event.clientX - rect.left) / rect.width) * 2 - 1
+  const ny = ((event.clientY - rect.top) / rect.height) * 2 - 1
+  scenePointerX.value = Math.max(-1, Math.min(1, nx))
+  scenePointerY.value = Math.max(-1, Math.min(1, ny))
+  sceneHovering.value = true
+}
+
+function onScenePointerLeave() {
+  sceneHovering.value = false
+  scenePointerX.value = 0
+  scenePointerY.value = 0
+}
 
 const errorText = computed(() => genError.value || pictures.error)
 const photoStyle = computed(
@@ -297,11 +331,16 @@ onMounted(() => {
 </script>
 
 <template>
-  <aside class="scene" :class="{ expanded }">
+  <aside
+    class="scene"
+    :class="{ expanded }"
+    @pointermove="onScenePointerMove"
+    @pointerleave="onScenePointerLeave"
+  >
     <CardHudPanel v-if="who && !inScene && ui.view !== 'group'" />
     <div
       class="scene-photo"
-      :class="{ 'has-picture': !!shownUrl, dragging }"
+      :class="{ 'has-picture': !!shownUrl, dragging, 'motion-ready': motionActive && motionReady }"
       :style="photoStyle"
       @click="onPhotoClick"
       @pointerdown="onPointerDown"
@@ -320,6 +359,17 @@ onMounted(() => {
           :class="{ 'scene-gen': shownKind === 'picture' }"
         />
       </Transition>
+      <SceneMotionCanvas
+        v-if="motionActive"
+        :src="shownUrl"
+        :focus-y="motionFocusY"
+        :pointer-x="scenePointerX"
+        :pointer-y="scenePointerY"
+        :hovering="sceneHovering"
+        :dragging="dragging"
+        :intensity="motionIntensity"
+        @ready="motionReady = $event"
+      />
       <div v-if="!shownUrl" class="scene-glyph">{{ who?.letter }}</div>
 
       <button
@@ -386,6 +436,26 @@ onMounted(() => {
             <circle cx="9" cy="9.5" r="1.3" />
           </svg>
           <span>{{ pictures.doneItems.length }}</span>
+        </button>
+        <button
+          class="sc-open sc-motion-toggle"
+          :class="{ active: ui.sceneMotion }"
+          type="button"
+          :aria-pressed="ui.sceneMotion"
+          :title="t('scene.motionTip')"
+          @click="ui.toggleSceneMotion()"
+        >
+          <span class="sc-motion-dot" aria-hidden="true"></span>
+          <span>{{ t('scene.motion') }}</span>
+        </button>
+        <button
+          v-if="ui.sceneMotion"
+          class="sc-open sc-motion-level"
+          type="button"
+          :title="t('scene.motionLevelTip')"
+          @click="ui.toggleSceneMotionLevel()"
+        >
+          <span>{{ ui.sceneMotionLevel === 'vivid' ? t('scene.motionVivid') : t('scene.motionSubtle') }}</span>
         </button>
       </div>
 

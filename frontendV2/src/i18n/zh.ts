@@ -101,6 +101,11 @@ export const zh: Record<keyof typeof en, string> = {
   'scene.lore': '设定',
   'scene.lastSeen': '更新于',
   'scene.branch': '分支',
+  'scene.motion': '2.5D 微动',
+  'scene.motionTip': '开启或关闭右侧场景图的 2.5D 网格微动',
+  'scene.motionVivid': '灵动',
+  'scene.motionSubtle': '轻柔',
+  'scene.motionLevelTip': '切换 2.5D 微动与光影视差强度',
 
   /* ---- 消息流 ---- */
   'thread.previously': '前情',
