@@ -12,6 +12,9 @@ imported card is not modified on disk.
 """
 
 import re
+from typing import Dict, Optional
+
+from .cbs import evaluate_cbs
 
 # Cards in the wild spell these in every case: {{char}}, {{Char}}, {{CHAR}},
 # and rarely {{character}}. The whitespace inside the braces varies too.
@@ -21,24 +24,27 @@ _CHARACTER_ALIASES = {"char", "character"}
 _USER_ALIASES = {"user", "persona"}
 
 
-def substitute(text, char_name: str = "", user_name: str = "the user") -> str:
-    """Replace card macros with the names this branch is actually using.
+def substitute(
+    text,
+    char_name: str = "",
+    user_name: str = "the user",
+    variables: Optional[Dict[str, str]] = None,
+    allow_mutation: bool = False,
+    seed: str = "",
+) -> str:
+    """Replace card macros, CBS conditionals, and variables for this branch.
 
     Unknown macros are left untouched on purpose: a card may carry placeholders
     for some other frontend, and silently deleting their text would lose data.
     """
-    if not text or "{{" not in text:
-        return text or ""
-
-    def replace(match: re.Match) -> str:
-        kind = match.group(1).lower()
-        if kind in _CHARACTER_ALIASES:
-            return char_name or "the character"
-        if kind in _USER_ALIASES:
-            return user_name or "the user"
-        return match.group(0)
-
-    return _MACRO.sub(replace, text)
+    return evaluate_cbs(
+        text,
+        char_name=char_name,
+        user_name=user_name,
+        variables=variables,
+        allow_mutation=allow_mutation,
+        seed=seed,
+    )
 
 
 def has_macros(text) -> bool:

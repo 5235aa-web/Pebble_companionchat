@@ -9,13 +9,14 @@ import logging
 import shutil
 import threading
 from pathlib import Path
-from typing import List, Dict, Optional
+from typing import Any, List, Dict, Optional
 from datetime import datetime
 
 logger = logging.getLogger(__name__)
 
 # 独立数据库路径（与 pebble.db 完全分离）
 from . import paths
+from .card_presentation import extract_card_presentation
 from .paths import DB_PATH
 
 
@@ -82,6 +83,7 @@ def _init_tables(conn: sqlite3.Connection) -> None:
             tts_config TEXT DEFAULT '{}',
             raw_card_data TEXT DEFAULT '',
             card_format TEXT DEFAULT '',
+            card_ui TEXT DEFAULT '{}',
             pinned INTEGER NOT NULL DEFAULT 0,
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
             updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
@@ -96,6 +98,7 @@ def _init_tables(conn: sqlite3.Connection) -> None:
             parent_branch_id TEXT DEFAULT '',
             fork_from_message_id INTEGER DEFAULT NULL,
             token_usage TEXT DEFAULT '',
+            card_vars TEXT DEFAULT '',
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
             UNIQUE(companion_id, branch_id),
             FOREIGN KEY (companion_id) REFERENCES companions(id) ON DELETE CASCADE
@@ -315,6 +318,8 @@ def _init_tables(conn: sqlite3.Connection) -> None:
             conn.execute("ALTER TABLE companions ADD COLUMN user_info TEXT DEFAULT ''")
         if 'pinned' not in companion_columns:
             conn.execute("ALTER TABLE companions ADD COLUMN pinned INTEGER NOT NULL DEFAULT 0")
+        if 'card_ui' not in companion_columns:
+            conn.execute("ALTER TABLE companions ADD COLUMN card_ui TEXT DEFAULT '{}'")
         if 'card_format' not in companion_columns:
             conn.execute("ALTER TABLE companions ADD COLUMN card_format TEXT DEFAULT ''")
             # Backfill existing CHARX imports from extracted assets or CCv3 embedded asset URIs.
@@ -343,6 +348,8 @@ def _init_tables(conn: sqlite3.Connection) -> None:
             conn.execute("ALTER TABLE companion_branches ADD COLUMN card_hud_enabled INTEGER DEFAULT NULL")
         if 'token_usage' not in branch_columns:
             conn.execute("ALTER TABLE companion_branches ADD COLUMN token_usage TEXT DEFAULT ''")
+        if 'card_vars' not in branch_columns:
+            conn.execute("ALTER TABLE companion_branches ADD COLUMN card_vars TEXT DEFAULT ''")
     except Exception as e:
         logger.warning(f"Migration warning for companion_branches table: {e}")
 
@@ -444,6 +451,13 @@ def get_companion(companion_id: str) -> Optional[Dict]:
         data['alternate_greetings'] = json.loads(data.get('alternate_greetings', '[]'))
         data['depth_prompt'] = json.loads(data.get('depth_prompt', '{}'))
         data['tts_config'] = json.loads(data.get('tts_config', '{}'))
+        try:
+            data['card_ui'] = json.loads(data.get('card_ui') or '{}')
+        except (ValueError, TypeError):
+            data['card_ui'] = {}
+        data['card_presentation'] = extract_card_presentation(
+            data.get('raw_card_data', ''), data['card_ui']
+        )
         return data
     finally:
         conn.close()
@@ -527,7 +541,7 @@ def update_companion(companion_id: str, fields: Dict) -> bool:
         'mes_example', 'advanced_prompt', 'user_info', 'creator_notes', 'system_prompt', 'post_history_instructions',
         'creator', 'character_version', 'tags', 'alternate_greetings',
         'depth_prompt', 'avatar_path', 'llm_provider_id', 'tts_config',
-        'pinned',
+        'pinned', 'card_ui',
     }
     set_parts = []
     values = []
@@ -902,6 +916,82 @@ def is_last_active_message(companion_id: str, branch_id: str, message_id: int) -
         return bool(row and int(row["id"]) == int(message_id))
     finally:
         conn.close()
+
+
+def _load_card_defaults_for_companion(conn: sqlite3.Connection, companion_id: str) -> Dict[str, str]:
+    row = conn.execute(
+        "SELECT raw_card_data, card_ui FROM companions WHERE id = ?",
+        (companion_id,),
+    ).fetchone()
+    if not row:
+        return {}
+    pres = extract_card_presentation(row["raw_card_data"], row["card_ui"])
+    return dict(pres.get("default_variables") or {})
+
+
+def get_branch_variables(companion_id: str, branch_id: str = "main") -> Dict[str, Any]:
+    """Return card default variables and resolved active variables for *branch_id*."""
+    conn = _get_conn()
+    try:
+        defaults = _load_card_defaults_for_companion(conn, companion_id)
+        row = conn.execute(
+            "SELECT card_vars FROM companion_branches WHERE companion_id = ? AND branch_id = ?",
+            (companion_id, branch_id),
+        ).fetchone()
+        raw_vars = (row["card_vars"] if row else "") or ""
+        merged = dict(defaults)
+        if raw_vars:
+            try:
+                stored = json.loads(raw_vars)
+            except (ValueError, TypeError):
+                stored = None
+            if isinstance(stored, dict):
+                # When stored dict explicitly exists, merge over defaults so new
+                # card defaults still show up while user overrides win.
+                for k, v in stored.items():
+                    key = str(k).strip()
+                    if key:
+                        merged[key] = "" if v is None else str(v)
+        return {"defaults": defaults, "variables": merged}
+    finally:
+        conn.close()
+
+
+def set_branch_variables(
+    companion_id: str,
+    branch_id: str,
+    variables: Dict[str, Any],
+) -> Dict[str, Any]:
+    """Persist branch-scoped CBS variables and return the updated state."""
+    clean = {
+        str(k).strip(): ("" if v is None else str(v))
+        for k, v in (variables or {}).items()
+        if str(k).strip()
+    }
+    conn = _get_conn()
+    try:
+        conn.execute(
+            "UPDATE companion_branches SET card_vars = ? WHERE companion_id = ? AND branch_id = ?",
+            (json.dumps(clean, ensure_ascii=False), companion_id, branch_id),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+    return get_branch_variables(companion_id, branch_id)
+
+
+def reset_branch_variables(companion_id: str, branch_id: str = "main") -> Dict[str, Any]:
+    """Clear branch variable overrides so defaults from the card apply again."""
+    conn = _get_conn()
+    try:
+        conn.execute(
+            "UPDATE companion_branches SET card_vars = '' WHERE companion_id = ? AND branch_id = ?",
+            (companion_id, branch_id),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+    return get_branch_variables(companion_id, branch_id)
 
 
 def delete_branch(companion_id: str, branch_id: str) -> bool:

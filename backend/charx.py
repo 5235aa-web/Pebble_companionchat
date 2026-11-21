@@ -24,6 +24,7 @@ from typing import Callable, Dict, List, Optional, Set, Tuple
 from urllib.parse import unquote
 
 from . import paths
+from .rpack import RisumError, parse_risum_bytes
 
 logger = logging.getLogger(__name__)
 
@@ -525,6 +526,77 @@ def extract_charx_package(
                         inferred_type = hint.rstrip("s") if hint in ("emotions", "images") else hint
                         break
                 _store_member(inferred_type, Path(safe_rel).stem, info.filename, f"embeded://{safe_rel}", ext)
+
+            # Auto-import any embedded RisuAI module (`*.risum` or `module.json`) inside the CHARX archive.
+            for info in zf.infolist():
+                if info.is_dir() or info.filename == card_member:
+                    continue
+                safe_rel = sanitize_rel_zip_path(info.filename)
+                if not safe_rel:
+                    continue
+                low_name = Path(safe_rel).name.lower()
+                if not (low_name.endswith(".risum") or low_name == "module.json"):
+                    continue
+                try:
+                    mod_bytes = _read_bounded_member_bytes(zf, info.filename, MAX_CARD_JSON_BYTES if low_name == "module.json" else MAX_CHARX_SINGLE_ASSET_BYTES)
+                    mod_dict, mod_blobs = parse_risum_bytes(mod_bytes)
+                except (CharxError, RisumError):
+                    continue
+
+                ext_target = data_block.setdefault("extensions", {})
+                if not isinstance(ext_target, dict):
+                    ext_target = {}
+                    data_block["extensions"] = ext_target
+                risu_target = ext_target.setdefault("risuai", {})
+                if not isinstance(risu_target, dict):
+                    risu_target = {}
+                    ext_target["risuai"] = risu_target
+
+                mod_regex = mod_dict.get("regex")
+                if isinstance(mod_regex, list) and mod_regex:
+                    existing_scripts = risu_target.setdefault("customScripts", [])
+                    if isinstance(existing_scripts, list):
+                        existing_scripts.extend(mod_regex)
+
+                mod_bg = mod_dict.get("backgroundEmbedding")
+                if isinstance(mod_bg, str) and mod_bg.strip():
+                    prev_bg = str(risu_target.get("backgroundHTML") or "")
+                    if mod_bg.strip() not in prev_bg:
+                        risu_target["backgroundHTML"] = f"{prev_bg}\n{mod_bg}".strip() if prev_bg else mod_bg
+
+                mod_vars = mod_dict.get("defaultVariables")
+                if isinstance(mod_vars, str) and mod_vars.strip():
+                    prev_vars = str(risu_target.get("defaultVariables") or "")
+                    risu_target["defaultVariables"] = f"{prev_vars}\n{mod_vars}".strip() if prev_vars else mod_vars
+
+                raw_mod_assets = mod_dict.get("assets") if isinstance(mod_dict.get("assets"), list) else []
+                existing_asset_names = {str(a.get("name") or "").lower() for a in extracted_assets}
+                for m_idx, blob in enumerate(mod_blobs):
+                    if len(extracted_assets) >= MAX_CHARX_ASSETS_COUNT or not blob:
+                        break
+                    if len(blob) > remaining_budget:
+                        raise CharxError("CHARX extracted size exceeds safety limit")
+                    meta = raw_mod_assets[m_idx] if m_idx < len(raw_mod_assets) and isinstance(raw_mod_assets[m_idx], (list, tuple)) else None
+                    m_name = str(meta[0] if meta and len(meta) >= 1 and meta[0] else f"module_asset_{m_idx}").strip()
+                    if m_name.lower() in existing_asset_names:
+                        continue
+                    existing_asset_names.add(m_name.lower())
+                    m_ext = str(meta[2] if meta and len(meta) >= 3 and meta[2] else "").strip().lstrip(".").lower() or infer_ext(m_name, "bin")
+                    disk_path = assets_root / "x-risu-asset" / f"{len(extracted_assets):04d}_{_safe_filename_segment(m_name)}.{m_ext}"
+                    disk_path.parent.mkdir(parents=True, exist_ok=True)
+                    disk_path.write_bytes(blob)
+                    remaining_budget -= len(blob)
+                    rel_path = disk_path.resolve().relative_to(data_root_resolved).as_posix()
+                    extracted_assets.append({
+                        "asset_type": classify_media_kind(m_ext, "x-risu-asset"),
+                        "name": m_name,
+                        "ext": m_ext,
+                        "mime_type": infer_mime(m_ext),
+                        "rel_path": rel_path,
+                        "source_uri": f"embeded://assets/risum/{disk_path.name}",
+                        "size_bytes": len(blob),
+                        "sort_order": len(extracted_assets),
+                    })
 
         # Polyglot charx-jpeg / PNG+ZIP fallback if no icon/main image was inside the ZIP.
         avatar_rel = _pick_avatar_rel_path(extracted_assets)

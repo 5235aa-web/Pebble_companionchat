@@ -9,8 +9,15 @@ import {
   put,
   useSocket,
 } from './client'
+import type { DisplayRegexRule } from '@/utils/displayRegex'
 
 const C = '/companions'
+
+export interface CardPresentation {
+  default_variables: Record<string, string>
+  display_regex: DisplayRegexRule[]
+  card_css: string
+}
 
 export interface Companion {
   id: string
@@ -33,6 +40,8 @@ export interface Companion {
   llm_provider_id: string
   tts_config: Record<string, unknown>
   raw_card_data?: string
+  card_ui?: Record<string, unknown>
+  card_presentation?: CardPresentation
   pinned?: boolean
   asset_count?: number
   card_format?: string
@@ -433,4 +442,58 @@ export const uploadUserAvatar = (file: File): Promise<{ avatar_path: string }> =
   const fd = new FormData()
   fd.append('file', file)
   return postForm(`${C}/user/avatar`, fd)
+}
+
+/* ---- branch CBS variables ---- */
+
+export interface BranchVariablesPayload {
+  defaults: Record<string, string>
+  variables: Record<string, string>
+}
+
+export const getBranchVariables = (
+  companionId: string,
+  branchId: string,
+): Promise<BranchVariablesPayload> =>
+  get(`${C}/${encodeURIComponent(companionId)}/branches/${encodeURIComponent(branchId)}/variables`)
+
+export const updateBranchVariables = (
+  companionId: string,
+  branchId: string,
+  variables: Record<string, string>,
+): Promise<BranchVariablesPayload> =>
+  put(`${C}/${encodeURIComponent(companionId)}/branches/${encodeURIComponent(branchId)}/variables`, {
+    variables,
+  })
+
+export const resetBranchVariables = (
+  companionId: string,
+  branchId: string,
+): Promise<BranchVariablesPayload> =>
+  post(`${C}/${encodeURIComponent(companionId)}/branches/${encodeURIComponent(branchId)}/variables/reset`, {})
+
+export interface RisumImportResult {
+  status: string
+  module_name: string
+  added_regex: number
+  added_css: boolean
+  added_assets: number
+  card_presentation?: CardPresentation
+}
+
+export const importCompanionRisum = async (
+  companionId: string,
+  file: File,
+): Promise<RisumImportResult> => {
+  const id = encodeURIComponent(companionId)
+  if (!useSocket() && file.size <= 4 * 1024 * 1024) {
+    const fd = new FormData()
+    fd.append('file', file)
+    return postForm(`${C}/${id}/import/risum`, fd)
+  }
+  const buf = new Uint8Array(await file.arrayBuffer())
+  return post(`${C}/${id}/import/risum/json`, {
+    filename: file.name,
+    data_b64: bytesToBase64(buf),
+  })
 }

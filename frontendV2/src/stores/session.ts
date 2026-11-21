@@ -6,12 +6,16 @@ import { resolvePlaceholders, resolveUserName } from '@/utils/text'
 import {
   createBranch,
   deleteBranch,
+  getBranchVariables,
   getBranches,
   renameBranch,
+  resetBranchVariables,
   getCompanion,
   listCompanionAssets,
   listCompanions,
+  updateBranchVariables,
   updateCompanion,
+  type CardPresentation,
   type Companion,
   type CompanionAsset,
   type CompanionBranch,
@@ -181,10 +185,33 @@ export const useSessionStore = defineStore('session', () => {
   const sceneBreak = ref('')
 
   /* ---- empty state copy comes from the loaded character ---- */
-  const greetings = ref<string[]>([])
+  const rawGreetings = ref<string[]>([])
   const greetingIndex = ref(0)
-  const emptyLine = computed(() => greetings.value[greetingIndex.value] ?? '')
   const emptyHints = ref<string[]>([])
+
+  /* ---- card presentation (Display Regex, Card CSS, CBS variables) ---- */
+  const cardPresentation = ref<CardPresentation>({
+    default_variables: {},
+    display_regex: [],
+    card_css: '',
+  })
+  const defaultVariables = ref<Record<string, string>>({})
+  const branchVariables = ref<Record<string, string>>({})
+  const displayRegexRules = computed(() => cardPresentation.value.display_regex)
+  const cardCss = computed(() => cardPresentation.value.card_css)
+
+  const greetings = computed(() =>
+    rawGreetings.value.map((raw) =>
+      resolvePlaceholders(
+        raw,
+        act.value,
+        userName.value,
+        branchVariables.value,
+        `${activeCompanionId.value}:${activeBranch.value}`,
+      ),
+    ),
+  )
+  const emptyLine = computed(() => greetings.value[greetingIndex.value] ?? '')
 
   function cycleGreeting(step: number) {
     const n = greetings.value.length
@@ -280,23 +307,65 @@ export const useSessionStore = defineStore('session', () => {
     scenario.value = c.scenario || ''
     const name = resolveUserName(c.user_info)
     userName.value = name
-    // Greetings are card text, so first_mes and alternate_greetings both
-    // carry macros like {{char}} / {{user}}.
+    cardPresentation.value = c.card_presentation ?? {
+      default_variables: {},
+      display_regex: [],
+      card_css: '',
+    }
+    defaultVariables.value = { ...(cardPresentation.value.default_variables ?? {}) }
+    if (!Object.keys(branchVariables.value).length) {
+      branchVariables.value = { ...defaultVariables.value }
+    }
+    // Keep raw greetings so CBS conditionals & variables re-evaluate reactively
+    // whenever branchVariables change.
     const list: string[] = []
     if ((c.first_mes || '').trim()) {
-      list.push(resolvePlaceholders(c.first_mes, c.name || '', name))
+      list.push(c.first_mes)
     }
     for (const alt of c.alternate_greetings ?? []) {
       if (typeof alt === 'string' && alt.trim()) {
-        list.push(resolvePlaceholders(alt, c.name || '', name))
+        list.push(alt)
       }
     }
-    greetings.value = list
+    rawGreetings.value = list
     greetingIndex.value = 0
     companions.value = companions.value.map((m) => ({
       ...m,
       active: m.id === c.id,
     }))
+  }
+
+  async function loadBranchVariables(
+    cid = activeCompanionId.value,
+    bid = activeBranch.value || 'main',
+  ) {
+    if (!cid || !bid) return
+    try {
+      const res = await getBranchVariables(cid, bid)
+      if (activeCompanionId.value !== cid || (activeBranch.value || 'main') !== bid) return
+      defaultVariables.value = res.defaults ?? {}
+      branchVariables.value = res.variables ?? {}
+    } catch {
+      // Fall back to card defaults if branch variable lookup fails.
+    }
+  }
+
+  async function saveBranchVariables(vars: Record<string, string>) {
+    const cid = activeCompanionId.value
+    const bid = activeBranch.value || 'main'
+    if (!cid) return
+    const res = await updateBranchVariables(cid, bid, vars)
+    defaultVariables.value = res.defaults ?? {}
+    branchVariables.value = res.variables ?? {}
+  }
+
+  async function resetBranchVariablesLocal() {
+    const cid = activeCompanionId.value
+    const bid = activeBranch.value || 'main'
+    if (!cid) return
+    const res = await resetBranchVariables(cid, bid)
+    defaultVariables.value = res.defaults ?? {}
+    branchVariables.value = res.variables ?? {}
   }
 
   async function loadCompanions() {
@@ -350,12 +419,16 @@ export const useSessionStore = defineStore('session', () => {
     branchTitle.value = ''
     inPlay.value = []
     companionAssets.value = []
+    branchVariables.value = {}
+    defaultVariables.value = {}
+    cardPresentation.value = { default_variables: {}, display_regex: [], card_css: '' }
     companions.value = companions.value.map((m) => ({ ...m, active: m.id === id }))
     error.value = ''
     try {
       const [full] = await Promise.all([getCompanion(id), loadCompanionAssets(id)])
       if (full) applyCompanion(full)
       await loadBranches()
+      await loadBranchVariables(id, activeBranch.value || 'main')
     } catch (e) {
       error.value = e instanceof Error ? e.message : String(e)
     }
@@ -418,6 +491,7 @@ export const useSessionStore = defineStore('session', () => {
     branchTitle.value = branches.value.find((b) => b.id === id)?.name ?? ''
     rememberBranch(activeCompanionId.value, id)
     inPlay.value = []
+    void loadBranchVariables(activeCompanionId.value, id)
   }
 
   async function newBranch() {
@@ -504,6 +578,14 @@ export const useSessionStore = defineStore('session', () => {
     togglePin,
     loadBranches,
     loadTokens,
+    cardPresentation,
+    defaultVariables,
+    branchVariables,
+    displayRegexRules,
+    cardCss,
+    loadBranchVariables,
+    saveBranchVariables,
+    resetBranchVariablesLocal,
     newBranch,
     renameBranchLocal,
     removeBranch,

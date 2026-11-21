@@ -209,8 +209,8 @@ html[data-theme="day"] .rich-msg pre{background:rgb(var(--ink-rgb) / .04);}
 .rich-msg td{color:var(--ink-2);}
 .rich-msg tbody tr:hover{background:rgb(var(--ink-rgb) / .02);}
 
-/* Collapsible CHARX cards (<details>/<summary>) */
-.rich-msg details{
+/* Collapsible CHARX cards (<details>/<summary>) without custom card classes */
+.rich-msg details:not([class]){
   margin:.85em 0;
   padding:9px 14px;
   border:1px solid var(--line-2);
@@ -218,12 +218,12 @@ html[data-theme="day"] .rich-msg pre{background:rgb(var(--ink-rgb) / .04);}
   background:rgb(var(--ink-rgb) / .02);
   transition:border-color .25s ease,background-color .25s ease;
 }
-.rich-msg details[open]{
+.rich-msg details:not([class])[open]{
   padding-bottom:12px;
   border-color:rgb(var(--accent-rgb) / .28);
   background:rgb(var(--ink-rgb) / .025);
 }
-.rich-msg summary{
+.rich-msg details:not([class]) > summary{
   cursor:pointer;
   list-style:none;
   display:flex;
@@ -237,8 +237,8 @@ html[data-theme="day"] .rich-msg pre{background:rgb(var(--ink-rgb) / .04);}
   user-select:none;
   transition:color .2s ease;
 }
-.rich-msg summary::-webkit-details-marker{display:none;}
-.rich-msg summary::before{
+.rich-msg details:not([class]) > summary::-webkit-details-marker{display:none;}
+.rich-msg details:not([class]) > summary::before{
   content:'';
   width:6px;height:6px;
   border-right:1.5px solid currentColor;
@@ -247,11 +247,11 @@ html[data-theme="day"] .rich-msg pre{background:rgb(var(--ink-rgb) / .04);}
   transition:transform .25s var(--ease);
   flex:none;
 }
-.rich-msg details[open] > summary::before{transform:rotate(45deg);}
-.rich-msg summary:hover,
-.rich-msg details[open] > summary{color:var(--accent);}
-.rich-msg details[open] > summary{margin-bottom:9px;}
-.rich-msg details > :last-child{margin-bottom:0;}
+.rich-msg details:not([class])[open] > summary::before{transform:rotate(45deg);}
+.rich-msg details:not([class]) > summary:hover,
+.rich-msg details:not([class])[open] > summary{color:var(--accent);}
+.rich-msg details:not([class])[open] > summary{margin-bottom:9px;}
+.rich-msg details:not([class]) > :last-child{margin-bottom:0;}
 
 /* Ruby / furigana & figures */
 .rich-msg ruby{ruby-align:center;}

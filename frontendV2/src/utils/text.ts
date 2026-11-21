@@ -10,29 +10,21 @@
  * case-insensitivity, same fallbacks.
  */
 
-const MACRO = /\{\{\s*([A-Za-z_]+)\s*\}\}/g
-
-const CHARACTER_ALIASES = new Set(['char', 'character'])
-const USER_ALIASES = new Set(['user', 'persona'])
+import { evaluateCbs } from './cbs'
 
 /**
- * Replace macros with the names this chat is using. Unknown macros survive: a
- * card may carry placeholders for some other frontend, and deleting them would
- * quietly lose text the author wrote.
+ * Replace macros with the names and variables this chat is using. Unknown
+ * macros survive: a card may carry placeholders for some other frontend, and
+ * deleting them would quietly lose text the author wrote.
  */
 export function resolvePlaceholders(
   text: string | null | undefined,
   charName: string | null | undefined,
   userName: string | null | undefined,
+  variables?: Record<string, string>,
+  seed?: string,
 ): string {
-  const source = text || ''
-  if (!source.includes('{{')) return source
-  return source.replace(MACRO, (whole, kind: string) => {
-    const key = kind.toLowerCase()
-    if (CHARACTER_ALIASES.has(key)) return charName || 'the character'
-    if (USER_ALIASES.has(key)) return userName || 'the user'
-    return whole
-  })
+  return evaluateCbs(text, { charName, userName, variables, seed })
 }
 
 /**

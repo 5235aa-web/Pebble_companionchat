@@ -24,6 +24,7 @@ from .companion_db import (
     get_companion, get_all_companions, delete_companion, update_companion,
     add_companion_asset, get_companion_assets, get_companion_asset, delete_companion_asset,
     get_branch_hud, update_branch_hud,
+    get_branch_variables, set_branch_variables, reset_branch_variables,
     get_branches, create_branch, delete_branch, update_branch_name,
     get_messages, get_messages_with_swipes, delete_message, get_message_count, clear_branch_messages,
     save_message, mark_messages_compacted, get_compacted_messages,
@@ -44,6 +45,7 @@ from .picturesys import service as picture_service
 from .paths import AVATAR_DIR, COMPANION_ASSETS_DIR, DATA_ROOT, LLM_CONFIG_PATH, TMP_UPLOAD_DIR
 from .llm_client import load_default_llm_config
 from .tavern_importer import import_card_file, import_from_bytes
+from .risum import RisumError, merge_risum_into_companion
 from .charx import (
     CharxError,
     MAX_CARD_UPLOAD_BYTES,
@@ -355,6 +357,7 @@ class CompanionUpdateRequest(BaseModel):
     depth_prompt: Optional[Dict[str, Any]] = None
     llm_provider_id: Optional[str] = None
     tts_config: Optional[Dict[str, Any]] = None
+    card_ui: Optional[Dict[str, Any]] = None
     pinned: Optional[bool] = None
 
 
@@ -707,6 +710,53 @@ async def import_tavern_charx(file: UploadFile = File(...)):
             tmp_path.unlink(missing_ok=True)
 
 
+class RisumBase64ImportRequest(BaseModel):
+    filename: str = "module.risum"
+    data_b64: str
+
+
+@router.post("/{companion_id}/import/risum")
+async def import_risum_for_companion(companion_id: str, file: UploadFile = File(...)):
+    """导入 RisuAI `.risum`（或 `module.json`）模块并合并至指定角色卡。"""
+    if not get_companion(companion_id):
+        raise HTTPException(status_code=404, detail="Companion not found")
+    try:
+        raw = await file.read()
+        if len(raw) > MAX_CARD_UPLOAD_BYTES:
+            raise HTTPException(status_code=413, detail="Module file too large")
+        return await anyio.to_thread.run_sync(merge_risum_into_companion, companion_id, raw)
+    except HTTPException:
+        raise
+    except RisumError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        logger.error("Import .risum failed for %s: %s", companion_id, e, exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Import .risum failed: {str(e)}")
+
+
+@router.post("/{companion_id}/import/risum/json")
+async def import_risum_base64_for_companion(
+    companion_id: str,
+    request: RisumBase64ImportRequest,
+):
+    """通过 JSON base64 导入 `.risum` 模块（兼容 Tauri WebSocket 桥接）。"""
+    import base64
+
+    if not get_companion(companion_id):
+        raise HTTPException(status_code=404, detail="Companion not found")
+    try:
+        raw = base64.b64decode(request.data_b64, validate=True)
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=f"Invalid base64 payload: {exc}")
+    try:
+        return await anyio.to_thread.run_sync(merge_risum_into_companion, companion_id, raw)
+    except RisumError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        logger.error("Import .risum (json) failed for %s: %s", companion_id, e, exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Import .risum failed: {str(e)}")
+
+
 # ==================== Card Export ====================
 
 @router.get("/{companion_id}/export/json")
@@ -993,6 +1043,42 @@ async def reset_companion_branch_hud(companion_id: str, branch_id: str):
     if not get_companion(companion_id):
         raise HTTPException(status_code=404, detail="Companion not found")
     return update_branch_hud(companion_id, branch_id, hud={})
+
+
+class BranchVariablesUpdateRequest(BaseModel):
+    variables: Dict[str, Any] = Field(default_factory=dict)
+
+
+@router.get("/{companion_id}/branches/{branch_id}/variables")
+async def get_companion_branch_variables(companion_id: str, branch_id: str):
+    """获取单人对话分支的 CBS 变量（含卡面默认值合并）。"""
+    if not get_companion(companion_id):
+        raise HTTPException(status_code=404, detail="Companion not found")
+    return get_branch_variables(companion_id, branch_id)
+
+
+@router.put("/{companion_id}/branches/{branch_id}/variables")
+async def put_companion_branch_variables(
+    companion_id: str,
+    branch_id: str,
+    request: BranchVariablesUpdateRequest,
+):
+    """更新单人对话分支的 CBS 变量。"""
+    if not get_companion(companion_id):
+        raise HTTPException(status_code=404, detail="Companion not found")
+    res = set_branch_variables(companion_id, branch_id, request.variables)
+    token_engine.clear_recorded_usage(companion_id, branch_id)
+    return res
+
+
+@router.post("/{companion_id}/branches/{branch_id}/variables/reset")
+async def reset_companion_branch_variables(companion_id: str, branch_id: str):
+    """将分支 CBS 变量重置为角色卡默认值。"""
+    if not get_companion(companion_id):
+        raise HTTPException(status_code=404, detail="Companion not found")
+    res = reset_branch_variables(companion_id, branch_id)
+    token_engine.clear_recorded_usage(companion_id, branch_id)
+    return res
 
 
 @router.post("/{companion_id}/branches")

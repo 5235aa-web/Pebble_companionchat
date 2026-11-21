@@ -14,6 +14,8 @@ import { useCallStore } from '@/stores/call'
 import { useCardAudioStore } from '@/stores/cardAudio'
 import { useLlmStore } from '@/stores/llm'
 import { parseLines } from '@/stores/chat'
+import { evaluateCbs } from '@/utils/cbs'
+import { applyDisplayRegex } from '@/utils/displayRegex'
 import { extractInlineMediaFromText } from '@/utils/inlineMedia'
 import { plainTextForSpeech } from '@/utils/richText'
 import RichMessage from './RichMessage.vue'
@@ -88,9 +90,20 @@ watch(
   { immediate: true },
 )
 
-const inlineMedia = computed(() =>
-  extractInlineMediaFromText(displaySource.value, (ref) => session.findAssetByRef(ref)),
-)
+const inlineMedia = computed(() => {
+  const cbsOpts = {
+    charName: session.act,
+    userName: session.userName,
+    variables: session.branchVariables,
+    seed: `${session.activeCompanionId}:${session.activeBranch}`,
+  }
+  const withVars = evaluateCbs(displaySource.value, cbsOpts)
+  const displayed = applyDisplayRegex(withVars, session.displayRegexRules, {
+    ...cbsOpts,
+    placement: props.beat.role === 'you' ? 1 : 2,
+  })
+  return extractInlineMediaFromText(displayed, (ref) => session.findAssetByRef(ref))
+})
 
 const inlineImageMap = useFileUrls(
   () =>
@@ -468,7 +481,9 @@ function copyLine() {
           <RichMessage
             :content="inlineMedia.cleanedText"
             :streaming="isStreaming"
+            :role="beat.role"
             :asset-urls="inlineAssetUrls"
+            :card-css="session.cardCss"
           />
         </div>
       </div>

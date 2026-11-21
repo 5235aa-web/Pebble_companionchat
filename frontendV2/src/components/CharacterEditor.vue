@@ -2,14 +2,17 @@
 import { computed, reactive, ref, watch } from 'vue'
 import { useUiStore } from '@/stores/ui'
 import { useSessionStore } from '@/stores/session'
+import { useLlmStore } from '@/stores/llm'
 import { useCardAudioStore } from '@/stores/cardAudio'
 import { useI18n } from '@/i18n'
+import type { DisplayRegexRule } from '@/utils/displayRegex'
 import type { CharacterCard } from '@/data/character'
 import {
   createCompanion,
   deleteCompanionAsset,
   exportCompanion,
   getCompanion,
+  importCompanionRisum,
   setAvatarFromAsset,
   updateCompanion,
   uploadCompanionAsset,
@@ -23,6 +26,7 @@ import InlineVideoCard from './InlineVideoCard.vue'
 
 const ui = useUiStore()
 const session = useSessionStore()
+const llm = useLlmStore()
 const cardAudio = useCardAudioStore()
 const { t } = useI18n()
 
@@ -72,8 +76,84 @@ const collapsed = reactive({
   assetsAudio: true,
   assetsVideos: true,
   tts: true,
+  interactive: true,
   hood: true,
 })
+
+const varsText = ref('')
+const regexRules = ref<DisplayRegexRule[]>([])
+const cardCssText = ref('')
+const risumInput = ref<HTMLInputElement | null>(null)
+const importingRisum = ref(false)
+let loadedCardUiSnapshot = ''
+let loadedVarsSnapshot = ''
+
+function formatVarsText(vars: Record<string, string>): string {
+  return Object.entries(vars)
+    .map(([k, v]) => `${k}=${v}`)
+    .join('\n')
+}
+
+function parseVarsText(raw: string): Record<string, string> {
+  const out: Record<string, string> = {}
+  for (const line of raw.split('\n')) {
+    const trimmed = line.trim()
+    if (!trimmed || trimmed.startsWith('#')) continue
+    const eq = trimmed.indexOf('=')
+    if (eq <= 0) continue
+    const k = trimmed.slice(0, eq).trim()
+    const v = trimmed.slice(eq + 1).trim()
+    if (k) out[k] = v
+  }
+  return out
+}
+
+function addRegexRule() {
+  regexRules.value.push({
+    id: `custom_${Date.now().toString(36)}`,
+    name: `Rule ${regexRules.value.length + 1}`,
+    pattern: '',
+    flags: 'g',
+    replace: '',
+    placement: [1, 2],
+    enabled: true,
+  })
+}
+
+function removeRegexRule(idx: number) {
+  regexRules.value.splice(idx, 1)
+}
+
+async function resetVars() {
+  if (ui.newCastDraft || !session.activeCompanionId) return
+  await session.resetBranchVariablesLocal()
+  varsText.value = formatVarsText(session.branchVariables)
+  loadedVarsSnapshot = varsText.value
+  void session.loadTokens(llm.tokenQuery)
+}
+
+function pickRisumFile() {
+  risumInput.value?.click()
+}
+
+async function onRisumPicked(ev: Event) {
+  const input = ev.target as HTMLInputElement
+  const file = input.files?.[0]
+  input.value = ''
+  const id = session.activeCompanionId
+  if (!file || !id || ui.newCastDraft) return
+  importingRisum.value = true
+  error.value = ''
+  try {
+    await importCompanionRisum(id, file)
+    await session.selectCompanion(id)
+    await load()
+  } catch (e) {
+    error.value = e instanceof Error ? e.message : String(e)
+  } finally {
+    importingRisum.value = false
+  }
+}
 
 const IMAGE_PAGE = 36
 const imageLimit = ref(IMAGE_PAGE)
@@ -136,6 +216,11 @@ async function load() {
   // whichever companion happens to be selected behind the panel.
   if (ui.newCastDraft) {
     Object.assign(card, makeEmpty())
+    varsText.value = ''
+    regexRules.value = []
+    cardCssText.value = ''
+    loadedCardUiSnapshot = ''
+    loadedVarsSnapshot = ''
     error.value = ''
     return
   }
@@ -147,8 +232,21 @@ async function load() {
   imageLimit.value = IMAGE_PAGE
   assetFilter.value = ''
   try {
-    const [c] = await Promise.all([getCompanion(id), session.loadCompanionAssets(id)])
+    const [c] = await Promise.all([
+      getCompanion(id),
+      session.loadCompanionAssets(id),
+      session.loadBranchVariables(id, session.activeBranch || 'main'),
+    ])
     Object.assign(card, c ? fromCompanion(c) : makeEmpty())
+    const pres = c?.card_presentation
+    regexRules.value = (pres?.display_regex ?? []).map((r) => ({ ...r }))
+    cardCssText.value = pres?.card_css ?? ''
+    varsText.value = formatVarsText(session.branchVariables)
+    loadedCardUiSnapshot = JSON.stringify({
+      display_regex: regexRules.value,
+      card_css: cardCssText.value,
+    })
+    loadedVarsSnapshot = varsText.value
     // Keep image/audio sub-groups collapsed by default so large 2000+ asset
     // cards never lag or bury the rest of the editor.
     collapsed.assetsImages = true
@@ -193,7 +291,12 @@ async function save() {
   saving.value = true
   error.value = ''
   try {
-    const fields = {
+    const cleanRules = regexRules.value.filter((r) => r.pattern.trim().length > 0)
+    const currentCardUiSnapshot = JSON.stringify({
+      display_regex: cleanRules,
+      card_css: cardCssText.value,
+    })
+    const fields: Record<string, unknown> = {
       name: card.name,
       description: card.description,
       personality: card.personality,
@@ -215,10 +318,20 @@ async function save() {
         voiceId: card.ttsVoiceId.trim(),
       },
     }
+    if (currentCardUiSnapshot !== loadedCardUiSnapshot) {
+      fields.card_ui = {
+        display_regex: cleanRules,
+        card_css: cardCssText.value,
+      }
+    }
     // A draft only reaches the database here, so backing out of the editor
     // leaves the cast list untouched.
     if (draft) await createCompanion(id, fields)
     else await updateCompanion(id, fields)
+    if (!draft && varsText.value !== loadedVarsSnapshot) {
+      await session.saveBranchVariables(parseVarsText(varsText.value))
+      void session.loadTokens(llm.tokenQuery)
+    }
     ui.clearNewCast()
     await session.loadCompanions()
     if (draft) await session.selectCompanion(id)
@@ -693,6 +806,92 @@ function removeGreeting(index: number) {
             <div class="pf-field">
               <label>{{ t('card.voiceId') }}</label>
               <input v-model="card.ttsVoiceId" class="pf-input" :placeholder="t('card.voiceIdHint')" />
+            </div>
+          </div>
+        </div>
+
+        <!-- Interactive Rules: CBS variables, Display Regex, Scoped CSS -->
+        <div class="pf-group" :class="{ collapsed: collapsed.interactive }">
+          <div class="pf-glabel" data-group @click="collapsed.interactive = !collapsed.interactive">
+            <svg class="caret" viewBox="0 0 24 24"><path d="M6 9l6 6 6-6" /></svg>
+            <span>{{ t('card.interactiveRules') }}</span>
+          </div>
+          <div class="pf-fields">
+            <div v-if="!ui.newCastDraft" class="pf-asset-bar" style="margin-bottom: 10px;">
+              <button
+                type="button"
+                class="mini-btn"
+                :disabled="importingRisum"
+                @click="pickRisumFile"
+              >
+                {{ t('card.importRisum') }}
+              </button>
+              <span class="pf-asset-empty" style="margin: 0;">{{ t('card.importRisumNote') }}</span>
+              <input
+                ref="risumInput"
+                type="file"
+                accept=".risum,.json"
+                hidden
+                @change="onRisumPicked"
+              />
+            </div>
+            <div v-if="!ui.newCastDraft" class="pf-field">
+              <div class="pf-greet-head">
+                <label>{{ t('card.cbsVariables') }}</label>
+                <button type="button" class="mini-btn" @click="resetVars">{{ t('card.resetVars') }}</button>
+              </div>
+              <textarea
+                v-model="varsText"
+                class="pf-area"
+                rows="3"
+                spellcheck="false"
+                :placeholder="t('card.cbsVariablesHint')"
+              ></textarea>
+            </div>
+            <div class="pf-field">
+              <div class="pf-greet-head">
+                <label>{{ t('card.displayRegex') }}</label>
+                <button type="button" class="mini-btn" @click="addRegexRule">{{ t('card.addRegex') }}</button>
+              </div>
+              <div v-if="!regexRules.length" class="pf-asset-empty">{{ t('card.regexEmpty') }}</div>
+              <div
+                v-for="(rule, ri) in regexRules"
+                :key="rule.id || ri"
+                class="pf-greet-row"
+                style="flex-direction: column; align-items: stretch; gap: 6px; padding: 8px; border: 1px solid var(--line); border-radius: 6px; margin-bottom: 8px;"
+              >
+                <div style="display: flex; gap: 6px; align-items: center;">
+                  <input v-model="rule.enabled" type="checkbox" :aria-label="rule.name || 'enable rule'" />
+                  <input v-model="rule.name" class="pf-input" :placeholder="t('card.regexName')" style="flex: 1;" />
+                  <input v-model="rule.flags" class="pf-input" :placeholder="t('card.regexFlags')" style="width: 68px;" />
+                  <button
+                    type="button"
+                    class="pf-greet-del"
+                    aria-label="remove regex rule"
+                    @click="removeRegexRule(ri)"
+                  >
+                    ×
+                  </button>
+                </div>
+                <input v-model="rule.pattern" class="pf-input" spellcheck="false" :placeholder="t('card.regexPattern')" />
+                <textarea
+                  v-model="rule.replace"
+                  class="pf-area"
+                  rows="2"
+                  spellcheck="false"
+                  :placeholder="t('card.regexReplace')"
+                ></textarea>
+              </div>
+            </div>
+            <div class="pf-field">
+              <label>{{ t('card.cardCss') }}</label>
+              <textarea
+                v-model="cardCssText"
+                class="pf-area"
+                rows="4"
+                spellcheck="false"
+                :placeholder="t('card.cardCssHint')"
+              ></textarea>
             </div>
           </div>
         </div>

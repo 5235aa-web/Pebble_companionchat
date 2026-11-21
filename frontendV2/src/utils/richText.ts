@@ -1,7 +1,7 @@
 import { marked } from 'marked'
 import DOMPurify from 'dompurify'
 
-const ALLOWED_TAGS = [
+const BASE_ALLOWED_TAGS = [
   'h1', 'h2', 'h3', 'h4', 'h5', 'h6',
   'p', 'br', 'hr', 'blockquote', 'pre', 'code',
   'span', 'div', 'section', 'article', 'header', 'footer', 'aside',
@@ -14,26 +14,46 @@ const ALLOWED_TAGS = [
   'a', 'figure', 'figcaption', 'img',
 ]
 
-const FORBID_TAGS = [
+const SANDBOX_ALLOWED_TAGS = [...BASE_ALLOWED_TAGS, 'style', 'input', 'label']
+
+const BASE_FORBID_TAGS = [
   'script', 'style', 'iframe', 'frame', 'frameset', 'object', 'embed',
   'applet', 'base', 'link', 'meta', 'form', 'input', 'textarea', 'button',
   'select', 'option', 'svg', 'math', 'video', 'audio', 'source', 'canvas',
   'noscript', 'template', 'slot',
 ]
 
-const ALLOWED_ATTR = [
+const SANDBOX_FORBID_TAGS = [
+  'script', 'iframe', 'frame', 'frameset', 'object', 'embed',
+  'applet', 'base', 'link', 'meta', 'form', 'textarea', 'button',
+  'select', 'option', 'svg', 'math', 'video', 'audio', 'source', 'canvas',
+  'noscript', 'template', 'slot',
+]
+
+const BASE_ALLOWED_ATTR = [
   'class', 'style', 'href', 'target', 'rel', 'title', 'alt', 'src',
   'width', 'height', 'colspan', 'rowspan', 'align', 'valign',
   'open', 'start', 'type', 'reversed',
 ]
 
-const FORBID_ATTR = ['id', 'name', 'srcdoc', 'formaction', 'xlink:href']
+const SANDBOX_ALLOWED_ATTR = [
+  ...BASE_ALLOWED_ATTR,
+  'id', 'name', 'for', 'checked', 'disabled', 'readonly', 'value',
+  'min', 'max', 'step', 'placeholder', 'role', 'tabindex',
+]
+
+const BASE_FORBID_ATTR = ['id', 'name', 'srcdoc', 'formaction', 'xlink:href']
+const SANDBOX_FORBID_ATTR = ['srcdoc', 'formaction', 'xlink:href']
+const SAFE_INPUT_TYPES = new Set(['checkbox', 'radio', 'range', 'text', 'number'])
 
 const ALLOWED_URI_REGEXP =
   /^(?:(?:https?|mailto):|data:image\/(?:png|jpe?g|gif|webp);base64,|pebble-asset:\d+|#)/i
 
 const SAFE_IMG_SRC_RE =
   /^(?:https?:\/\/|data:image\/(?:png|jpe?g|gif|webp);base64,|pebble-asset:\d+)/i
+
+const SAFE_CSS_URL_RE =
+  /^(?:https?:\/\/|data:image\/(?:png|jpe?g|gif|webp);base64,)/i
 
 const SAFE_STYLE_PROPS = new Set([
   'color',
@@ -95,6 +115,34 @@ const SAFE_STYLE_PROPS = new Set([
 const UNSAFE_STYLE_VALUE_RE =
   /url\s*\(|expression\s*\(|@import|javascript:|vbscript:|behavior\s*:|-moz-binding/i
 
+/**
+ * Sanitize card-level CSS (`backgroundHTML` or message `<style>` blocks) so it
+ * can execute safely inside a per-message Shadow DOM sandbox without `@import`,
+ * script expressions, external trackers, or viewport-escaping fixed overlays.
+ */
+export function sanitizeCardCss(raw: string): string {
+  if (!raw || !raw.trim()) return ''
+  return raw
+    .replace(/<\/?style\b[^>]*>/gi, '')
+    .replace(/<\/?script\b[^>]*>/gi, '')
+    .replace(/@import\b[^;\n]*(?:;|$)/gi, '')
+    .replace(/expression\s*\([^)]*\)/gi, 'none')
+    .replace(/(?:javascript|vbscript)\s*:/gi, '')
+    .replace(/-moz-binding\s*:[^;]*(?:;|$)/gi, '')
+    .replace(/behavior\s*:[^;]*(?:;|$)/gi, '')
+    .replace(/url\s*\(\s*(?:"([^"]*)"|'([^']*)'|([^)]*))\s*\)/gi, (_, dq?: string, sq?: string, uq?: string) => {
+      const target = (dq ?? sq ?? uq ?? '').trim()
+      if (SAFE_CSS_URL_RE.test(target)) {
+        const clean = target.replace(/["'()\\]/g, '')
+        return `url("${clean}")`
+      }
+      return 'none'
+    })
+    .replace(/(\bposition\s*:\s*)fixed\b/gi, '$1absolute')
+    .replace(/(^|[},\s])(?::root|html|body)(?=\s*[{,.:#[\s])/gi, '$1:host')
+    .trim()
+}
+
 function sanitizeInlineStyle(raw: string): string {
   const kept: string[] = []
   for (const decl of raw.split(';')) {
@@ -131,6 +179,13 @@ function ensurePurifyHooks(): void {
     if (attr === 'src' && node.nodeName === 'IMG') {
       if (!SAFE_IMG_SRC_RE.test(data.attrValue.trim())) {
         data.keepAttr = false
+      }
+      return
+    }
+    if (attr === 'type' && node.nodeName === 'INPUT') {
+      const kind = data.attrValue.trim().toLowerCase()
+      if (!SAFE_INPUT_TYPES.has(kind)) {
+        data.attrValue = 'checkbox'
       }
     }
   })
@@ -274,23 +329,38 @@ function appendStreamingCaret(root: DocumentFragment): void {
 const renderCache = new Map<string, string>()
 const RENDER_CACHE_MAX = 300
 
+export interface RenderRichOptions {
+  sandbox?: boolean
+}
+
+const SANDBOX_TRIGGER_RE = /<(?:style|input|label)\b/i
+
+export function needsCardSandbox(rawOrHtml: string, cardCss?: string): boolean {
+  if (cardCss && cardCss.trim()) return true
+  return SANDBOX_TRIGGER_RE.test(rawOrHtml || '')
+}
+
 /**
  * Render Markdown + controlled HTML for single-chat messages and greetings.
  *
  * Preserves Pebble's signature `(stage direction)` styling on plain lines while
- * safely supporting GFM Markdown and sanitized CHARX HTML cards.
+ * safely supporting GFM Markdown and sanitized CHARX HTML cards. When `sandbox`
+ * is enabled (used inside Shadow DOM), `<style>` and safe `<input>`/`<label>`
+ * controls are sanitized and preserved.
  */
 export function renderRichMessage(
   raw: string,
   streaming = false,
   assetUrls?: Record<number, string>,
+  options?: RenderRichOptions,
 ): string {
   const trimmed = raw ?? ''
   if (!trimmed.trim()) {
     return streaming ? '<span class="caret" aria-hidden="true"></span>' : ''
   }
 
-  const canCache = !streaming && !trimmed.includes('pebble-asset:')
+  const sandbox = Boolean(options?.sandbox)
+  const canCache = !streaming && !sandbox && !trimmed.includes('pebble-asset:')
   if (canCache) {
     const hit = renderCache.get(trimmed)
     if (hit !== undefined) return hit
@@ -311,17 +381,27 @@ export function renderRichMessage(
   }) as string
 
   const clean = DOMPurify.sanitize(parsed, {
-    ALLOWED_TAGS,
-    FORBID_TAGS,
-    FORBID_CONTENTS: ['script', 'style'],
-    ALLOWED_ATTR,
-    FORBID_ATTR,
+    ALLOWED_TAGS: sandbox ? SANDBOX_ALLOWED_TAGS : BASE_ALLOWED_TAGS,
+    FORBID_TAGS: sandbox ? SANDBOX_FORBID_TAGS : BASE_FORBID_TAGS,
+    FORBID_CONTENTS: sandbox ? ['script'] : ['script', 'style'],
+    ALLOWED_ATTR: sandbox ? SANDBOX_ALLOWED_ATTR : BASE_ALLOWED_ATTR,
+    FORBID_ATTR: sandbox ? SANDBOX_FORBID_ATTR : BASE_FORBID_ATTR,
     ALLOW_DATA_ATTR: false,
     ALLOWED_URI_REGEXP,
   })
 
   const tpl = document.createElement('template')
   tpl.innerHTML = clean
+  if (sandbox) {
+    for (const styleEl of tpl.content.querySelectorAll('style')) {
+      const cleanedCss = sanitizeCardCss(styleEl.textContent ?? '')
+      if (!cleanedCss) {
+        styleEl.remove()
+      } else {
+        styleEl.textContent = cleanedCss
+      }
+    }
+  }
   transformParagraphs(tpl.content)
   hardenLinksAndMedia(tpl.content, assetUrls)
   if (streaming) appendStreamingCaret(tpl.content)
@@ -413,6 +493,9 @@ export function plainTextForSpeech(raw: string): string {
   if (!raw) return ''
   const tpl = document.createElement('template')
   tpl.innerHTML = renderRichMessage(raw, false)
+  for (const el of tpl.content.querySelectorAll('style')) {
+    el.remove()
+  }
   for (const el of tpl.content.querySelectorAll(
     'p, h1, h2, h3, h4, h5, h6, li, blockquote, tr, dt, dd, summary, pre',
   )) {

@@ -14,6 +14,7 @@ from typing import List, Dict, AsyncGenerator, Optional, Tuple
 
 from .companion_db import (
     get_companion, get_companion_assets, get_branch_hud, update_branch_hud,
+    get_branch_variables,
     save_message, save_message_with_swipes, get_messages,
     get_last_assistant_message, update_message_content, add_swipe_to_message,
     delete_message, delete_messages_after,
@@ -330,8 +331,12 @@ class Companion:
         
         return {"text": text, "role": role, "depth": max(0, depth)}
     
-    def _macro_context(self):
-        """Return a function that resolves {{char}} / {{user}} for this card.
+    def _macro_context(
+        self,
+        branch_id: str = "main",
+        variables: Optional[Dict[str, str]] = None,
+    ):
+        """Return a function that resolves CBS macros & branch variables for this card.
 
         Cards are written with macros instead of names, so the same card works
         under any persona. Both the system prompt and the messages inserted into
@@ -339,7 +344,19 @@ class Companion:
         """
         char_name = self.name or "your character"
         user_name = resolve_user_name(self.user_info)
-        return lambda value: substitute(value, char_name, user_name)
+        vars_map = (
+            variables
+            if variables is not None
+            else get_branch_variables(self.id, branch_id).get("variables", {})
+        )
+        seed = f"{self.id}:{branch_id}"
+        return lambda value: substitute(
+            value,
+            char_name,
+            user_name,
+            variables=vars_map,
+            seed=seed,
+        )
 
     def build_system_prompt(
         self,
@@ -362,10 +379,10 @@ class Companion:
         history = history or []
         parts: List[str] = []
 
-        # Cards write {{char}} and {{user}} instead of concrete names. Resolve
-        # them here rather than at import: renaming a card has to take effect on
-        # the next turn, and the stored card must stay as the author wrote it.
-        sub = self._macro_context()
+        # Cards write {{char}}, {{user}}, and CBS conditionals/variables instead
+        # of static values. Resolve them here rather than at import so edits and
+        # variable toggles take effect on the next turn.
+        sub = self._macro_context(branch_id)
 
         if self.name:
             parts.append(f"[Character]\nYou are {self.name}.")
@@ -498,7 +515,7 @@ class Companion:
                 history, branch_id, memory_out, include_card_hud=include_card_hud
             ),
         }]
-        sub = self._macro_context()
+        sub = self._macro_context(branch_id)
         
         # A summary covers the earliest part of the conversation, so it belongs
         # right after the system prompt. Compaction appends the summary row, and

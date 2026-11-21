@@ -196,7 +196,13 @@ export const useChatStore = defineStore('chat', () => {
    * here, so an imported card reads normally instead of showing placeholders.
    */
   function withNames(text: string): string {
-    return resolvePlaceholders(text, session.activeCast?.name ?? '', session.userName)
+    return resolvePlaceholders(
+      text,
+      session.activeCast?.name ?? '',
+      session.userName,
+      session.branchVariables,
+      `${session.activeCompanionId}:${session.activeBranch}`,
+    )
   }
 
   function reset() {

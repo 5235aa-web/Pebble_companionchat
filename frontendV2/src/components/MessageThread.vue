@@ -8,6 +8,7 @@ import { useSessionStore } from '@/stores/session'
 import { useUiStore } from '@/stores/ui'
 import { useCardAudioStore } from '@/stores/cardAudio'
 import { useFileUrls } from '@/composables/useFileUrl'
+import { applyDisplayRegex } from '@/utils/displayRegex'
 import { extractInlineMediaFromText, type InlineMediaTextResult } from '@/utils/inlineMedia'
 import { useI18n } from '@/i18n'
 import { summaryText } from '@/data/chat'
@@ -34,7 +35,14 @@ const greetingMedia = computed<InlineMediaTextResult>(() => {
   if (!greetingVisible.value) return EMPTY_GREETING_MEDIA
   const raw = session.emptyLine
   if (!raw) return EMPTY_GREETING_MEDIA
-  return extractInlineMediaFromText(raw, (refText) => session.findAssetByRef(refText))
+  const displayed = applyDisplayRegex(raw, session.displayRegexRules, {
+    placement: 2,
+    charName: session.act,
+    userName: session.userName,
+    variables: session.branchVariables,
+    seed: `${session.activeCompanionId}:${session.activeBranch}`,
+  })
+  return extractInlineMediaFromText(displayed, (refText) => session.findAssetByRef(refText))
 })
 
 const greetingImageMap = useFileUrls(
@@ -242,6 +250,7 @@ onMounted(async () => {
           :content="greetingMedia.cleanedText"
           variant="greeting"
           :asset-urls="greetingAssetUrls"
+          :card-css="session.cardCss"
         />
         <p
           v-else-if="!greetingMedia.images.length && !greetingMedia.audios.length && !greetingMedia.videos.length"
