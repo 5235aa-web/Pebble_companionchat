@@ -5,7 +5,7 @@
 <br />
 
 <h3>Pebble Companion Chat (P.C.C)</h3>
-<p>Lightweight, multi-sensory immersive chat-focused, customizable local &amp; cloud model-based character card chat dialogues — combining multiple conversations, multi-character group rooms, cascaded streaming voice calls, long-term memory, and an integrated picture studio.</p>
+<p>Lightweight, focusing on multi-sensory immersive chat, customizable local &amp; cloud model-based character card chat dialogues — combining multiple conversations, multi-character group rooms, cascaded streaming voice calls, long-term memory, and an integrated picture studio.</p>
 
 <p>
   <a href="https://github.com/5235aa-web/Pebble_companionchat/actions/workflows/ci.yml"><img src="https://img.shields.io/github/actions/workflow/status/5235aa-web/Pebble_companionchat/ci.yml?branch=main&style=flat-square&labelColor=14110f&label=CI" alt="CI" /></a>
