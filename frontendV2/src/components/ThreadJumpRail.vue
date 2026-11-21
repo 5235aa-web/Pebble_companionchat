@@ -490,12 +490,6 @@ onUnmounted(() => {
   pointer-events: none;
   z-index: 9;
 }
-.jr-tip.is-narration {
-  border-left: 2px solid var(--ink-4);
-}
-.jr-tip.is-you {
-  border-left: 2px solid var(--accent-dim);
-}
 .jr-tip-head {
   display: flex;
   align-items: baseline;

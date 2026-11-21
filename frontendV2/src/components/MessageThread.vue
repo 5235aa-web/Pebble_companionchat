@@ -8,7 +8,7 @@ import { useSessionStore } from '@/stores/session'
 import { useUiStore } from '@/stores/ui'
 import { useCardAudioStore } from '@/stores/cardAudio'
 import { useFileUrls } from '@/composables/useFileUrl'
-import { extractInlineMediaFromText } from '@/utils/inlineMedia'
+import { extractInlineMediaFromText, type InlineMediaTextResult } from '@/utils/inlineMedia'
 import { useI18n } from '@/i18n'
 import { summaryText } from '@/data/chat'
 
@@ -18,21 +18,39 @@ const ui = useUiStore()
 const cardAudio = useCardAudioStore()
 const { t } = useI18n()
 
-const greetingMedia = computed(() => {
+const EMPTY_GREETING_MEDIA: InlineMediaTextResult = {
+  images: [],
+  htmlImages: [],
+  audios: [],
+  videos: [],
+  cleanedText: '',
+}
+const EMPTY_ASSET_URLS: Record<number, string> = {}
+
+// Only parse and fetch media for the greeting currently shown on the empty stage.
+const greetingVisible = computed(() => !chat.beats.length && !chat.loading)
+
+const greetingMedia = computed<InlineMediaTextResult>(() => {
+  if (!greetingVisible.value) return EMPTY_GREETING_MEDIA
   const raw = session.emptyLine
-  if (!raw) return { images: [], htmlImages: [], audios: [], videos: [], cleanedText: '' }
+  if (!raw) return EMPTY_GREETING_MEDIA
   return extractInlineMediaFromText(raw, (refText) => session.findAssetByRef(refText))
 })
 
 const greetingImageMap = useFileUrls(
-  () =>
-    [...greetingMedia.value.images, ...greetingMedia.value.htmlImages]
+  () => {
+    if (!greetingVisible.value) return []
+    return [...greetingMedia.value.images, ...greetingMedia.value.htmlImages]
       .map((a) => a.rel_path)
-      .filter(Boolean),
+      .filter(Boolean)
+  },
   512,
 )
 
 const greetingAssetUrls = computed<Record<number, string>>(() => {
+  if (!greetingVisible.value || !greetingMedia.value.htmlImages.length) {
+    return EMPTY_ASSET_URLS
+  }
   const out: Record<number, string> = {}
   for (const a of greetingMedia.value.htmlImages) {
     const url = greetingImageMap.value[a.rel_path]
