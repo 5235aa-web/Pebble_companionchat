@@ -26,6 +26,10 @@
 
 Whether running local GGUF weights, calling cloud LLM APIs, holding live voice calls, or staging multi-character scenes, all conversations, character cards, and extracted memories remain persisted locally under your control.
 
+<p>
+  <img src="docs/png0.png" alt="loading interface" width="1000">
+</p>
+
 <p align="center">
   <img src="docs/png1.png" alt="Single chat" width="49%" />
   <img src="docs/png2.png" alt="Script mode" width="49%" />
