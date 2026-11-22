@@ -54,7 +54,7 @@ Whether running local GGUF weights, calling cloud LLM APIs, holding live voice c
 - **Per-Room Context**: Configure a shared room scene, room-specific user persona notes, and isolated room memories and summaries.
 
 ### 3. Narration mode
-- **Give the conversation a break**: One-click activation switch, supports all types of chats. In a voice-over manner, describe the behaviors, states (such as the user's actions, the character's actions, the space, and the psychology) of the user and the character, guide the character to steer the direction of the conversation, and enable the user to control the process of the chat-playing.It only affects the content of the next reply and will not continuously contaminate the surrounding context.
+- **Give the conversation a break**: One-click activation switch, supports all types of chats. In a voice-over manner, describe the behaviors, states (such as the user's actions, the character's actions, the space, and the psychology) of the user and the character, Guide the direction of the character's dialogue, and enable the user to control the process of the chat-playing.It only affects the content of the next reply and will not continuously contaminate the surrounding context.
 
 ### 4. Character Cards 
 - **SillyTavern Ecosystem**: Import and export **PNG / JSON** character cards, with a built-in editor covering identity, dialogue fields (first message, conversation examples, advanced prompt), bound TTS voice clip/ID, system instructions, and raw JSON.
