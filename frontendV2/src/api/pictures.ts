@@ -43,6 +43,12 @@ export interface PictureProviderMeta {
   defaults: PictureProviderConfig
 }
 
+export interface PromptStyleOption {
+  id: string
+  label: string
+  labelZh?: string
+}
+
 export interface PictureConfig {
   enabled: boolean
   autoChat: boolean
@@ -53,6 +59,8 @@ export interface PictureConfig {
   stylePrompt: string
   negativePrompt: string
   promptProviderId: string
+  promptStyle?: string
+  promptStyles?: PromptStyleOption[]
   activeProvider: string
   providers: Record<string, PictureProviderConfig>
   catalogue: Record<string, PictureProviderMeta>
@@ -120,6 +128,8 @@ export const generatePicture = (body: {
   instruction?: string
   messageId?: number | null
   sessionId?: number | null
+  chatProviderId?: string
+  chatModel?: string
 }): Promise<{ status: string; id: number }> => post(`${C}/generate`, body)
 
 export const retryPicture = (id: number): Promise<{ status: string; id: number }> =>
@@ -140,15 +150,28 @@ export const deletePicture = (
  * installed.
  */
 
+export interface ComfySamplerDefaults {
+  steps?: number
+  cfg?: number
+  sampler?: string
+  scheduler?: string
+  denoise?: number
+}
+
 export interface ComfyWorkflow {
   id: string
   label: string
   note: string
   builtin: boolean
+  readonly?: boolean
+  source?: 'builtin' | 'imported' | 'comfyui'
+  loaderType?: 'checkpoint' | 'unet' | 'both' | 'none' | ''
+  samplerDefaults?: ComfySamplerDefaults
 }
 
 export interface ComfyModels {
   checkpoints: string[]
+  unets?: string[]
   samplers: string[]
   schedulers: string[]
 }

@@ -821,8 +821,9 @@ class ComfyUIProvider(ImageProvider):
     async def generate(self, req: ImageRequest, client: httpx.AsyncClient) -> ImageResult:
         workflow = str(self.param("workflow") or "builtin:sd").strip()
         ckpt = str(self.param("ckpt") or "").strip()
-        # The built-in graph always needs a checkpoint; an imported one only needs
-        # one when it actually references {{ckpt}}, which the renderer enforces.
+        unet = str(self.param("unet") or "").strip()
+        # The built-in graph always needs a checkpoint; an imported/ComfyUI one
+        # only needs one when it actually references {{ckpt}}, which the renderer enforces.
         if not ckpt and workflow.startswith(_comfyui.BUILTIN_PREFIX):
             raise ImageProviderError(
                 "comfyui 还没有选择 checkpoint，请先在后台「生图」里选一个本地模型", kind="config"
@@ -841,6 +842,7 @@ class ComfyUIProvider(ImageProvider):
             "scheduler": str(self.param("scheduler") or "normal"),
             "denoise": self.param_float("denoise", 1.0),
             "ckpt": ckpt,
+            "unet": unet,
         }
         timeout = float(self.param_int("timeout", 300) or 300)
         try:
@@ -861,12 +863,13 @@ class ComfyUIProvider(ImageProvider):
         except _comfyui.ComfyUIError as exc:
             raise ImageProviderError(f"comfyui {exc}", kind=exc.kind) from exc
 
+        chosen_model = ckpt if workflow.startswith(_comfyui.BUILTIN_PREFIX) else (unet or workflow)
         return ImageResult(
             data=data,
             mime=_sniff_mime(data, declared),
             seed=used_seed if used_seed is not None else seed,
             provider=self.id,
-            model=ckpt or workflow,
+            model=chosen_model,
         )
 
 

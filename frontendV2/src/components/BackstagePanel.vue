@@ -72,6 +72,7 @@ const EMPTY_FORM: PictureConfig = {
   stylePrompt: '',
   negativePrompt: '',
   promptProviderId: '',
+  promptStyle: 'auto',
   activeProvider: 'siliconflow',
   providers: {},
   catalogue: {},
@@ -166,11 +167,37 @@ function paramValue(meta: PictureParamMeta): string {
   return raw === undefined || raw === null ? '' : String(raw)
 }
 
+function applyWorkflowDefaults(workflowId: string) {
+  const cfg = pictureProvider.value
+  if (!cfg) return
+  if (!cfg.params) cfg.params = {}
+  cfg.params.unet = ''
+  if (!workflowId.startsWith('builtin:')) {
+    cfg.params.ckpt = ''
+  }
+  const found = comfyWorkflows.value.find((item) => item.id === workflowId)
+  const defaults = found?.samplerDefaults
+  const catDefaults = pictureProviderMeta.value?.defaults?.params || {}
+  const keys = ['steps', 'cfg', 'sampler', 'scheduler', 'denoise'] as const
+  for (const key of keys) {
+    const val = defaults?.[key]
+    if (val !== undefined && val !== null && val !== '') {
+      cfg.params[key] = val
+    } else if (workflowId.startsWith('builtin:') && catDefaults[key] !== undefined) {
+      cfg.params[key] = catDefaults[key]
+    }
+  }
+}
+
 function setParam(meta: PictureParamMeta, raw: string) {
   const cfg = pictureProvider.value
   if (!cfg) return
   if (!cfg.params) cfg.params = {}
+  const prev = cfg.params[meta.key]
   cfg.params[meta.key] = meta.type === 'number' ? (raw === '' ? '' : Number(raw)) : raw
+  if (isComfyTab.value && meta.key === 'workflow' && prev !== raw) {
+    applyWorkflowDefaults(raw)
+  }
 }
 
 /* ---- ComfyUI connection -------------------------------------------------
@@ -212,26 +239,49 @@ watch(pictureTab, (tab) => {
   if (tab === 'comfyui' && !comfyStatus.value && !comfyChecking.value) void checkComfy()
 })
 
+function withCurrentOption(base: string[] | undefined, current: string): string[] {
+  const list = [...(base ?? [])]
+  if (current && !list.includes(current)) list.push(current)
+  return list
+}
+
 /** Options that come from the instance, with the catalogue list as fallback. */
 function paramOptions(meta: PictureParamMeta): string[] {
   if (isComfyTab.value) {
-    if (meta.key === 'ckpt') return comfyStatus.value?.models?.checkpoints ?? []
-    if (meta.key === 'sampler') return comfyStatus.value?.models?.samplers ?? []
-    if (meta.key === 'scheduler') return comfyStatus.value?.models?.schedulers ?? []
+    const current = paramValue(meta)
+    if (meta.key === 'ckpt') {
+      const list = withCurrentOption(comfyStatus.value?.models?.checkpoints, current)
+      return isBuiltinWorkflow(comfyWorkflowId.value) ? list : ['', ...list]
+    }
+    if (meta.key === 'unet') {
+      return ['', ...withCurrentOption(comfyStatus.value?.models?.unets, current)]
+    }
+    if (meta.key === 'sampler') {
+      return withCurrentOption(comfyStatus.value?.models?.samplers, current)
+    }
+    if (meta.key === 'scheduler') {
+      return withCurrentOption(comfyStatus.value?.models?.schedulers, current)
+    }
     if (meta.key === 'workflow') {
       const items = comfyWorkflows.value.map((item) => item.id)
       // Before the first probe answers, fall back to what the catalogue ships so
       // the built-in graph is still selectable instead of an empty dropdown.
-      return items.length ? items : meta.options || []
+      const base = items.length ? items : [...(meta.options || [])]
+      return withCurrentOption(base, comfyWorkflowId.value)
     }
   }
   return meta.options || []
 }
 
 function paramOptionLabel(meta: PictureParamMeta, value: string): string {
-  if (isComfyTab.value && meta.key === 'workflow') {
-    const found = comfyWorkflows.value.find((item) => item.id === value)
-    if (found) return found.label
+  if (isComfyTab.value) {
+    if ((meta.key === 'unet' || meta.key === 'ckpt') && value === '') {
+      return t('picture.comfyFollowWorkflow')
+    }
+    if (meta.key === 'workflow') {
+      const found = comfyWorkflows.value.find((item) => item.id === value)
+      if (found) return found.label
+    }
   }
   return value || '—'
 }
@@ -250,14 +300,92 @@ const providerOptions = computed(() =>
   })),
 )
 
-const promptModelOptions = computed(() => [
-  { value: '', label: t('picture.promptModelHint') },
-  ...llm.providers.map((p) => ({ value: p.id, label: p.name || p.provider })),
-])
+const promptModelOptions = computed(() => {
+  const opts = [{ value: '', label: t('picture.promptModelHint') }]
+  for (const p of llm.providers) {
+    const prefix = p.name || p.provider
+    const models = (p.models ?? []).map((m) => m.trim()).filter(Boolean)
+    if (p.provider === 'llama-cpp' && p.localModelKey && !models.includes(p.localModelKey)) {
+      models.unshift(p.localModelKey)
+    }
+    if (models.length) {
+      for (const m of models) {
+        opts.push({ value: `${p.id}::${m}`, label: `${prefix} / ${m}` })
+      }
+    } else {
+      opts.push({ value: p.id, label: prefix })
+    }
+  }
+  return opts
+})
+
+const promptModelSelection = computed(() => {
+  const raw = (pictureForm.value.promptProviderId || '').trim()
+  if (!raw) return ''
+  if (promptModelOptions.value.some((o) => o.value === raw)) return raw
+  if (!raw.includes('::')) {
+    const p = llm.providers.find((item) => item.id === raw)
+    if (p) {
+      const first =
+        p.provider === 'llama-cpp'
+          ? p.localModelKey || p.models?.[0]
+          : p.models?.[0]
+      if (first) return `${p.id}::${first}`
+    }
+  }
+  return raw
+})
+
+const FALLBACK_PROMPT_STYLES = [
+  { id: 'none', label: 'Empty (No style injection · Original)', labelZh: '空（不注入风格指令 · 还原最初）' },
+  { id: 'auto', label: 'Auto (match model / workflow)', labelZh: '自动匹配（按模型/工作流）' },
+  { id: 'tags', label: 'Tags (SDXL / Illustrious / Pony)', labelZh: '标签式（SDXL / Illustrious / Pony）' },
+  { id: 'anima', label: 'Anima (Tags + Natural Language)', labelZh: 'Anima 混合流（标签 + 自然语言）' },
+  { id: 'qwen-anime', label: 'Qwen-Image 2.1 · Anime (Natural Language)', labelZh: 'Qwen-Image 2.1 · 动漫（自然语言）' },
+  { id: 'qwen-real', label: 'Qwen-Image 2.1 · Realism (Natural Language)', labelZh: 'Qwen-Image 2.1 · 写实（自然语言）' },
+  { id: 'natural', label: 'General Natural Language (FLUX / Gemini / Cloud)', labelZh: '通用自然语言（FLUX / Gemini / 云端）' },
+]
+
+const promptStyleOptions = computed(() => {
+  const list = pictureForm.value.promptStyles?.length
+    ? pictureForm.value.promptStyles
+    : FALLBACK_PROMPT_STYLES
+  const zh = locale.value === 'zh'
+  return list.map((s) => ({ value: s.id, label: zh ? s.labelZh || s.label : s.label }))
+})
 
 function isBuiltinWorkflow(id: string): boolean {
-  return comfyWorkflows.value.find((item) => item.id === id)?.builtin === true
+  const found = comfyWorkflows.value.find((item) => item.id === id)
+  return found ? found.builtin === true : id.startsWith('builtin:')
 }
+
+function canDeleteWorkflow(id: string): boolean {
+  if (!id) return false
+  const found = comfyWorkflows.value.find((item) => item.id === id)
+  if (!found) return false
+  return !found.builtin && !found.readonly
+}
+
+const comfyWorkflowNote = computed(
+  () => comfyWorkflows.value.find((item) => item.id === comfyWorkflowId.value)?.note || '',
+)
+
+const comfyLoaderType = computed(() => {
+  const found = comfyWorkflows.value.find((item) => item.id === comfyWorkflowId.value)
+  if (found?.loaderType) return found.loaderType
+  return isBuiltinWorkflow(comfyWorkflowId.value) ? 'checkpoint' : ''
+})
+
+const visiblePictureParams = computed(() => {
+  const list = pictureProviderMeta.value?.params || []
+  if (!isComfyTab.value) return list
+  const loader = comfyLoaderType.value
+  return list.filter((meta) => {
+    if (meta.key === 'ckpt') return !loader || loader === 'checkpoint' || loader === 'both'
+    if (meta.key === 'unet') return loader === 'unet' || loader === 'both'
+    return true
+  })
+})
 
 async function importComfyFile(event: Event) {
   const input = event.target as HTMLInputElement
@@ -2085,9 +2213,17 @@ function commitModel() {
           <label class="num">
             <span class="num-name">{{ t('picture.promptModel') }}</span>
             <UiSelect
-              :model-value="pictureForm.promptProviderId"
+              :model-value="promptModelSelection"
               :options="promptModelOptions"
               @update:model-value="pictureForm.promptProviderId = $event"
+            />
+          </label>
+          <label class="num">
+            <span class="num-name">{{ t('picture.promptStyle') }}</span>
+            <UiSelect
+              :model-value="pictureForm.promptStyle || 'auto'"
+              :options="promptStyleOptions"
+              @update:model-value="pictureForm.promptStyle = $event"
             />
           </label>
         </div>
@@ -2169,13 +2305,21 @@ function commitModel() {
               {{ comfyStatus.device }}
             </p>
             <p
-              v-if="comfyConnected && !comfyStatus?.models?.checkpoints?.length"
+              v-if="
+                comfyConnected &&
+                !comfyStatus?.models?.checkpoints?.length &&
+                !comfyStatus?.models?.unets?.length
+              "
               class="comfy-err"
             >
               {{ t('picture.comfyNoModels') }}
             </p>
             <p
-              v-else-if="comfyConnected && !String(pictureProvider?.params?.ckpt || '')"
+              v-else-if="
+                comfyConnected &&
+                (!comfyWorkflowId || isBuiltinWorkflow(comfyWorkflowId)) &&
+                !String(pictureProvider?.params?.ckpt || '')
+              "
               class="comfy-err"
             >
               {{ t('picture.comfyNeedCkpt') }}
@@ -2186,7 +2330,7 @@ function commitModel() {
                 <span>{{ t('picture.comfyImport') }}</span>
               </label>
               <button
-                v-if="comfyWorkflowId && !isBuiltinWorkflow(comfyWorkflowId)"
+                v-if="canDeleteWorkflow(comfyWorkflowId)"
                 class="comfy-del"
                 type="button"
                 @click="removeComfyWorkflow(comfyWorkflowId)"
@@ -2194,6 +2338,9 @@ function commitModel() {
                 {{ t('picture.comfyDelete') }}
               </button>
             </div>
+            <p v-if="comfyWorkflowNote" class="comfy-device">
+              {{ comfyWorkflowNote }}
+            </p>
           </div>
           <label v-if="pictureProviderMeta?.fields.includes('baseUrl')" class="num">
             <span class="num-name">{{ t('picture.baseUrl') }}</span>
@@ -2222,7 +2369,7 @@ function commitModel() {
           </label>
 
           <label
-            v-for="meta in pictureProviderMeta?.params || []"
+            v-for="meta in visiblePictureParams"
             :key="meta.key"
             class="num"
           >

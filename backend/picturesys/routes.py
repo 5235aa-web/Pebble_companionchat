@@ -30,6 +30,8 @@ class GenerateRequest(BaseModel):
     instruction: str = ""
     messageId: Optional[int] = None
     sessionId: Optional[int] = None
+    chatProviderId: str = ""
+    chatModel: str = ""
 
 
 def _fail(exc: service.PictureError) -> HTTPException:
@@ -47,6 +49,7 @@ async def update_picture_config(payload: Dict[str, Any]):
     an older client must not be able to make the panel unsavable."""
     incoming = dict(payload or {})
     incoming.pop("catalogue", None)
+    incoming.pop("promptStyles", None)
 
     if "dailyLimit" in incoming:
         try:
@@ -93,6 +96,8 @@ async def generate_picture(request: GenerateRequest):
             instruction=request.instruction,
             message_id=request.messageId,
             session_id=request.sessionId,
+            chat_provider_id=request.chatProviderId,
+            chat_model=request.chatModel,
         )
     except service.PictureError as exc:
         raise _fail(exc)
@@ -152,19 +157,43 @@ async def comfyui_status(baseUrl: str = Query("", alias="baseUrl")):
     # proxy, which otherwise answers 503 for 127.0.0.1.
     async with httpx.AsyncClient(follow_redirects=True, trust_env=False) as client:
         result = await picture_comfyui.probe(url, key, client)
-    result["workflows"] = picture_comfyui.list_workflows()
+    user_workflows = result.pop("userWorkflows", [])
+    result["workflows"] = picture_comfyui.list_workflows() + user_workflows
     return result
 
 
+async def _all_workflows(base_url: str = "") -> list[Dict[str, Any]]:
+    items = picture_comfyui.list_workflows()
+    cfg = picture_config.load_config()
+    stored = (cfg.get("providers") or {}).get("comfyui") or {}
+    url = base_url or str(stored.get("baseUrl") or "").strip()
+    if url:
+        key = str(stored.get("apiKey") or "")
+        try:
+            async with httpx.AsyncClient(follow_redirects=True, trust_env=False) as client:
+                items = items + await picture_comfyui.fetch_user_workflows(url, key, client)
+        except Exception:  # noqa: BLE001 - local/builtin workflows still list when ComfyUI is offline
+            pass
+    return items
+
+
 @router.get("/comfyui/workflows")
-async def comfyui_workflows():
-    return {"items": picture_comfyui.list_workflows()}
+async def comfyui_workflows(baseUrl: str = Query("", alias="baseUrl")):
+    return {"items": await _all_workflows(baseUrl)}
 
 
-@router.get("/comfyui/workflows/{name}")
-async def comfyui_workflow_detail(name: str):
-    """Raw graph, so the panel can show what an imported template contains."""
+@router.get("/comfyui/workflows/{name:path}")
+async def comfyui_workflow_detail(name: str, baseUrl: str = Query("", alias="baseUrl")):
+    """Raw/converted API graph, so the panel can inspect what a template contains."""
     try:
+        if name.startswith(picture_comfyui.COMFYUI_WORKFLOW_PREFIX):
+            cfg = picture_config.load_config()
+            stored = (cfg.get("providers") or {}).get("comfyui") or {}
+            url = baseUrl or str(stored.get("baseUrl") or "http://127.0.0.1:8188")
+            key = str(stored.get("apiKey") or "")
+            async with httpx.AsyncClient(follow_redirects=True, trust_env=False) as client:
+                wf = await picture_comfyui.load_user_workflow(url, key, name, client)
+            return {"id": name, "workflow": wf}
         return {"id": name, "workflow": picture_comfyui.load_workflow(name)}
     except picture_comfyui.ComfyUIError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
@@ -172,17 +201,31 @@ async def comfyui_workflow_detail(name: str):
 
 @router.post("/comfyui/workflows")
 async def comfyui_workflow_import(payload: WorkflowImport):
+    workflow_data = payload.workflow
+    if picture_comfyui.is_ui_workflow(workflow_data):
+        cfg = picture_config.load_config()
+        stored = (cfg.get("providers") or {}).get("comfyui") or {}
+        url = str(stored.get("baseUrl") or "http://127.0.0.1:8188")
+        key = str(stored.get("apiKey") or "")
+        try:
+            async with httpx.AsyncClient(follow_redirects=True, trust_env=False) as client:
+                object_info = await picture_comfyui.fetch_object_info(url, key, client)
+            workflow_data = picture_comfyui.ui_to_api(workflow_data, object_info)
+        except picture_comfyui.ComfyUIError as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
+        except Exception:  # noqa: BLE001 - fall through to save_workflow's UI-format hint
+            pass
     try:
-        saved = picture_comfyui.save_workflow(payload.name, payload.workflow)
+        saved = picture_comfyui.save_workflow(payload.name, workflow_data)
     except picture_comfyui.ComfyUIError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
-    return {"status": "saved", "item": saved, "items": picture_comfyui.list_workflows()}
+    return {"status": "saved", "item": saved, "items": await _all_workflows()}
 
 
-@router.delete("/comfyui/workflows/{name}")
+@router.delete("/comfyui/workflows/{name:path}")
 async def comfyui_workflow_delete(name: str):
     try:
         picture_comfyui.delete_workflow(name)
     except picture_comfyui.ComfyUIError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
-    return {"status": "deleted", "items": picture_comfyui.list_workflows()}
+    return {"status": "deleted", "items": await _all_workflows()}

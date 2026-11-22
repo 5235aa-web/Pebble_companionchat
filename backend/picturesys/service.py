@@ -198,6 +198,17 @@ def _transcript(companion_id: str, branch_id: str, turns: int) -> List[Dict[str,
     ]
 
 
+def _require_enough_transcript(companion_id: str, branch_id: str) -> List[Dict[str, str]]:
+    """Precondition: at least `TRANSCRIPT_TURNS` usable messages must exist."""
+    transcript = _transcript(companion_id, branch_id, picture_prompt.TRANSCRIPT_TURNS)
+    if len(transcript) < picture_prompt.TRANSCRIPT_TURNS:
+        raise PictureError(
+            f"当前有效对话消息不足 {picture_prompt.TRANSCRIPT_TURNS} 条"
+            f"（当前 {len(transcript)} 条），请先进行更多对话后再生成图片"
+        )
+    return transcript
+
+
 def _hud(companion_id: str, branch_id: str) -> Optional[Dict[str, Any]]:
     try:
         session = script_db.get_session_by_branch(companion_id, branch_id)
@@ -283,7 +294,46 @@ def _cancelled(picture_id: int) -> bool:
     return bool(row) and row.get("status") == "failed" and str(row.get("error") or "") == "已取消"
 
 
-async def _run_job(picture_id: int) -> None:
+async def _resolve_job_prompt_style(cfg: Dict[str, Any]) -> str:
+    configured = str(cfg.get("promptStyle") or "auto").strip()
+    if configured in picture_prompt.PROMPT_STYLES and configured != "auto":
+        return configured
+
+    pid = str(cfg.get("activeProvider") or "").strip()
+    wf_name = ""
+    wf_data: Optional[Dict[str, Any]] = None
+    if pid == "comfyui":
+        entry = (cfg.get("providers") or {}).get("comfyui") or {}
+        wf_name = str(((entry.get("params") or {}).get("workflow")) or "builtin:sd").strip()
+        if wf_name.startswith(picture_comfyui.COMFYUI_WORKFLOW_PREFIX):
+            base_url = str(entry.get("baseUrl") or "http://127.0.0.1:8188")
+            key = str(entry.get("apiKey") or "")
+            try:
+                async with httpx.AsyncClient(follow_redirects=True, trust_env=False) as client:
+                    wf_data = await picture_comfyui.load_user_workflow(
+                        base_url, key, wf_name, client
+                    )
+            except Exception:  # noqa: BLE001 - fall back to workflow name heuristics
+                wf_data = None
+        else:
+            try:
+                wf_data = picture_comfyui.load_workflow(wf_name)
+            except picture_comfyui.ComfyUIError:
+                wf_data = None
+
+    return picture_prompt.resolve_prompt_style(
+        configured_style=configured,
+        provider_id=pid,
+        workflow_id=wf_name,
+        workflow_data=wf_data,
+    )
+
+
+async def _run_job(
+    picture_id: int,
+    chat_provider_id: str = "",
+    chat_model: str = "",
+) -> None:
     job = store.get_job(picture_id)
     if not job:
         return
@@ -308,16 +358,24 @@ async def _run_job(picture_id: int) -> None:
 
     async with _SEM:
         try:
+            transcript = _require_enough_transcript(companion_id, branch_id)
+            prompt_style = await _resolve_job_prompt_style(cfg)
             plan = await picture_prompt.draft_prompt(
                 companion=companion,
-                transcript=_transcript(companion_id, branch_id, picture_prompt.TRANSCRIPT_TURNS),
+                transcript=transcript,
                 hud=_hud(companion_id, branch_id),
                 instruction=instruction,
                 style=style,
                 source=source,
                 preferred_provider_id=str(cfg.get("promptProviderId") or ""),
                 force=manual,
+                prompt_style=prompt_style,
+                chat_provider_id=chat_provider_id,
+                chat_model=chat_model,
             )
+        except PictureError as exc:
+            store.update_job(picture_id, status="failed", error=str(exc))
+            return
         except picture_prompt.DirectorError as exc:
             store.update_job(picture_id, status="failed", error=str(exc))
             return
@@ -336,11 +394,22 @@ async def _run_job(picture_id: int) -> None:
             )
             return
 
+        style_negative = picture_prompt.default_negative_for(prompt_style)
+        fallback_negative = (
+            style_negative
+            if (
+                style_negative
+                and negative_default == picture_config.DEFAULT_CONFIG["negativePrompt"]
+            )
+            else negative_default
+        )
+        effective_negative = plan.negative or fallback_negative
+
         store.update_job(
             picture_id,
             prompt=plan.prompt,
             prompt_raw=plan.raw,
-            negative_prompt=plan.negative or negative_default,
+            negative_prompt=effective_negative,
         )
 
         picked = _active_provider(cfg)
@@ -392,7 +461,7 @@ async def _run_job(picture_id: int) -> None:
                 store.update_job(picture_id, provider=pid)
                 request = ImageRequest(
                     prompt=plan.prompt,
-                    negative_prompt=plan.negative or negative_default,
+                    negative_prompt=effective_negative,
                     width=width,
                     height=height,
                     seed=seed,
@@ -457,6 +526,8 @@ def start_manual(
     instruction: str = "",
     message_id: Optional[int] = None,
     session_id: Optional[int] = None,
+    chat_provider_id: str = "",
+    chat_model: str = "",
 ) -> int:
     """Queue a picture because the user asked for one.
 
@@ -479,6 +550,8 @@ def start_manual(
             "当前选择的生图提供商还不能用：请到「后台 → 生图」启用它并填好必需的字段"
         )
 
+    _require_enough_transcript(companion_id, branch_id)
+
     picture_id = store.create_job(
         companion_id=companion_id,
         branch_id=branch_id,
@@ -488,7 +561,13 @@ def start_manual(
     )
     if instruction:
         store.update_job(picture_id, instruction=instruction)
-    _spawn(_run_job(picture_id))
+    _spawn(
+        _run_job(
+            picture_id,
+            chat_provider_id=chat_provider_id,
+            chat_model=chat_model,
+        )
+    )
     return picture_id
 
 
@@ -527,6 +606,8 @@ def maybe_auto(
 
     if _active_provider(cfg) is None:
         return None
+    if len(_transcript(companion_id, branch_id, picture_prompt.TRANSCRIPT_TURNS)) < picture_prompt.TRANSCRIPT_TURNS:
+        return None
 
     picture_id = store.create_job(
         companion_id=companion_id,
@@ -547,9 +628,13 @@ def retry(picture_id: int) -> int:
     if job.get("status") in ("pending", "running"):
         raise PictureError("这张图还在生成中")
 
+    companion_id = str(job.get("companion_id") or "")
+    branch_id = str(job.get("branch_id") or "main")
+    _require_enough_transcript(companion_id, branch_id)
+
     new_id = store.create_job(
-        companion_id=str(job.get("companion_id") or ""),
-        branch_id=str(job.get("branch_id") or "main"),
+        companion_id=companion_id,
+        branch_id=branch_id,
         source=str(job.get("source") or "manual"),
         message_id=job.get("message_id"),
         session_id=job.get("session_id"),

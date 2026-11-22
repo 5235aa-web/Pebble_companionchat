@@ -1,6 +1,7 @@
 import { computed, ref, watch } from 'vue'
 import { defineStore } from 'pinia'
 import { useSessionStore } from './session'
+import { useLlmStore } from './llm'
 import { ApiError } from '@/api/client'
 import {
   cancelPicture,
@@ -53,6 +54,7 @@ export const usePictureStore = defineStore('pictures', () => {
 
   let timer: number | null = null
   let pollUntil = 0
+  let pollGen = 0
   let loadedKey = ''
 
   const key = (): string =>
@@ -69,6 +71,7 @@ export const usePictureStore = defineStore('pictures', () => {
   }
 
   function stopPolling() {
+    pollGen += 1
     if (timer !== null) {
       window.clearTimeout(timer)
       timer = null
@@ -77,8 +80,13 @@ export const usePictureStore = defineStore('pictures', () => {
 
   function schedule(delay = 3000) {
     stopPolling()
+    const gen = pollGen
     timer = window.setTimeout(async () => {
+      // Clear `timer` as soon as it fires so a later `kick()` never mistakes an
+      // expired timer handle for an active polling loop.
+      timer = null
       await load(true)
+      if (gen !== pollGen) return
       if (Date.now() < pollUntil || generating.value) schedule(3000)
     }, delay)
   }
@@ -129,8 +137,15 @@ export const usePictureStore = defineStore('pictures', () => {
     const bid = session.activeBranch
     if (!cid || !bid) throw new Error('no active branch')
     error.value = ''
+    const llm = useLlmStore()
     try {
-      const res = await generatePicture({ companionId: cid, branchId: bid, instruction })
+      const res = await generatePicture({
+        companionId: cid,
+        branchId: bid,
+        instruction,
+        chatProviderId: llm.currentProvider?.id ?? '',
+        chatModel: llm.requestModel || '',
+      })
       await load(true)
       kick(150000)
       return res.id
@@ -185,8 +200,9 @@ export const usePictureStore = defineStore('pictures', () => {
    * stale copy there. It is stripped here so no caller can forget.
    */
   async function saveConfig(patch: Partial<PictureConfig>) {
-    const { catalogue, ...payload } = patch as PictureConfig
+    const { catalogue, promptStyles, ...payload } = patch as PictureConfig
     void catalogue
+    void promptStyles
     config.value = await savePictureConfig(payload)
     return config.value
   }

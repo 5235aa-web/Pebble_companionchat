@@ -20,6 +20,7 @@ import threading
 from typing import Any, Dict
 
 from ..paths import CONFIG_DIR
+from . import prompt as picture_prompt
 
 logger = logging.getLogger(__name__)
 
@@ -317,14 +318,20 @@ PROVIDER_CATALOGUE: Dict[str, Dict[str, Any]] = {
             {
                 "key": "workflow", "type": "select", "label": "Workflow", "labelZh": "工作流",
                 "options": ["builtin:sd"], "default": "builtin:sd",
-                "tip": "Which graph to run. The built-in one is stock SD text-to-image; imported ones are API-format JSON you added in this panel.",
-                "tipZh": "要执行的工作流。内置的是标准 SD 文生图；导入项是本面板里添加的 API 格式 JSON。",
+                "tip": "Which graph to run. Includes the built-in SD graph, workflows saved inside ComfyUI (userdata/workflows), and API-format JSON imported in this panel.",
+                "tipZh": "要执行的工作流。包含内置标准 SD 文生图、ComfyUI 中保存的用户生图工作流，以及本面板手动导入的 API 格式 JSON。",
             },
             {
-                "key": "ckpt", "type": "select", "label": "Checkpoint", "labelZh": "模型",
+                "key": "ckpt", "type": "select", "label": "Checkpoint", "labelZh": "模型（Checkpoint）",
                 "options": [], "default": "",
                 "tip": "Checkpoint file name exactly as ComfyUI lists it. The built-in workflow loads this as its only model.",
                 "tipZh": "checkpoint 文件名，必须与 ComfyUI 列表里完全一致。内置工作流把它作为唯一的底模。",
+            },
+            {
+                "key": "unet", "type": "select", "label": "Diffusion model (UNET)", "labelZh": "扩散模型（diffusion_models）",
+                "options": [], "default": "",
+                "tip": "Model file under models/diffusion_models (UNETLoader). Takes effect when the selected workflow uses UNETLoader; leave empty to keep the workflow's own model.",
+                "tipZh": "models/diffusion_models 目录下的扩散模型（UNETLoader）。当所选工作流使用 UNETLoader 时生效；留空则跟随工作流自带模型。仅建议在同架构权重之间切换（如不同量化版本）。",
             },
             {
                 "key": "steps", "type": "number", "label": "Steps", "labelZh": "采样步数",
@@ -371,6 +378,7 @@ PROVIDER_CATALOGUE: Dict[str, Dict[str, Any]] = {
             "params": {
                 "workflow": "builtin:sd",
                 "ckpt": "",
+                "unet": "",
                 "steps": 20,
                 "cfg": 7,
                 "sampler": "euler",
@@ -400,6 +408,7 @@ DEFAULT_CONFIG: Dict[str, Any] = {
     # Which text model writes the image prompt. Empty means the active chat
     # provider. Kept separate so a cheap model can be used for directing.
     "promptProviderId": "",
+    "promptStyle": "auto",
     "activeProvider": "siliconflow",
     "providers": {name: copy.deepcopy(meta["config"]) for name, meta in PROVIDER_CATALOGUE.items()},
 }
@@ -471,9 +480,10 @@ def save_config(payload: Dict[str, Any]) -> Dict[str, Any]:
     cannot read.
     """
     merged = _merge(load_config(), payload or {})
-    # `catalogue` is emitted by public_config for the panel; if a client echoes
-    # it back it must not be persisted as if it were user state.
+    # `catalogue` and `promptStyles` are emitted by public_config for the panel;
+    # if a client echoes them back they must not be persisted as user state.
     merged.pop("catalogue", None)
+    merged.pop("promptStyles", None)
 
     with _LOCK:
         CONFIG_DIR.mkdir(parents=True, exist_ok=True)
@@ -510,4 +520,5 @@ def public_config(cfg: Dict[str, Any]) -> Dict[str, Any]:
         }
         for pid, meta in PROVIDER_CATALOGUE.items()
     }
+    out["promptStyles"] = picture_prompt.list_prompt_styles()
     return out
