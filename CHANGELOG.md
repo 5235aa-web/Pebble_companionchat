@@ -4,6 +4,15 @@ All notable releases for Pebble Companion Chat are recorded here.
 Each `## x.y.z` section is used by `npm run release -- x.y.z` as both the
 GitHub Release description and the in-app update panel notes.
 
+## 0.6.0
+
+- Overhauled the generic `audio.cpp` TTS (`audiocpp_tts`) and ASR (`audiocpp`) engine mechanism so users can run any local `model_specs` family with full feature parity:
+  - Updated `backend/audio_specs.py` to expand official `audio.cpp` enum `preset` definitions, parse all three option scopes (`requestOptions`, `sessionOptions`, `loadOptions`), map `model_specs` task names (`clone` → `clon`, `design` → `vdes`), infer `pathKind` (`file` / `dir` / `either`), and cover all streaming TTS families in `STREAM_SAMPLE_RATES_BY_FAMILY`.
+  - Upgraded `AudioCppTtsEngine` (`backend/audiocpp_tts_engine.py`) and `backend/tts_service.py` to register all supported task routes (`tts`, `clon`, `vdes`) under `max_loaded_models: 1`, forward `load_options` and `<family>.`-prefixed `session_options`, accept both `.gguf` files and multi-file model directories, separate `voice` (reference library) from `voice_id` (`options.voice_id`), map 4xx/503 errors cleanly, and retry once after unexpected server crashes.
+  - Upgraded `AudioCppSttEngine` (`backend/audiocpp_stt_engine.py`), `STTRegistry` (`backend/stt_registry.py`), and `STTEnginePayload` (`backend/api_routes.py`) to support directory-based ASR models, persist and apply `requestOptions` / `sessionOptions` / `loadOptions`, support `/v1/tasks/unload_all_models` release, and retry once on crashes.
+  - Fixed character voice override (`activeFor` in `frontendV2/src/stores/tts.ts`) so `ttsVoiceRef` properly overrides the generic engine's panel `voiceName`, and passed `tts.specs` to `synthesizeStream` across callers (`BackstagePanel.vue`, `ChatBeat.vue`, `call.ts`).
+  - Enhanced `PathPickerModal.vue` (`allowDir`) and `BackstagePanel.vue` to allow selecting either `.gguf` files or model directories, switch tasks (`tts` / `clon` / `vdes`), pick from the shared `voice/` clip list, render all `requestOptions` (removing the 12-item cap) alongside `loadOptions` and `sessionOptions` with path pickers and proper numeric steps, and surface preview/audition errors in the UI instead of silently swallowing them.
+
 ## 0.5.0
 
 - Fixed Picture Studio `Auto picture in story mode` (`autoScript`): story-mode chat turns in `/companions/chat/stream` now trigger `maybe_auto(..., source="script")` alongside scene advances and HUD updates, and the frontend (`App.vue` and `useScriptStore`) now polls and refreshes the stage when `autoScript` is enabled.

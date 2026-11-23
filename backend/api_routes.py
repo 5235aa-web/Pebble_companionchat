@@ -1724,6 +1724,9 @@ class STTEnginePayload(BaseModel):
     apiKey: str = ""
     model: str = "whisper-1"
     language: str = ""
+    requestOptions: Dict[str, Any] = {}
+    sessionOptions: Dict[str, Any] = {}
+    loadOptions: Dict[str, Any] = {}
 
 
 @router.get("/stt/specs")

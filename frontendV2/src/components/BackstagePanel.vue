@@ -8,11 +8,13 @@ import { useTtsStore } from '@/stores/tts'
 import {
   TTS_ENGINES,
   MULTI_INSTANCE_TTS_ENGINES,
+  getTtsVoices,
   shouldStream,
   streamSampleRate,
   supportsStreaming,
   synthesize,
   synthesizeStream,
+  type AudioSpecOption,
   type TtsConfig,
 } from '@/api/tts'
 import { PcmPlayer } from '@/lib/pcmPlayer'
@@ -486,6 +488,7 @@ const pickerTitle = ref('')
 const pickerInitial = ref('')
 const pickerExt = ref('')
 const pickerDirsOnly = ref(false)
+const pickerAllowDir = ref(false)
 let pickerCallback: ((path: string) => void) | null = null
 
 function openPathPicker(opts: {
@@ -493,12 +496,14 @@ function openPathPicker(opts: {
   initialPath?: string
   ext?: string
   dirsOnly?: boolean
+  allowDir?: boolean
   onSelect: (path: string) => void
 }) {
   pickerTitle.value = opts.title
   pickerInitial.value = opts.initialPath || resolvedModelsRoot.value || ''
   pickerExt.value = opts.ext || ''
   pickerDirsOnly.value = Boolean(opts.dirsOnly)
+  pickerAllowDir.value = Boolean(opts.allowDir)
   pickerCallback = opts.onSelect
   pickerOpen.value = true
 }
@@ -741,6 +746,8 @@ async function onUnload() {
 const auditionText = ref('')
 const auditionPlaying = ref(false)
 const auditionLoading = ref(false)
+const auditionError = ref('')
+const voiceClips = ref<string[]>([])
 let auditionPcm: PcmPlayer | null = null
 let auditionAbort: AbortController | null = null
 let auditionAudio: HTMLAudioElement | null = null
@@ -763,6 +770,7 @@ async function toggleAudition() {
   const cfg = tts.active
   if (!cfg) return
   const text = auditionText.value.trim() || 'Hello, this is a voice preview.'
+  auditionError.value = ''
   auditionPlaying.value = true
   auditionLoading.value = true
   try {
@@ -772,7 +780,7 @@ async function toggleAudition() {
       const ac = new AbortController()
       auditionAbort = ac
       await player.start()
-      await synthesizeStream(cfg, text, (chunk) => player.push(chunk), ac.signal)
+      await synthesizeStream(cfg, text, (chunk) => player.push(chunk), ac.signal, tts.specs)
       await player.drain()
     } else {
       const blob = await synthesize(cfg, text)
@@ -782,8 +790,13 @@ async function toggleAudition() {
       audio.onended = () => URL.revokeObjectURL(url)
       await audio.play()
     }
-  } catch {
-    // Aborts land here too; either way the sound stops.
+  } catch (err) {
+    const isAbort =
+      (err instanceof DOMException && err.name === 'AbortError') ||
+      (err instanceof Error && (err.name === 'AbortError' || err.message === 'aborted'))
+    if (!isAbort) {
+      auditionError.value = err instanceof Error ? err.message : String(err)
+    }
   } finally {
     auditionLoading.value = false
     auditionPlaying.value = false
@@ -804,6 +817,7 @@ onMounted(() => {
   void stt.load()
   void llm.load()
   void tts.load()
+  void getTtsVoices().then((v) => { voiceClips.value = v }).catch(() => undefined)
   void pictures.loadConfig()
   void pictures.refresh()
 })
@@ -961,16 +975,76 @@ const activeTtsSpec = computed(() => {
   return fam ? tts.specs.find((s) => s.family === fam) ?? null : null
 })
 
-function patchAudioCppOpt(key: string, val: unknown) {
+const ttsTaskOptions = computed(() => {
+  const tasks = activeTtsSpec.value?.serverTasks?.length ? activeTtsSpec.value.serverTasks : ['tts']
+  const labels: Record<string, string> = {
+    tts: 'TTS',
+    clon: 'Clone (clon)',
+    vdes: 'Voice Design (vdes)',
+  }
+  return tasks.map((v) => ({ value: v, label: labels[v] || v }))
+})
+
+const activeTtsPathHint = computed(() => {
+  const kind = activeTtsSpec.value?.pathKind
+  if (kind === 'dir') return t('backstage.pathHintDir')
+  if (kind === 'file') return t('backstage.pathHintFile')
+  return t('backstage.pathHintEither')
+})
+
+const audiocppVoiceOptions = computed(() => {
+  const seen = new Set<string>()
+  const opts = [{ value: '', label: '(default)' }]
+  for (const v of voiceClips.value) {
+    if (!v || seen.has(v)) continue
+    seen.add(v)
+    opts.push({ value: v, label: v })
+  }
+  const cur = (tts.active?.voiceName || '').trim()
+  if (cur && !seen.has(cur)) {
+    opts.push({ value: cur, label: cur })
+  }
+  return opts
+})
+
+function onChangeAudiocppFamily(family: string) {
+  const spec = tts.specs.find((s) => s.family === family)
+  const defaultTask = spec?.serverTasks?.[0] || 'tts'
+  void tts.patch({
+    audiocppFamily: family,
+    audiocppTask: defaultTask,
+    audiocppOptions: {},
+    audiocppSessionOptions: {},
+    audiocppLoadOptions: {},
+  })
+}
+
+function specOptStep(opt: AudioSpecOption): string | undefined {
+  if (opt.type === 'int') return '1'
+  if (opt.type === 'float') return 'any'
+  return undefined
+}
+
+function patchAudioCppScopedOpt(
+  scope: 'request' | 'session' | 'load',
+  key: string,
+  val: unknown,
+) {
   const c = tts.active
   if (!c) return
-  const next = { ...(c.audiocppOptions || {}) }
+  const field =
+    scope === 'session'
+      ? 'audiocppSessionOptions'
+      : scope === 'load'
+        ? 'audiocppLoadOptions'
+        : 'audiocppOptions'
+  const next = { ...((c[field] as Record<string, unknown> | undefined) || {}) }
   if (val === '' || val === undefined || val === null) {
     delete next[key]
   } else {
     next[key] = val
   }
-  void tts.patch({ audiocppOptions: next })
+  void tts.patch({ [field]: next })
 }
 
 /* ---- ASR custom engine editor ---- */
@@ -987,6 +1061,9 @@ const sttForm = ref({
   apiKey: '',
   model: 'whisper-1',
   language: '',
+  requestOptions: {} as Record<string, unknown>,
+  sessionOptions: {} as Record<string, unknown>,
+  loadOptions: {} as Record<string, unknown>,
 })
 
 const sttFamilyOptions = computed(() =>
@@ -995,6 +1072,37 @@ const sttFamilyOptions = computed(() =>
     label: `${s.displayName} (${s.family})`,
   })),
 )
+
+const sttSpec = computed(() =>
+  stt.specs.find((s) => s.family === sttForm.value.family) ?? null,
+)
+
+function patchSttScopedOpt(
+  scope: 'request' | 'session' | 'load',
+  key: string,
+  val: unknown,
+) {
+  const field =
+    scope === 'session'
+      ? 'sessionOptions'
+      : scope === 'load'
+        ? 'loadOptions'
+        : 'requestOptions'
+  const next = { ...(sttForm.value[field] || {}) }
+  if (val === '' || val === undefined || val === null) {
+    delete next[key]
+  } else {
+    next[key] = val
+  }
+  sttForm.value[field] = next
+}
+
+function onChangeSttFamily(family: string) {
+  sttForm.value.family = family
+  sttForm.value.requestOptions = {}
+  sttForm.value.sessionOptions = {}
+  sttForm.value.loadOptions = {}
+}
 
 const sttKindOptions = computed(() => [
   { value: 'audiocpp', label: t('backstage.asrKindAudiocpp') },
@@ -1014,6 +1122,9 @@ function openNewSttForm() {
     apiKey: '',
     model: 'whisper-1',
     language: '',
+    requestOptions: {},
+    sessionOptions: {},
+    loadOptions: {},
   }
   sttFormOpen.value = true
 }
@@ -1031,6 +1142,9 @@ function openEditSttForm(e: SttEngineInfo) {
     apiKey: e.apiKey || '',
     model: e.model || 'whisper-1',
     language: e.language || '',
+    requestOptions: { ...(e.requestOptions || {}) },
+    sessionOptions: { ...(e.sessionOptions || {}) },
+    loadOptions: { ...(e.loadOptions || {}) },
   }
   sttFormOpen.value = true
 }
@@ -1050,6 +1164,9 @@ async function saveSttForm() {
       apiKey: f.apiKey.trim(),
       model: f.model.trim() || 'whisper-1',
       language: f.language.trim(),
+      requestOptions: f.requestOptions,
+      sessionOptions: f.sessionOptions,
+      loadOptions: f.loadOptions,
     })
     sttFormOpen.value = false
   } catch (err) {
@@ -1687,20 +1804,30 @@ function commitModel() {
                 <UiSelect
                   :model-value="tts.active.audiocppFamily || ''"
                   :options="ttsFamilyOptions"
-                  @update:model-value="tts.patch({ audiocppFamily: $event, audiocppOptions: {} })"
+                  @update:model-value="onChangeAudiocppFamily"
+                />
+              </label>
+              <label v-if="ttsTaskOptions.length > 1" class="num">
+                <span class="num-name">{{ t('backstage.task') }}</span>
+                <UiSelect
+                  :model-value="tts.active.audiocppTask || ttsTaskOptions[0]?.value || 'tts'"
+                  :options="ttsTaskOptions"
+                  @update:model-value="tts.patch({ audiocppTask: $event })"
                 />
               </label>
               <label class="num">
-                <span class="num-name">{{ t('backstage.customPath') }}</span>
+                <span class="num-name" :data-tip="activeTtsPathHint">{{ t('backstage.customPath') }}</span>
                 <div class="path-pick-wrap">
-                  <input class="num-in path" :value="tts.active.modelPath" placeholder="D:\models\tts.gguf"
+                  <input class="num-in path" :value="tts.active.modelPath" :placeholder="activeTtsPathHint"
                     @change="tts.patch({ modelPath: ($event.target as HTMLInputElement).value })" />
                   <button
                     type="button"
                     class="mini-btn"
                     @click="openPathPicker({
                       title: t('backstage.customPath'),
-                      ext: '.gguf',
+                      ext: activeTtsSpec?.pathKind === 'dir' ? '' : '.gguf',
+                      dirsOnly: activeTtsSpec?.pathKind === 'dir',
+                      allowDir: activeTtsSpec?.pathKind !== 'file',
                       onSelect: (p) => tts.patch({ modelPath: p }),
                     })"
                   >{{ t('backstage.browse') }}</button>
@@ -1716,8 +1843,16 @@ function commitModel() {
               </label>
               <label class="num">
                 <span class="num-name">{{ t('backstage.voice') }}</span>
-                <input class="num-in" :value="tts.active.voiceName" placeholder="mayathesecond"
-                  @change="tts.patch({ voiceName: ($event.target as HTMLInputElement).value })" />
+                <UiSelect
+                  :model-value="tts.active.voiceName || ''"
+                  :options="audiocppVoiceOptions"
+                  @update:model-value="tts.patch({ voiceName: $event })"
+                />
+              </label>
+              <label v-if="activeTtsSpec?.supportsVoiceId" class="num">
+                <span class="num-name">{{ t('backstage.voiceId') }}</span>
+                <input class="num-in" :value="tts.active.voiceId" placeholder="af_heart / US_Emma"
+                  @change="tts.patch({ voiceId: ($event.target as HTMLInputElement).value })" />
               </label>
               <UiSlider
                 :model-value="tts.active.speed ?? 1"
@@ -1735,11 +1870,12 @@ function commitModel() {
                   @change="tts.patch({ sampleRate: ($event.target as HTMLInputElement).value === '' ? undefined : Number(($event.target as HTMLInputElement).value) })"
                 />
               </label>
+
               <template v-if="activeTtsSpec?.requestOptions?.length">
                 <div class="sub-box-head" style="margin-top: 8px">{{ t('backstage.advancedOpts') }}</div>
                 <label
-                  v-for="opt in activeTtsSpec.requestOptions.slice(0, 12)"
-                  :key="opt.name"
+                  v-for="opt in activeTtsSpec.requestOptions"
+                  :key="`req-${opt.name}`"
                   class="num"
                 >
                   <span class="num-name" :data-tip="opt.description || undefined">{{ opt.name }}</span>
@@ -1747,21 +1883,144 @@ function commitModel() {
                     v-if="opt.type === 'bool'"
                     :model-value="Boolean((tts.active.audiocppOptions?.[opt.name] ?? opt.default) ?? false)"
                     :label="''"
-                    @update:model-value="patchAudioCppOpt(opt.name, $event)"
+                    @update:model-value="patchAudioCppScopedOpt('request', opt.name, $event)"
                   />
                   <UiSelect
                     v-else-if="opt.type === 'enum' && opt.values?.length"
                     :model-value="String(tts.active.audiocppOptions?.[opt.name] ?? opt.default ?? '')"
                     :options="opt.values.map((v) => ({ value: String(v), label: String(v) }))"
-                    @update:model-value="patchAudioCppOpt(opt.name, $event)"
+                    @update:model-value="patchAudioCppScopedOpt('request', opt.name, $event)"
                   />
+                  <div v-else-if="opt.type === 'path' || opt.type === 'audio_path'" class="path-pick-wrap">
+                    <input
+                      class="num-in path"
+                      :value="tts.active.audiocppOptions?.[opt.name] ?? ''"
+                      :placeholder="opt.default !== undefined && opt.default !== null ? String(opt.default) : ''"
+                      @change="patchAudioCppScopedOpt('request', opt.name, ($event.target as HTMLInputElement).value)"
+                    />
+                    <button
+                      type="button"
+                      class="mini-btn"
+                      @click="openPathPicker({
+                        title: opt.name,
+                        ext: opt.type === 'audio_path' ? '.wav' : '',
+                        allowDir: opt.type === 'path',
+                        onSelect: (p) => patchAudioCppScopedOpt('request', opt.name, p),
+                      })"
+                    >{{ t('backstage.browse') }}</button>
+                  </div>
                   <input
                     v-else
                     class="num-in"
                     :type="opt.type === 'int' || opt.type === 'float' ? 'number' : 'text'"
+                    :step="specOptStep(opt)"
+                    :min="opt.min ?? undefined"
+                    :max="opt.max ?? undefined"
                     :value="tts.active.audiocppOptions?.[opt.name] ?? ''"
                     :placeholder="opt.default !== undefined && opt.default !== null ? String(opt.default) : ''"
-                    @change="patchAudioCppOpt(opt.name, opt.type === 'int' || opt.type === 'float' ? (($event.target as HTMLInputElement).value === '' ? '' : Number(($event.target as HTMLInputElement).value)) : ($event.target as HTMLInputElement).value)"
+                    @change="patchAudioCppScopedOpt('request', opt.name, opt.type === 'int' || opt.type === 'float' ? (($event.target as HTMLInputElement).value === '' ? '' : Number(($event.target as HTMLInputElement).value)) : ($event.target as HTMLInputElement).value)"
+                  />
+                </label>
+              </template>
+
+              <template v-if="activeTtsSpec?.loadOptions?.length">
+                <div class="sub-box-head" style="margin-top: 8px">{{ t('backstage.loadOpts') }}</div>
+                <label
+                  v-for="opt in activeTtsSpec.loadOptions"
+                  :key="`load-${opt.name}`"
+                  class="num"
+                >
+                  <span class="num-name" :data-tip="opt.description || undefined">{{ opt.name }}</span>
+                  <UiLever
+                    v-if="opt.type === 'bool'"
+                    :model-value="Boolean((tts.active.audiocppLoadOptions?.[opt.name] ?? opt.default) ?? false)"
+                    :label="''"
+                    @update:model-value="patchAudioCppScopedOpt('load', opt.name, $event)"
+                  />
+                  <UiSelect
+                    v-else-if="opt.type === 'enum' && opt.values?.length"
+                    :model-value="String(tts.active.audiocppLoadOptions?.[opt.name] ?? opt.default ?? '')"
+                    :options="opt.values.map((v) => ({ value: String(v), label: String(v) }))"
+                    @update:model-value="patchAudioCppScopedOpt('load', opt.name, $event)"
+                  />
+                  <div v-else-if="opt.type === 'path' || opt.type === 'audio_path'" class="path-pick-wrap">
+                    <input
+                      class="num-in path"
+                      :value="tts.active.audiocppLoadOptions?.[opt.name] ?? ''"
+                      :placeholder="opt.default !== undefined && opt.default !== null ? String(opt.default) : ''"
+                      @change="patchAudioCppScopedOpt('load', opt.name, ($event.target as HTMLInputElement).value)"
+                    />
+                    <button
+                      type="button"
+                      class="mini-btn"
+                      @click="openPathPicker({
+                        title: opt.name,
+                        allowDir: true,
+                        onSelect: (p) => patchAudioCppScopedOpt('load', opt.name, p),
+                      })"
+                    >{{ t('backstage.browse') }}</button>
+                  </div>
+                  <input
+                    v-else
+                    class="num-in"
+                    :type="opt.type === 'int' || opt.type === 'float' ? 'number' : 'text'"
+                    :step="specOptStep(opt)"
+                    :min="opt.min ?? undefined"
+                    :max="opt.max ?? undefined"
+                    :value="tts.active.audiocppLoadOptions?.[opt.name] ?? ''"
+                    :placeholder="opt.default !== undefined && opt.default !== null ? String(opt.default) : ''"
+                    @change="patchAudioCppScopedOpt('load', opt.name, opt.type === 'int' || opt.type === 'float' ? (($event.target as HTMLInputElement).value === '' ? '' : Number(($event.target as HTMLInputElement).value)) : ($event.target as HTMLInputElement).value)"
+                  />
+                </label>
+              </template>
+
+              <template v-if="activeTtsSpec?.sessionOptions?.length">
+                <div class="sub-box-head" style="margin-top: 8px">{{ t('backstage.sessionOpts') }}</div>
+                <label
+                  v-for="opt in activeTtsSpec.sessionOptions"
+                  :key="`sess-${opt.name}`"
+                  class="num"
+                >
+                  <span class="num-name" :data-tip="opt.description || undefined">{{ opt.name }}</span>
+                  <UiLever
+                    v-if="opt.type === 'bool'"
+                    :model-value="Boolean((tts.active.audiocppSessionOptions?.[opt.name] ?? opt.default) ?? false)"
+                    :label="''"
+                    @update:model-value="patchAudioCppScopedOpt('session', opt.name, $event)"
+                  />
+                  <UiSelect
+                    v-else-if="opt.type === 'enum' && opt.values?.length"
+                    :model-value="String(tts.active.audiocppSessionOptions?.[opt.name] ?? opt.default ?? '')"
+                    :options="opt.values.map((v) => ({ value: String(v), label: String(v) }))"
+                    @update:model-value="patchAudioCppScopedOpt('session', opt.name, $event)"
+                  />
+                  <div v-else-if="opt.type === 'path' || opt.type === 'audio_path'" class="path-pick-wrap">
+                    <input
+                      class="num-in path"
+                      :value="tts.active.audiocppSessionOptions?.[opt.name] ?? ''"
+                      :placeholder="opt.default !== undefined && opt.default !== null ? String(opt.default) : ''"
+                      @change="patchAudioCppScopedOpt('session', opt.name, ($event.target as HTMLInputElement).value)"
+                    />
+                    <button
+                      type="button"
+                      class="mini-btn"
+                      @click="openPathPicker({
+                        title: opt.name,
+                        allowDir: true,
+                        onSelect: (p) => patchAudioCppScopedOpt('session', opt.name, p),
+                      })"
+                    >{{ t('backstage.browse') }}</button>
+                  </div>
+                  <input
+                    v-else
+                    class="num-in"
+                    :type="opt.type === 'int' || opt.type === 'float' ? 'number' : 'text'"
+                    :step="specOptStep(opt)"
+                    :min="opt.min ?? undefined"
+                    :max="opt.max ?? undefined"
+                    :value="tts.active.audiocppSessionOptions?.[opt.name] ?? ''"
+                    :placeholder="opt.default !== undefined && opt.default !== null ? String(opt.default) : ''"
+                    @change="patchAudioCppScopedOpt('session', opt.name, opt.type === 'int' || opt.type === 'float' ? (($event.target as HTMLInputElement).value === '' ? '' : Number(($event.target as HTMLInputElement).value)) : ($event.target as HTMLInputElement).value)"
                   />
                 </label>
               </template>
@@ -1935,6 +2194,7 @@ function commitModel() {
             }}
           </button>
         </div>
+        <div v-if="auditionError" class="path-err">{{ auditionError }}</div>
 
         <div class="desk-foot">
           <button class="mini-btn" :disabled="!tts.active" @click="askRemoveConfig">
@@ -2016,7 +2276,7 @@ function commitModel() {
               <UiSelect
                 :model-value="sttForm.family"
                 :options="sttFamilyOptions"
-                @update:model-value="sttForm.family = $event"
+                @update:model-value="onChangeSttFamily"
               />
             </label>
             <label class="num">
@@ -2032,7 +2292,9 @@ function commitModel() {
                   class="mini-btn"
                   @click="openPathPicker({
                     title: t('backstage.customPath'),
-                    ext: '.gguf',
+                    ext: sttForm.kind === 'audiocpp' && sttSpec?.pathKind === 'dir' ? '' : '.gguf',
+                    dirsOnly: sttForm.kind === 'audiocpp' && sttSpec?.pathKind === 'dir',
+                    allowDir: sttForm.kind === 'audiocpp' && sttSpec?.pathKind !== 'file',
                     onSelect: (p) => { sttForm.modelPath = p },
                   })"
                 >{{ t('backstage.browse') }}</button>
@@ -2050,6 +2312,122 @@ function commitModel() {
               <span class="num-name">{{ t('backstage.language') }}</span>
               <input v-model="sttForm.language" class="num-in" placeholder="auto / zh / en" />
             </label>
+            <template v-if="sttForm.kind === 'audiocpp' && sttSpec?.requestOptions?.length">
+              <div class="sub-box-head" style="margin-top: 8px">{{ t('backstage.advancedOpts') }}</div>
+              <label
+                v-for="opt in sttSpec.requestOptions"
+                :key="`stt-req-${opt.name}`"
+                class="num"
+              >
+                <span class="num-name" :data-tip="opt.description || undefined">{{ opt.name }}</span>
+                <UiLever
+                  v-if="opt.type === 'bool'"
+                  :model-value="Boolean((sttForm.requestOptions[opt.name] ?? opt.default) ?? false)"
+                  :label="''"
+                  @update:model-value="patchSttScopedOpt('request', opt.name, $event)"
+                />
+                <UiSelect
+                  v-else-if="opt.type === 'enum' && opt.values?.length"
+                  :model-value="String(sttForm.requestOptions[opt.name] ?? opt.default ?? '')"
+                  :options="opt.values.map((v) => ({ value: String(v), label: String(v) }))"
+                  @update:model-value="patchSttScopedOpt('request', opt.name, $event)"
+                />
+                <input
+                  v-else
+                  class="num-in"
+                  :type="opt.type === 'int' || opt.type === 'float' ? 'number' : 'text'"
+                  :step="specOptStep(opt)"
+                  :min="opt.min ?? undefined"
+                  :max="opt.max ?? undefined"
+                  :value="sttForm.requestOptions[opt.name] ?? ''"
+                  :placeholder="opt.default !== undefined && opt.default !== null ? String(opt.default) : ''"
+                  @change="patchSttScopedOpt('request', opt.name, opt.type === 'int' || opt.type === 'float' ? (($event.target as HTMLInputElement).value === '' ? '' : Number(($event.target as HTMLInputElement).value)) : ($event.target as HTMLInputElement).value)"
+                />
+              </label>
+            </template>
+            <template v-if="sttForm.kind === 'audiocpp' && sttSpec?.loadOptions?.length">
+              <div class="sub-box-head" style="margin-top: 8px">{{ t('backstage.loadOpts') }}</div>
+              <label
+                v-for="opt in sttSpec.loadOptions"
+                :key="`stt-load-${opt.name}`"
+                class="num"
+              >
+                <span class="num-name" :data-tip="opt.description || undefined">{{ opt.name }}</span>
+                <UiLever
+                  v-if="opt.type === 'bool'"
+                  :model-value="Boolean((sttForm.loadOptions[opt.name] ?? opt.default) ?? false)"
+                  :label="''"
+                  @update:model-value="patchSttScopedOpt('load', opt.name, $event)"
+                />
+                <UiSelect
+                  v-else-if="opt.type === 'enum' && opt.values?.length"
+                  :model-value="String(sttForm.loadOptions[opt.name] ?? opt.default ?? '')"
+                  :options="opt.values.map((v) => ({ value: String(v), label: String(v) }))"
+                  @update:model-value="patchSttScopedOpt('load', opt.name, $event)"
+                />
+                <input
+                  v-else
+                  class="num-in"
+                  :type="opt.type === 'int' || opt.type === 'float' ? 'number' : 'text'"
+                  :step="specOptStep(opt)"
+                  :min="opt.min ?? undefined"
+                  :max="opt.max ?? undefined"
+                  :value="sttForm.loadOptions[opt.name] ?? ''"
+                  :placeholder="opt.default !== undefined && opt.default !== null ? String(opt.default) : ''"
+                  @change="patchSttScopedOpt('load', opt.name, opt.type === 'int' || opt.type === 'float' ? (($event.target as HTMLInputElement).value === '' ? '' : Number(($event.target as HTMLInputElement).value)) : ($event.target as HTMLInputElement).value)"
+                />
+              </label>
+            </template>
+            <template v-if="sttForm.kind === 'audiocpp' && sttSpec?.sessionOptions?.length">
+              <div class="sub-box-head" style="margin-top: 8px">{{ t('backstage.sessionOpts') }}</div>
+              <label
+                v-for="opt in sttSpec.sessionOptions"
+                :key="`stt-sess-${opt.name}`"
+                class="num"
+              >
+                <span class="num-name" :data-tip="opt.description || undefined">{{ opt.name }}</span>
+                <UiLever
+                  v-if="opt.type === 'bool'"
+                  :model-value="Boolean((sttForm.sessionOptions[opt.name] ?? opt.default) ?? false)"
+                  :label="''"
+                  @update:model-value="patchSttScopedOpt('session', opt.name, $event)"
+                />
+                <UiSelect
+                  v-else-if="opt.type === 'enum' && opt.values?.length"
+                  :model-value="String(sttForm.sessionOptions[opt.name] ?? opt.default ?? '')"
+                  :options="opt.values.map((v) => ({ value: String(v), label: String(v) }))"
+                  @update:model-value="patchSttScopedOpt('session', opt.name, $event)"
+                />
+                <div v-else-if="opt.type === 'path' || opt.type === 'audio_path'" class="path-pick-wrap">
+                  <input
+                    class="num-in path"
+                    :value="sttForm.sessionOptions[opt.name] ?? ''"
+                    :placeholder="opt.default !== undefined && opt.default !== null ? String(opt.default) : ''"
+                    @change="patchSttScopedOpt('session', opt.name, ($event.target as HTMLInputElement).value)"
+                  />
+                  <button
+                    type="button"
+                    class="mini-btn"
+                    @click="openPathPicker({
+                      title: opt.name,
+                      allowDir: true,
+                      onSelect: (p) => patchSttScopedOpt('session', opt.name, p),
+                    })"
+                  >{{ t('backstage.browse') }}</button>
+                </div>
+                <input
+                  v-else
+                  class="num-in"
+                  :type="opt.type === 'int' || opt.type === 'float' ? 'number' : 'text'"
+                  :step="specOptStep(opt)"
+                  :min="opt.min ?? undefined"
+                  :max="opt.max ?? undefined"
+                  :value="sttForm.sessionOptions[opt.name] ?? ''"
+                  :placeholder="opt.default !== undefined && opt.default !== null ? String(opt.default) : ''"
+                  @change="patchSttScopedOpt('session', opt.name, opt.type === 'int' || opt.type === 'float' ? (($event.target as HTMLInputElement).value === '' ? '' : Number(($event.target as HTMLInputElement).value)) : ($event.target as HTMLInputElement).value)"
+                />
+              </label>
+            </template>
           </template>
           <template v-else>
             <label class="num wide">
@@ -2420,6 +2798,7 @@ function commitModel() {
       :initial-path="pickerInitial"
       :ext="pickerExt"
       :dirs-only="pickerDirsOnly"
+      :allow-dir="pickerAllowDir"
       @close="pickerOpen = false"
       @select="handlePickerSelect"
     />

@@ -3,7 +3,9 @@
 
 Provides two engines sharing the same lifecycle interface as ``Qwen3AsrSTT``:
 1. ``AudioCppSttEngine``: runs ``audiocpp_server.exe`` on port 18250 for any
-   ASR model family declared in ``audio-cpp/model_specs/*.json``.
+   ASR model family declared in ``audio-cpp/model_specs/*.json``, supporting
+   both single GGUF files and package directories plus full ``request`` /
+   ``session`` / ``load`` options.
 2. ``OpenAICompatSttEngine``: forwards WAV clips to any local or remote
    OpenAI-compatible ``/v1/audio/transcriptions`` server (e.g. whisper.cpp,
    faster-whisper-server, SenseVoice API).
@@ -18,12 +20,12 @@ import subprocess
 import threading
 import time
 from pathlib import Path
-from typing import Optional
+from typing import Any, Dict, Optional
 
 import httpx
 
 from . import audio_cpp_job
-from .audio_specs import get_spec
+from .audio_specs import clean_options, get_spec
 from .paths import ENGINE_STATE_DIR, audio_cpp_dir, resolve_user_path
 
 logger = logging.getLogger("audiocpp_stt")
@@ -40,12 +42,21 @@ HEALTH_TIMEOUT = 3.0
 LOG_MAX_BYTES = 5 * 1024 * 1024
 IDLE_UNLOAD_MS = 120000
 MIN_FREE_MEMORY_MB = 128
+RELEASE_TIMEOUT = 15.0
 
 _LOCAL_HOSTS = ("localhost", "127.0.0.1", "0.0.0.0", "::1", "[::1]")
 
 
+class AudioCppSttRequestError(RuntimeError):
+    """4xx request error — do not restart server."""
+
+
+class AudioCppSttInsufficientMemoryError(RuntimeError):
+    """503 insufficient_memory — restarting cannot free memory."""
+
+
 class AudioCppSttEngine:
-    """Managed audiocpp_server instance for a user-configured ASR family/GGUF."""
+    """Managed audiocpp_server instance for a user-configured ASR family/weights."""
 
     def __init__(
         self,
@@ -56,6 +67,9 @@ class AudioCppSttEngine:
         model_path: str,
         compute_backend: str = "vulkan",
         language: str = "",
+        request_options: Optional[Dict[str, Any]] = None,
+        session_options: Optional[Dict[str, Any]] = None,
+        load_options: Optional[Dict[str, Any]] = None,
     ) -> None:
         self.ENGINE_ID = engine_id
         self.ENGINE_LABEL = label
@@ -64,6 +78,9 @@ class AudioCppSttEngine:
         self.raw_model_path = model_path.strip()
         self.compute_backend = "cpu" if str(compute_backend).lower() == "cpu" else "vulkan"
         self.language = language.strip()
+        self.request_options = dict(request_options or {})
+        self.session_options = dict(session_options or {})
+        self.load_options = dict(load_options or {})
         self._lock = threading.RLock()
         self._proc: Optional[subprocess.Popen] = None
         self._ready = False
@@ -72,7 +89,7 @@ class AudioCppSttEngine:
         if not SERVER_EXE.exists():
             raise FileNotFoundError(f"audiocpp_server.exe 不存在: {SERVER_EXE}")
         if resolved is None or not resolved.exists():
-            raise FileNotFoundError(f"ASR 模型文件不存在: {resolved or self.raw_model_path}")
+            raise FileNotFoundError(f"ASR 模型路径不存在: {resolved or self.raw_model_path}")
         if not self.family:
             raise ValueError("ASR 模型家族 (family) 不能为空")
 
@@ -108,6 +125,27 @@ class AudioCppSttEngine:
         spec = get_spec(self.family) or {}
         modes = spec.get("modes") or []
         mode = "streaming" if "streaming" in modes else "offline"
+
+        cleaned_req = clean_options(self.request_options, spec.get("requestOptions"))
+        cleaned_load = clean_options(self.load_options, spec.get("loadOptions"))
+        cleaned_session = clean_options(
+            self.session_options, spec.get("sessionOptions"), prefix_family=self.family,
+        )
+
+        model_entry: Dict[str, Any] = {
+            "id": self.MODEL_ID,
+            "family": self.family,
+            "path": str(self._resolved_model()),
+            "task": "asr",
+            "mode": mode,
+        }
+        if cleaned_load:
+            model_entry["load_options"] = cleaned_load
+        if cleaned_session:
+            model_entry["session_options"] = cleaned_session
+        if cleaned_req:
+            model_entry["default_request_options"] = cleaned_req
+
         return {
             "host": "127.0.0.1",
             "port": SERVER_PORT,
@@ -117,15 +155,7 @@ class AudioCppSttEngine:
             "lazy_load": True,
             "idle_unload_ms": IDLE_UNLOAD_MS,
             "min_free_memory_mb": MIN_FREE_MEMORY_MB,
-            "models": [
-                {
-                    "id": self.MODEL_ID,
-                    "family": self.family,
-                    "path": str(self._resolved_model()),
-                    "task": "asr",
-                    "mode": mode,
-                }
-            ],
+            "models": [model_entry],
         }
 
     def _config_matches(self) -> bool:
@@ -225,7 +255,7 @@ class AudioCppSttEngine:
         if not SERVER_EXE.exists():
             raise RuntimeError(f"audiocpp_server.exe 不存在: {SERVER_EXE}")
         if not model.exists():
-            raise RuntimeError(f"ASR 模型文件不存在: {model}")
+            raise RuntimeError(f"ASR 模型路径不存在: {model}")
         if not self._port_free():
             if not self._healthy():
                 raise RuntimeError(f"端口 {SERVER_PORT} 被非本服务进程占用")
@@ -275,6 +305,26 @@ class AudioCppSttEngine:
             self._release_locked()
             self._spawn_locked()
 
+    def release(self) -> Dict[str, Any]:
+        """Unload model weights from VRAM without killing the server process."""
+        with self._lock:
+            proc_alive = self._proc is not None and self._proc.poll() is None
+        if not proc_alive and self._port_free():
+            return {"released": False, "reason": "not_running"}
+        if not self._healthy():
+            return {"released": False, "reason": "unhealthy"}
+        try:
+            r = httpx.post(
+                f"{self._base_url()}/v1/tasks/unload_all_models",
+                timeout=RELEASE_TIMEOUT,
+                trust_env=False,
+            )
+            if r.status_code == 200:
+                return {"released": True}
+            return {"released": False, "reason": f"http_{r.status_code}"}
+        except Exception as e:
+            return {"released": False, "reason": str(e)[:160]}
+
     def stop(self) -> str:
         with self._lock:
             return self._release_locked()
@@ -287,26 +337,43 @@ class AudioCppSttEngine:
             self._release_locked()
             self._spawn_locked()
 
-    def transcribe_bytes(self, audio_bytes: bytes, sample_rate: int = 16000) -> str:
-        if not audio_bytes:
-            return ""
-        self.ensure_ready()
-        data = {"model": self.MODEL_ID}
+    def _post_transcribe(self, audio_bytes: bytes) -> str:
+        data: Dict[str, str] = {"model": self.MODEL_ID}
         if self.language:
             data["language"] = self.language
-        r = httpx.post(
-            f"{self._base_url()}/v1/audio/transcriptions",
-            files={"file": ("recording.wav", audio_bytes, "audio/wav")},
-            data=data,
-            timeout=httpx.Timeout(TRANSCRIBE_TIMEOUT, connect=5.0),
-            trust_env=False,
-        )
-        if r.status_code >= 400:
+        try:
+            r = httpx.post(
+                f"{self._base_url()}/v1/audio/transcriptions",
+                files={"file": ("recording.wav", audio_bytes, "audio/wav")},
+                data=data,
+                timeout=httpx.Timeout(TRANSCRIBE_TIMEOUT, connect=5.0),
+                trust_env=False,
+            )
+        except httpx.HTTPError as e:
+            raise RuntimeError(f"audiocpp_server 转写请求失败: {e}") from e
+        if r.status_code == 503 and "insufficient_memory" in r.text:
+            raise AudioCppSttInsufficientMemoryError(f"audiocpp_server {r.status_code}: {r.text[:240]}")
+        if r.status_code >= 500:
             raise RuntimeError(f"audiocpp_server {r.status_code}: {r.text[:240]}")
+        if r.status_code >= 400:
+            raise AudioCppSttRequestError(f"转写请求被拒 {r.status_code}: {r.text[:240]}")
         try:
             return (r.json().get("text") or "").strip()
         except Exception:
             return (r.text or "").strip()
+
+    def transcribe_bytes(self, audio_bytes: bytes, sample_rate: int = 16000) -> str:
+        if not audio_bytes:
+            return ""
+        self.ensure_ready()
+        try:
+            return self._post_transcribe(audio_bytes)
+        except (AudioCppSttRequestError, AudioCppSttInsufficientMemoryError):
+            raise
+        except Exception as e:
+            logger.warning("audiocpp_stt 转写失败(%s)，重启服务后重试一次", e)
+            self.restart()
+            return self._post_transcribe(audio_bytes)
 
 
 class OpenAICompatSttEngine:

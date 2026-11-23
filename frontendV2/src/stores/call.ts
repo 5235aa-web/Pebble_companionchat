@@ -485,7 +485,7 @@ export const useCallStore = defineStore('call', () => {
         while (active.value && turnId === activeTurnId) {
           if (queue.length > 0) {
             const sentence = queue.shift()!
-            await synthesizeStream(cfg, sentence, (chunk) => player.push(chunk), ac.signal)
+            await synthesizeStream(cfg, sentence, (chunk) => player.push(chunk), ac.signal, tts.specs)
           } else if (llmDone) {
             break
           } else {

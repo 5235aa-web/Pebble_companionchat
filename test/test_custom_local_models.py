@@ -10,6 +10,7 @@ from pathlib import Path
 
 from backend import (
     audio_specs,
+    audiocpp_stt_engine,
     audiocpp_tts_engine,
     llama_server_engine as llama,
     llm_client,
@@ -76,6 +77,86 @@ class AudioSpecsTest(unittest.TestCase):
         self.assertEqual(cfg['backend'], 'cpu')
         self.assertEqual(cfg['models'][0]['family'], 'cosyvoice3')
         self.assertEqual(cfg['models'][0]['mode'], 'offline')
+        self.assertEqual([m['task'] for m in cfg['models']], ['tts', 'clon'])
+        self.assertEqual(cfg['max_loaded_models'], 1)
+
+    def test_presets_and_session_load_options_are_resolved(self):
+        omni = audio_specs.get_spec('omnivoice')
+        self.assertIsNotNone(omni)
+        req_by_name = {o['name']: o for o in omni['requestOptions']}
+        self.assertEqual(
+            req_by_name['text_chunk_mode']['values'],
+            ['word_budget', 'tag_aware', 'japanese', 'endline'],
+        )
+        sess_by_name = {o['name']: o for o in omni['sessionOptions']}
+        self.assertEqual(
+            sess_by_name['weight_type']['values'],
+            ['native', 'f32', 'f16', 'bf16', 'q8_0'],
+        )
+        self.assertEqual(
+            sess_by_name['perf_mode']['values'],
+            ['off', 'flash_attention'],
+        )
+
+        pocket = audio_specs.get_spec('pocket_tts')
+        self.assertIsNotNone(pocket)
+        self.assertEqual([o['name'] for o in pocket['loadOptions']], ['language'])
+
+        lfm = audio_specs.get_spec('lfm2_audio')
+        self.assertIsNotNone(lfm)
+        self.assertEqual(lfm['pathKind'], 'dir')
+
+    def test_all_streaming_tts_families_have_explicit_sample_rate(self):
+        for spec in audio_specs.list_specs('tts'):
+            if 'streaming' in spec['modes']:
+                self.assertIn(
+                    spec['family'],
+                    audio_specs.STREAM_SAMPLE_RATES_BY_FAMILY,
+                    f"missing streaming sample rate for {spec['family']}",
+                )
+        self.assertEqual(audio_specs.stream_sample_rate('voxcpm1'), 16000)
+        self.assertEqual(audio_specs.stream_sample_rate('voxcpm2'), 48000)
+        self.assertEqual(audio_specs.stream_sample_rate('soprano_tts'), 32000)
+        self.assertEqual(audio_specs.stream_sample_rate('confucius4_tts'), 22050)
+        self.assertEqual(audio_specs.stream_sample_rate('fish_audio'), 44100)
+
+    def test_audiocpp_tts_multitask_session_load_and_voice_id_separation(self):
+        cfg = audiocpp_tts_engine.AudioCppTtsEngine._build_server_config(
+            'pocket_tts',
+            Path('D:/models/PocketTTS-GGUF'),
+            compute_backend='vulkan',
+            session_options={'voice_state_cache_slots': 2, 'mem_saver': False},
+            load_options={'language': 'english'},
+        )
+        m0 = cfg['models'][0]
+        self.assertEqual(m0['load_options'], {'language': 'english'})
+        self.assertEqual(
+            m0['session_options'],
+            {'pocket_tts.voice_state_cache_slots': 2},
+        )
+
+        ming_cfg = audiocpp_tts_engine.AudioCppTtsEngine._build_server_config(
+            'ming3_tts',
+            Path('D:/models/ming3.gguf'),
+            session_options={'reference_cache': False},
+        )
+        self.assertEqual([m['id'] for m in ming_cfg['models']], ['custom-tts', 'custom-tts-clon', 'custom-tts-vdes'])
+        self.assertEqual([m['task'] for m in ming_cfg['models']], ['tts', 'clon', 'vdes'])
+        self.assertEqual(ming_cfg['models'][1]['session_options'], {'ming3_tts.reference_cache': False})
+
+        clone_payload = audiocpp_tts_engine.AudioCppTtsEngine._build_payload(
+            'hello',
+            family='ming3_tts',
+            task='clone',
+            voice='mayathesecond',
+            voice_id='US_Emma',
+            options={'temperature': 0, 'trim_silence': False},
+        )
+        self.assertEqual(clone_payload['model'], 'custom-tts-clon')
+        self.assertEqual(clone_payload['voice'], 'mayathesecond')
+        self.assertEqual(clone_payload['options']['voice_id'], 'US_Emma')
+        self.assertEqual(clone_payload['options']['temperature'], 0.0)
+        self.assertIs(clone_payload['options']['trim_silence'], False)
 
 
 class CustomLocalLlmTest(unittest.TestCase):
@@ -207,6 +288,38 @@ class CustomSttRegistryTest(unittest.TestCase):
         # Deleting active custom engine falls back to default
         reg2.delete_engine(http_id)
         self.assertEqual(reg2.active_id, stt_registry.DEFAULT_ENGINE_ID)
+
+    def test_custom_audiocpp_stt_accepts_directory_and_scoped_options(self):
+        reg = stt_registry.STTRegistry()
+        model_dir = self.tmp / 'lfm2-audio-dir'
+        model_dir.mkdir()
+        ac_id = reg.upsert_engine({
+            'id': 'lfm_dir',
+            'label': 'LFM2 Dir',
+            'kind': 'audiocpp',
+            'family': 'lfm2_audio',
+            'modelPath': str(model_dir),
+            'computeBackend': 'cpu',
+            'language': 'en',
+            'requestOptions': {'max_tokens': 128, 'temperature': 0},
+            'sessionOptions': {'model_gguf': 'lfm2.gguf', 'conversation_cache_slots': 2},
+            'loadOptions': {},
+        })
+        status = {e['id']: e for e in reg.status()['engines']}
+        self.assertTrue(status[ac_id]['modelExists'])
+        self.assertEqual(status[ac_id]['requestOptions'], {'max_tokens': 128, 'temperature': 0})
+
+        eng = reg.get_engine(ac_id)
+        self.assertIsInstance(eng, audiocpp_stt_engine.AudioCppSttEngine)
+        cfg = eng._server_config()
+        m0 = cfg['models'][0]
+        self.assertEqual(m0['path'], str(model_dir))
+        self.assertEqual(m0['session_options'], {
+            'lfm2_audio.model_gguf': 'lfm2.gguf',
+            'lfm2_audio.conversation_cache_slots': 2,
+        })
+        self.assertEqual(m0['default_request_options'], {'max_tokens': 128, 'temperature': 0.0})
+        self.assertFalse(eng.release()['released'])
 
 
 class LlmProviderWhitelistTest(unittest.TestCase):

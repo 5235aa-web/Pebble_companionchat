@@ -46,6 +46,8 @@ class TtsRequest(BaseModel):
     audiocpp_family: Optional[str] = None
     audiocpp_task: Optional[str] = None
     audiocpp_options: Optional[Dict[str, Any]] = None
+    audiocpp_session_options: Optional[Dict[str, Any]] = None
+    audiocpp_load_options: Optional[Dict[str, Any]] = None
     sample_rate: Optional[int] = None
     speak_stage_directions: Optional[bool] = True
     # OmniVoice
@@ -112,7 +114,11 @@ from .ming3tts_engine import (
     set_override as ming3_set_override,
     set_reference_cache as ming3_set_reference_cache,
 )
-from .audiocpp_tts_engine import _audiocpp_tts
+from .audiocpp_tts_engine import (
+    _audiocpp_tts,
+    AudioCppTtsInsufficientMemoryError,
+    AudioCppTtsRequestError,
+)
 from .audio_specs import list_specs as list_audio_specs, stream_sample_rate as spec_stream_sample_rate
 from .paths import VOICE_DIR as SHARED_VOICE_DIR, audio_cpp_dir
 
@@ -184,7 +190,7 @@ async def _synthesize_ming3tts(req: TtsRequest) -> bytes:
 
 
 async def _synthesize_audiocpp_tts(req: TtsRequest) -> bytes:
-    '''Generic audio.cpp TTS: any family from model_specs + custom GGUF path.'''
+    '''Generic audio.cpp TTS: any family from model_specs + custom GGUF/dir path.'''
     return await asyncio.to_thread(
         _audiocpp_tts.synthesize,
         req.text,
@@ -192,9 +198,12 @@ async def _synthesize_audiocpp_tts(req: TtsRequest) -> bytes:
         model_path=req.model_path or "",
         compute_backend=req.compute_backend or "vulkan",
         task=req.audiocpp_task or "tts",
-        voice=req.voice_name or req.voice_id or "",
+        voice=req.voice_name or "",
+        voice_id=req.voice_id or "",
         speed=req.speed,
         options=req.audiocpp_options or {},
+        session_options=req.audiocpp_session_options or {},
+        load_options=req.audiocpp_load_options or {},
     )
 
 
@@ -382,7 +391,12 @@ async def text_to_speech(req: TtsRequest):
         return FastAPIResponse(content=audio, media_type="audio/wav")
 
     elif req.provider == "audiocpp_tts":
-        audio = await _synthesize_audiocpp_tts(req)
+        try:
+            audio = await _synthesize_audiocpp_tts(req)
+        except AudioCppTtsRequestError as e:
+            raise HTTPException(400, str(e)) from e
+        except AudioCppTtsInsufficientMemoryError as e:
+            raise HTTPException(503, str(e)) from e
         return FastAPIResponse(content=audio, media_type="audio/wav")
 
     elif req.provider == "openai_tts":
@@ -470,9 +484,12 @@ async def _stream_pcm(req: TtsRequest):
             model_path=req.model_path or "",
             compute_backend=req.compute_backend or "vulkan",
             task=req.audiocpp_task or "tts",
-            voice=req.voice_name or req.voice_id or "",
+            voice=req.voice_name or "",
+            voice_id=req.voice_id or "",
             speed=req.speed,
             options=req.audiocpp_options or {},
+            session_options=req.audiocpp_session_options or {},
+            load_options=req.audiocpp_load_options or {},
         ):
             yield chunk
     else:

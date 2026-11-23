@@ -22,6 +22,8 @@ export interface TtsConfig {
   audiocppFamily?: string
   audiocppTask?: string
   audiocppOptions?: Record<string, unknown>
+  audiocppSessionOptions?: Record<string, unknown>
+  audiocppLoadOptions?: Record<string, unknown>
   streamEnabled?: boolean
   sampleRate?: number | string
   speakStageDirections?: boolean
@@ -118,10 +120,16 @@ export interface AudioModelSpec {
   category: string
   status: string
   tasks: string[]
+  serverTasks?: string[]
   modes: string[]
   sampleRate?: number | null
+  pathKind?: 'file' | 'dir' | 'either'
+  supportsVoiceId?: boolean
+  supportsReferenceText?: boolean
   languages: string[]
   requestOptions: AudioSpecOption[]
+  sessionOptions?: AudioSpecOption[]
+  loadOptions?: AudioSpecOption[]
 }
 
 /** Engines that hold VRAM locally; only one should be resident at a time. */
@@ -149,6 +157,8 @@ export const TTS_ENGINE_DEFAULTS: Record<string, Partial<TtsConfig>> = {
     audiocppTask: 'tts',
     computeBackend: 'vulkan',
     audiocppOptions: {},
+    audiocppSessionOptions: {},
+    audiocppLoadOptions: {},
   },
   openai_tts: {
     baseUrl: 'http://127.0.0.1:8880/v1',
@@ -263,6 +273,8 @@ function toRequest(c: TtsConfig) {
     audiocpp_family: c.audiocppFamily || undefined,
     audiocpp_task: c.audiocppTask || undefined,
     audiocpp_options: c.audiocppOptions || undefined,
+    audiocpp_session_options: c.audiocppSessionOptions || undefined,
+    audiocpp_load_options: c.audiocppLoadOptions || undefined,
     sample_rate: num(c.sampleRate),
     speak_stage_directions: c.speakStageDirections,
     omni_voice: c.omniVoice,
@@ -372,8 +384,9 @@ export async function synthesizeStream(
   text: string,
   onChunk: (pcm: Uint8Array) => void,
   signal?: AbortSignal,
+  specs?: AudioModelSpec[],
 ): Promise<void> {
-  if (!supportsStreaming(config)) {
+  if (!supportsStreaming(config, specs)) {
     throw new Error(`${config.provider} has no streaming API`)
   }
   // Same rule as the blocking path: reclaim the other engines' VRAM at the

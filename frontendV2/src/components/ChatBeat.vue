@@ -309,7 +309,7 @@ async function readAloud() {
     abortRead = ac
     try {
       await player.start()
-      await synthesizeStream(cfg, text, (chunk) => player.push(chunk), ac.signal)
+      await synthesizeStream(cfg, text, (chunk) => player.push(chunk), ac.signal, tts.specs)
       await player.drain()
     } catch {
       // Aborts land here too; either way the audio stops.

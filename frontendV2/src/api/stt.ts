@@ -17,6 +17,9 @@ export interface SttEngineInfo {
   apiKey?: string
   model?: string
   language?: string
+  requestOptions?: Record<string, unknown>
+  sessionOptions?: Record<string, unknown>
+  loadOptions?: Record<string, unknown>
   loaded: boolean
   error: string | null
 }
@@ -37,6 +40,9 @@ export interface SttEngineSavePayload {
   apiKey?: string
   model?: string
   language?: string
+  requestOptions?: Record<string, unknown>
+  sessionOptions?: Record<string, unknown>
+  loadOptions?: Record<string, unknown>
 }
 
 export const fetchSttConfig = (): Promise<SttConfigPayload> => get('/companions/stt/config')

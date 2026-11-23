@@ -53,12 +53,12 @@ export const useTtsStore = defineStore('tts', () => {
 
     const merged: TtsConfig = { ...base }
     if (ref) {
-      // Same thing, four different key names across the engines.
+      // Same thing across all local cloning engines: character ref always overrides panel fallback.
       merged.omniVoice = ref
       merged.dotsVoice = ref
       merged.fishVoice = ref
       merged.ming3Voice = ref
-      if (!merged.voiceName) merged.voiceName = ref
+      merged.voiceName = ref
     }
     if (id) {
       merged.voiceId = id

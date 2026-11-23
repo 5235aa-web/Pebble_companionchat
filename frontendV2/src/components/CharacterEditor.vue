@@ -23,6 +23,7 @@ import {
 import { useFileUrl, useFileUrls } from '@/composables/useFileUrl'
 import { getTtsVoices } from '@/api/tts'
 import InlineVideoCard from './InlineVideoCard.vue'
+import UiSelect from './ui/UiSelect.vue'
 
 const ui = useUiStore()
 const session = useSessionStore()
@@ -265,6 +266,21 @@ async function loadVoiceClips() {
     voiceClips.value = []
   }
 }
+
+const voiceClipOptions = computed(() => {
+  const seen = new Set<string>()
+  const opts = [{ value: '', label: t('card.voiceInherit') }]
+  for (const v of voiceClips.value) {
+    if (!v || seen.has(v)) continue
+    seen.add(v)
+    opts.push({ value: v, label: v })
+  }
+  const cur = (card.ttsVoiceRef || '').trim()
+  if (cur && !seen.has(cur)) {
+    opts.push({ value: cur, label: cur })
+  }
+  return opts
+})
 
 watch(
   () => [session.activeCompanionId, ui.isOpen('profile')],
@@ -798,10 +814,11 @@ function removeGreeting(index: number) {
           <div class="pf-fields">
             <div class="pf-field">
               <label>{{ t('card.voiceClip') }}</label>
-              <select v-model="card.ttsVoiceRef" class="pf-input">
-                <option value="">{{ t('card.voiceInherit') }}</option>
-                <option v-for="v in voiceClips" :key="v" :value="v">{{ v }}</option>
-              </select>
+              <UiSelect
+                :model-value="card.ttsVoiceRef"
+                :options="voiceClipOptions"
+                @update:model-value="card.ttsVoiceRef = $event"
+              />
             </div>
             <div class="pf-field">
               <label>{{ t('card.voiceId') }}</label>

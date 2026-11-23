@@ -116,6 +116,9 @@ class STTRegistry:
                         "apiKey": str(item.get("apiKey") or "").strip(),
                         "model": str(item.get("model") or "whisper-1").strip() or "whisper-1",
                         "language": str(item.get("language") or "").strip(),
+                        "requestOptions": item.get("requestOptions") if isinstance(item.get("requestOptions"), dict) else {},
+                        "sessionOptions": item.get("sessionOptions") if isinstance(item.get("sessionOptions"), dict) else {},
+                        "loadOptions": item.get("loadOptions") if isinstance(item.get("loadOptions"), dict) else {},
                     }
         except Exception as exc:
             logger.warning("stt custom config unreadable: %s", exc)
@@ -182,6 +185,9 @@ class STTRegistry:
             model_path=spec["modelPath"],
             compute_backend=spec.get("computeBackend", "vulkan"),
             language=spec.get("language", ""),
+            request_options=spec.get("requestOptions") or {},
+            session_options=spec.get("sessionOptions") or {},
+            load_options=spec.get("loadOptions") or {},
         )
 
     def get_engine(self, engine_id: str | None = None):
@@ -336,6 +342,9 @@ class STTRegistry:
             "apiKey": api_key,
             "model": model,
             "language": language,
+            "requestOptions": payload.get("requestOptions") if isinstance(payload.get("requestOptions"), dict) else {},
+            "sessionOptions": payload.get("sessionOptions") if isinstance(payload.get("sessionOptions"), dict) else {},
+            "loadOptions": payload.get("loadOptions") if isinstance(payload.get("loadOptions"), dict) else {},
         }
         with self._lock:
             self._custom_engines[eid] = entry
@@ -380,7 +389,7 @@ class STTRegistry:
                     "modelPath": ov.get("modelPath", ""),
                     "resolvedModelPath": str(eff_path) if eff_path else "",
                     "defaultModelPath": str(default_path),
-                    "modelExists": bool(eff_path and eff_path.is_file()),
+                    "modelExists": bool(eff_path and eff_path.exists()),
                     "computeBackend": ov.get("computeBackend") or "vulkan",
                     "loaded": eid in self._instances,
                     "error": self._errors.get(eid),
@@ -393,7 +402,7 @@ class STTRegistry:
                 exists = True
             else:
                 resolved = resolve_user_path(spec["modelPath"])
-                exists = bool(resolved and resolved.is_file())
+                exists = bool(resolved and resolved.exists())
                 desc = f"{spec['family']} · {spec['computeBackend']}"
             engines.append(
                 {
@@ -411,6 +420,9 @@ class STTRegistry:
                     "apiKey": spec.get("apiKey", ""),
                     "model": spec.get("model", ""),
                     "language": spec.get("language", ""),
+                    "requestOptions": spec.get("requestOptions") or {},
+                    "sessionOptions": spec.get("sessionOptions") or {},
+                    "loadOptions": spec.get("loadOptions") or {},
                     "loaded": eid in self._instances,
                     "error": self._errors.get(eid),
                 }

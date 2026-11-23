@@ -9,13 +9,14 @@ test: is a stop idempotent, and does release() tell the truth when nothing runs.
 import threading
 import unittest
 
-from backend import dotstts_engine, fishaudio_engine, ming3tts_engine, omnivoice_engine
+from backend import audiocpp_tts_engine, dotstts_engine, fishaudio_engine, ming3tts_engine, omnivoice_engine
 
 ENGINES = (
     (omnivoice_engine.OmniVoiceEngine, 'omnivoice'),
     (dotstts_engine.DotTtsEngine, 'dotstts'),
     (fishaudio_engine.FishAudioEngine, 'fishaudio'),
     (ming3tts_engine.Ming3TtsEngine, 'ming3tts'),
+    (audiocpp_tts_engine.AudioCppTtsEngine, 'audiocpp_tts'),
 )
 
 

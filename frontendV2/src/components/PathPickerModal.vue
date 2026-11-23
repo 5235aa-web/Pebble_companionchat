@@ -9,6 +9,7 @@ const props = defineProps<{
   initialPath?: string
   ext?: string
   dirsOnly?: boolean
+  allowDir?: boolean
 }>()
 
 const emit = defineEmits<{
@@ -114,7 +115,7 @@ function chooseCurrentDir() {
       <div class="dlg-actions">
         <button class="mini-btn" @click="emit('close')">{{ t('dialog.cancel') }}</button>
         <button
-          v-if="dirsOnly"
+          v-if="dirsOnly || allowDir"
           class="mini-btn primary"
           :disabled="!currentPath"
           @click="chooseCurrentDir"
