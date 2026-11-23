@@ -45,7 +45,7 @@ REMOTE_FAILURE_THRESHOLD = 3
 REMOTE_COOLDOWN_SECONDS = 60.0
 REMOTE_CACHE_LIMIT = 512
 
-LOCAL_PROVIDERS = {"llama-cpp", "llamacpp", "llama_cpp", "ollama", "vllm", "local", "lmstudio"}
+LOCAL_PROVIDERS = {"llama-cpp", "llamacpp", "llama_cpp", "ollama", "vllm", "local", "lmstudio", "local-openai"}
 OPENAI_PROVIDERS = {"openai", "chatgpt", "azure", "azure-openai"}
 
 # Per-message framing cost of each chat template. These are the published

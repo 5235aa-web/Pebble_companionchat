@@ -316,8 +316,10 @@ async def compact_now(session_id: int, body: CompactIn):
     _require(session_id)
     from .compact import CompactError, compact
 
+    from ..llm_client import load_default_llm_config
+    llm_config = body.llm_config or load_default_llm_config() or {}
     try:
-        return await compact(session_id, body.llm_config or {})
+        return await compact(session_id, llm_config)
     except CompactError as exc:
         # Three different problems, three different messages. They used to share
         # one "nothing to compact" line, which hid a dead model behind a room
@@ -338,7 +340,12 @@ async def stream_turn(session_id: int, body: StreamIn):
     if not members:
         raise HTTPException(status_code=400, detail="This room has no members yet")
 
+    from ..llm_client import load_default_llm_config
     llm_config = body.llm_config or {}
+    if not llm_config.get("model"):
+        llm_config = {**(load_default_llm_config() or {}), **llm_config}
+        if not llm_config.get("model"):
+            llm_config["model"] = (load_default_llm_config() or {}).get("model", "")
     if not llm_config.get("model"):
         raise HTTPException(status_code=400, detail="No model is configured.")
 
@@ -468,7 +475,12 @@ async def reroll_turn(session_id: int, body: RerollIn):
     if not members:
         raise HTTPException(status_code=400, detail="This room has no members yet")
 
+    from ..llm_client import load_default_llm_config
     llm_config = body.llm_config or {}
+    if not llm_config.get("model"):
+        llm_config = {**(load_default_llm_config() or {}), **llm_config}
+        if not llm_config.get("model"):
+            llm_config["model"] = (load_default_llm_config() or {}).get("model", "")
     if not llm_config.get("model"):
         raise HTTPException(status_code=400, detail="No model is configured.")
 

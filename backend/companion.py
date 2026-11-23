@@ -12,7 +12,7 @@ from .companion_db import (
     delete_message, delete_messages_after,
 )
 from .card_hud import CardHudStreamFilter, build_card_hud_prompt, merge_card_hud
-from .llm_client import call_llm_stream, load_default_llm_config
+from .llm_client import call_llm_stream, load_default_llm_config, resolve_provider_model_config
 from .world_book_engine import get_active_world_book_content
 from .compaction import is_summary_message, SUMMARY_MARKER_START
 from .memory_engine import build_memory_block, schedule_extraction, resolve_user_name
@@ -909,46 +909,14 @@ class Companion:
             logger.info(f"Attachments folded into the user message: {len(attachments)}")
         
         # 4. 获取LLM配置
-        print(f"[DEBUG] Received llm_config: provider_type={llm_config.get('provider_type') if llm_config else 'None'}, base_url='{llm_config.get('base_url') if llm_config else 'None'}', model={llm_config.get('model') if llm_config else 'None'}, temperature={temperature}, top_p={top_p}")
-        
-        # 如果传入了llm_config，检查是否需要从llm_providers.json查找完整配置
-        need_resolve = False
-        if llm_config:
-            if not llm_config.get("base_url"):
-                # base_url 为空，必须 resolve
-                need_resolve = True
-                print("[DEBUG] llm_config has empty base_url, looking up from llm_providers.json")
-            elif llm_config.get("model") and not _is_local_base_url(llm_config.get("base_url")):
-                # base_url 有值，但 model 可能属于其他 provider（比如 deepseek provider 下选了 qwen3.5-2b）
-                # 尝试 resolve 看看 model 是否匹配其他 provider
-                resolved = self._resolve_llm_config(llm_config)
-                if resolved and resolved.get("base_url") != llm_config.get("base_url"):
-                    # model 属于不同的 provider，使用 resolve 结果
-                    print(f"[DEBUG] Model '{llm_config.get('model')}' belongs to different provider, switching from {llm_config.get('provider_type')} to {resolved['provider_type']}")
-                    llm_config = resolved
-                    need_resolve = False
-                # 如果 resolve 结果的 base_url 一样，说明 model 和 provider 匹配，不需要改
-        
-        if need_resolve:
-            resolved = self._resolve_llm_config(llm_config)
-            if resolved:
-                print(f"[DEBUG] Resolved LLM config: provider={resolved['provider_type']}, model={resolved['model']}, base_url={resolved['base_url']}")
-                llm_config = resolved
-            else:
-                print("[DEBUG] Failed to resolve LLM config from llm_providers.json, using default")
-                llm_config = load_default_llm_config()
-        
+        llm_config = self._resolve_llm_config_full(llm_config)
+
         if not llm_config:
-            llm_config = load_default_llm_config()
-        
-        if not llm_config:
-            print("[DEBUG] No LLM provider configured")
             yield {"type": "error", "message": "No LLM provider configured"}
             return
-        
-        # 最终检查：确保base_url不为空
-        if not llm_config.get("base_url"):
-            print(f"[DEBUG] LLM base_url is still empty! config keys={list(llm_config.keys())}")
+
+        # 最终检查：确保非托管本地提供商有 base_url
+        if not llm_config.get("base_url") and llm_config.get("provider_type") != "llama-cpp":
             yield {"type": "error", "message": "LLM Base URL is not configured. Please check your LLM settings."}
             return
         
@@ -985,20 +953,8 @@ class Companion:
         usage_info: Optional[Dict] = None
         started = time.perf_counter()
         first_token_ms: Optional[float] = None
-        call_kwargs = dict(
-            provider_type=llm_config["provider_type"],
-            api_key=llm_config["api_key"],
-            base_url=llm_config["base_url"],
-            model=llm_config["model"],
-            temperature=temperature,
-            top_p=top_p,
-            max_tokens=llm_config.get("max_tokens"),
-            top_k=llm_config.get("top_k"),
-            min_p=llm_config.get("min_p"),
-            repeat_penalty=llm_config.get("repeat_penalty"),
-            frequency_penalty=llm_config.get("frequency_penalty"),
-            presence_penalty=llm_config.get("presence_penalty"),
-            enable_thinking=enable_thinking,
+        call_kwargs = self._build_llm_call_kwargs(
+            llm_config, temperature=temperature, top_p=top_p, enable_thinking=enable_thinking
         )
         stream = call_llm_stream(messages=messages, **call_kwargs)
         pending = await _first_or_none(stream)
@@ -1179,20 +1135,10 @@ class Companion:
         first_token_ms: Optional[float] = None
         hud_filter = CardHudStreamFilter() if card_hud_state else None
         async for chunk in call_llm_stream(
-            provider_type=llm_config["provider_type"],
-            api_key=llm_config["api_key"],
-            base_url=llm_config["base_url"],
-            model=llm_config["model"],
             messages=messages,
-            temperature=temperature,
-            top_p=top_p,
-            max_tokens=llm_config.get("max_tokens"),
-            top_k=llm_config.get("top_k"),
-            min_p=llm_config.get("min_p"),
-            repeat_penalty=llm_config.get("repeat_penalty"),
-            frequency_penalty=llm_config.get("frequency_penalty"),
-            presence_penalty=llm_config.get("presence_penalty"),
-            enable_thinking=enable_thinking,
+            **self._build_llm_call_kwargs(
+                llm_config, temperature=temperature, top_p=top_p, enable_thinking=enable_thinking
+            ),
         ):
             chunk_count += 1
             if chunk["type"] == "content":
@@ -1311,20 +1257,10 @@ class Companion:
         first_token_ms: Optional[float] = None
         hud_filter = CardHudStreamFilter() if card_hud_state else None
         async for chunk in call_llm_stream(
-            provider_type=llm_config["provider_type"],
-            api_key=llm_config["api_key"],
-            base_url=llm_config["base_url"],
-            model=llm_config["model"],
             messages=messages,
-            temperature=temperature,
-            top_p=top_p,
-            max_tokens=llm_config.get("max_tokens"),
-            top_k=llm_config.get("top_k"),
-            min_p=llm_config.get("min_p"),
-            repeat_penalty=llm_config.get("repeat_penalty"),
-            frequency_penalty=llm_config.get("frequency_penalty"),
-            presence_penalty=llm_config.get("presence_penalty"),
-            enable_thinking=enable_thinking,
+            **self._build_llm_call_kwargs(
+                llm_config, temperature=temperature, top_p=top_p, enable_thinking=enable_thinking
+            ),
         ):
             chunk_count += 1
             if chunk["type"] == "content":
@@ -1429,20 +1365,10 @@ class Companion:
         first_token_ms: Optional[float] = None
         hud_filter = CardHudStreamFilter() if card_hud_state else None
         async for chunk in call_llm_stream(
-            provider_type=llm_config["provider_type"],
-            api_key=llm_config["api_key"],
-            base_url=llm_config["base_url"],
-            model=llm_config["model"],
             messages=messages,
-            temperature=temperature,
-            top_p=top_p,
-            max_tokens=llm_config.get("max_tokens"),
-            top_k=llm_config.get("top_k"),
-            min_p=llm_config.get("min_p"),
-            repeat_penalty=llm_config.get("repeat_penalty"),
-            frequency_penalty=llm_config.get("frequency_penalty"),
-            presence_penalty=llm_config.get("presence_penalty"),
-            enable_thinking=enable_thinking,
+            **self._build_llm_call_kwargs(
+                llm_config, temperature=temperature, top_p=top_p, enable_thinking=enable_thinking
+            ),
         ):
             if chunk["type"] == "content":
                 if first_token_ms is None:
@@ -1499,7 +1425,31 @@ class Companion:
     # top_k/min_p/repeat_penalty/max_context 存在 llm_providers.json 的 modelParams 里。
     # 不补齐这几个字段，llm_client 会当作「调用方没指定」而不下发，llama.cpp 回落到
     # repeat_penalty=1.0（完全不惩罚），长回复就会退化成复读。
-    _SAMPLING_FALLBACK_KEYS = ("max_tokens", "max_context", "top_k", "min_p", "repeat_penalty")
+    _SAMPLING_FALLBACK_KEYS = ("max_tokens", "max_context", "top_k", "min_p", "repeat_penalty", "enable_mtp")
+
+    @staticmethod
+    def _build_llm_call_kwargs(
+        llm_config: Dict,
+        temperature: float,
+        top_p: float,
+        enable_thinking: bool,
+    ) -> Dict:
+        return dict(
+            provider_type=llm_config["provider_type"],
+            api_key=llm_config.get("api_key", ""),
+            base_url=llm_config.get("base_url", ""),
+            model=llm_config.get("model", ""),
+            temperature=temperature,
+            top_p=top_p,
+            max_tokens=llm_config.get("max_tokens"),
+            top_k=llm_config.get("top_k"),
+            min_p=llm_config.get("min_p"),
+            repeat_penalty=llm_config.get("repeat_penalty"),
+            frequency_penalty=llm_config.get("frequency_penalty"),
+            presence_penalty=llm_config.get("presence_penalty"),
+            enable_thinking=enable_thinking,
+            enable_mtp=llm_config.get("enable_mtp"),
+        )
 
     def _resolve_llm_config_full(self, partial_config: Optional[Dict]) -> Optional[Dict]:
         """统一的LLM配置解析方法。
@@ -1511,83 +1461,36 @@ class Companion:
 
         resolved = self._resolve_llm_config(partial_config) if partial_config.get("model") else None
 
-        # 只给了模型名、没给地址：整份配置都得从磁盘取
+        # 只给了模型名、没给地址：从磁盘取完整配置（llama-cpp 允许空地址交由引擎托管兜底）
         if not partial_config.get("base_url"):
-            return resolved or load_default_llm_config()
+            if resolved:
+                return resolved
+            if partial_config.get("provider_type") == "llama-cpp":
+                return dict(partial_config)
+            return load_default_llm_config()
 
         # 地址与磁盘不一致时以磁盘为准（模型归属由 provider 决定）
-        if resolved and resolved.get("base_url") and resolved["base_url"] != partial_config.get("base_url"):
+        if (
+            resolved
+            and resolved.get("base_url")
+            and resolved["base_url"] != partial_config.get("base_url")
+            and not _is_local_base_url(partial_config.get("base_url"))
+        ):
             return resolved
 
-        if resolved and resolved.get("model") == partial_config.get("model"):
-            merged = dict(partial_config)
+        merged = dict(partial_config)
+        if resolved and (
+            not merged.get("model")
+            or resolved.get("model") == merged.get("model")
+        ):
+            if not merged.get("model") and resolved.get("model"):
+                merged["model"] = resolved["model"]
             for key in self._SAMPLING_FALLBACK_KEYS:
                 # 键缺席才补；显式 null 表示调用方要求沿用服务端默认，必须原样保留
                 if key not in merged and resolved.get(key) is not None:
                     merged[key] = resolved[key]
-            return merged
-
-        return partial_config
+        return merged
 
     def _resolve_llm_config(self, partial_config: Dict) -> Optional[Dict]:
-        """
-        从 llm_providers.json 查找完整的LLM配置。
-        类似单AI聊天的 _stored_llm_config 查找逻辑。
-        partial_config 只包含 model 名称，需要找到对应的完整配置。
-        """
-        import os
-        # 使用项目根目录（multi_companion 的父目录）
-        project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-        config_path = os.path.join(project_root, "llm_providers.json")
-        
-        logger.info(f"Looking for llm_providers.json at: {config_path}")
-        
-        if not os.path.exists(config_path):
-            logger.error(f"llm_providers.json not found at {config_path}")
-            return None
-        
-        try:
-            with open(config_path, "r", encoding="utf-8") as f:
-                config = json.load(f)
-        except Exception as e:
-            logger.error(f"Failed to read llm_providers.json: {e}")
-            return None
-        
-        providers = config.get("providers", [])
-        active_idx = config.get("activeProviderIndex", 0)
-        requested_model = partial_config.get("model", "")
-        
-        logger.info(f"Found {len(providers)} providers, active_idx={active_idx}, requested_model={requested_model}")
-        
-        # 先尝试按model名称查找
-        if requested_model:
-            for i, provider in enumerate(providers):
-                models = provider.get("models", [])
-                logger.info(f"Provider {i}: {provider.get('provider')} models={models}")
-                if requested_model in models:
-                    result = {
-                        "provider_type": provider.get("provider", "openai"),
-                        "api_key": provider.get("apiKey", ""),
-                        "base_url": provider.get("baseUrl", ""),
-                        "model": requested_model,
-                        **_pick_model_sampling(provider, requested_model),
-                    }
-                    logger.info(f"Found matching provider: {result}")
-                    return result
-        
-        # 回退到默认provider
-        if providers and active_idx < len(providers):
-            provider = providers[active_idx]
-            default_model = requested_model or (provider.get("models", ["gpt-4"])[0] if provider.get("models") else "gpt-4")
-            result = {
-                "provider_type": provider.get("provider", "openai"),
-                "api_key": provider.get("apiKey", ""),
-                "base_url": provider.get("baseUrl", ""),
-                "model": default_model,
-                **_pick_model_sampling(provider, default_model),
-            }
-            logger.info(f"Using default provider: {result}")
-            return result
-        
-        logger.error("No providers found in llm_providers.json")
-        return None
+        """从用户与项目配置中解析完整 LLM 配置（兼容 localModelKey 与自定义 GGUF 注册表）。"""
+        return resolve_provider_model_config(str(partial_config.get("model") or ""))

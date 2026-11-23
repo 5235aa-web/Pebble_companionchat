@@ -3,12 +3,14 @@ import json
 import logging
 import os
 import re
+import signal
 import socket
 import subprocess
 import threading
 import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional
+from urllib.parse import urlparse
 
 import httpx
 
@@ -16,6 +18,7 @@ from .paths import (
     LOCAL_LLM_CONFIG_PATH,
     LOG_DIR,
     llama_dir,
+    llama_server_exe_name,
     models_root,
     resolve_user_path,
 )
@@ -37,7 +40,7 @@ PROJECT_DIR = BASE_DIR.parent
 _MODELS_ROOT = models_root()
 
 LLAMA_DIR = llama_dir()
-SERVER_EXE = LLAMA_DIR / 'llama-server.exe'
+SERVER_EXE = LLAMA_DIR / llama_server_exe_name()
 SERVER_LOG = LOG_DIR / 'llama_server_runtime.log'
 
 MODEL_DIR = Path(os.getenv('LLAMA_MODEL_DIR', str(_MODELS_ROOT / 'gemma')))
@@ -113,12 +116,79 @@ _BUILTIN_REL: Dict[str, Dict[str, Optional[str]]] = {
 }
 
 
+_SPLIT_GGUF_RE = re.compile(r'^(.+?)-(\d{5})-of-(\d{5})$', re.IGNORECASE)
+_UNQUANTIZED_KV_TYPES = {'f16', 'bf16', 'f32'}
+_STEM_NOISE_TOKENS = {
+    'gguf', 'mmproj', 'mtp', 'f16', 'bf16', 'f32', 'fp16', 'fp32',
+    'q2', 'q3', 'q4', 'q5', 'q6', 'q8', 'iq1', 'iq2', 'iq3', 'iq4',
+    'k', 'm', 's', 'l', 'xs', 'xxs', 'xl', '0', '1', 'imatrix', 'of', 'part',
+}
+
+
 def _llama_dir() -> Path:
     return llama_dir()
 
 
 def _server_exe() -> Path:
-    return _llama_dir() / 'llama-server.exe'
+    return _llama_dir() / llama_server_exe_name()
+
+
+def _normalize_kv_flash(kv_type: str, flash_attn: bool) -> str:
+    """Quantized V-cache (-ctv q8_0/q4_0) requires FlashAttention in llama.cpp."""
+    kv = (kv_type or 'q8_0').strip() or 'q8_0'
+    if not flash_attn and kv.lower() not in _UNQUANTIZED_KV_TYPES:
+        logger.warning('FlashAttention 已关闭，KV 类型 %s 自动回退为 f16 以防启动失败', kv)
+        return 'f16'
+    return kv
+
+
+def _split_gguf_info(path: Path) -> Optional[tuple[str, int, int]]:
+    m = _SPLIT_GGUF_RE.match(path.stem)
+    if not m:
+        return None
+    return m.group(1), int(m.group(2)), int(m.group(3))
+
+
+def _gguf_total_size_bytes(model_path: Path) -> int:
+    info = _split_gguf_info(model_path)
+    if not info:
+        return model_path.stat().st_size
+    base_stem, _, total = info
+    parent = model_path.parent
+    total_bytes = 0
+    for idx in range(1, total + 1):
+        shard = parent / f'{base_stem}-{idx:05d}-of-{total:05d}{model_path.suffix}'
+        if shard.is_file():
+            total_bytes += shard.stat().st_size
+    return total_bytes if total_bytes > 0 else model_path.stat().st_size
+
+
+def _stem_tokens(stem: str) -> set[str]:
+    base = re.sub(r'-\d{5}-of-\d{5}$', '', stem, flags=re.IGNORECASE)
+    parts = [p for p in re.split(r'[^a-z0-9]+', base.lower()) if p]
+    return {p for p in parts if p not in _STEM_NOISE_TOKENS}
+
+
+def _match_auxiliary_file(
+    base_stem: str,
+    candidates: List[str],
+    dirpath: Path,
+    multi_primary: bool,
+) -> str:
+    if not candidates:
+        return ''
+    if len(candidates) == 1 and not multi_primary:
+        return str(dirpath / candidates[0])
+    target_tokens = _stem_tokens(base_stem)
+    best_name = ''
+    best_score = 0
+    for cand in candidates:
+        cand_tokens = _stem_tokens(Path(cand).stem)
+        score = len(target_tokens & cand_tokens)
+        if score > best_score:
+            best_score = score
+            best_name = cand
+    return str(dirpath / best_name) if best_name else ''
 
 
 def _load_custom_models() -> Dict[str, Dict[str, Any]]:
@@ -171,9 +241,12 @@ def upsert_custom_model(payload: Dict[str, Any]) -> Dict[str, Any]:
     key = str(payload.get('key') or '').strip()
     if not key:
         raise ValueError('key 不能为空')
+    old_key = str(payload.get('old_key') or '').strip()
     raw_model = str(payload.get('model') or payload.get('path') or '').strip()
     if not raw_model:
         raise ValueError('模型路径不能为空')
+    flash_attn = bool(payload.get('flash_attn', True))
+    kv_type = _normalize_kv_flash(str(payload.get('kv_type') or 'q8_0').strip(), flash_attn)
     existing = list(_load_custom_models().values())
     entry: Dict[str, Any] = {
         'key': key,
@@ -185,11 +258,14 @@ def upsert_custom_model(payload: Dict[str, Any]) -> Dict[str, Any]:
         'ctx': max(512, int(payload.get('ctx') or 32768)),
         'ngl': int(payload['ngl']) if payload.get('ngl') is not None and str(payload.get('ngl')).strip() != '' else None,
         'device': str(payload.get('device') or '').strip(),
-        'kv_type': str(payload.get('kv_type') or '').strip(),
-        'flash_attn': bool(payload.get('flash_attn', True)),
+        'kv_type': kv_type,
+        'flash_attn': flash_attn,
         'jinja': bool(payload.get('jinja', True)),
     }
-    updated = [e for e in existing if e['key'] != key]
+    drop_keys = {key}
+    if old_key and old_key != key and old_key not in MODEL_REGISTRY:
+        drop_keys.add(old_key)
+    updated = [e for e in existing if e['key'] not in drop_keys]
     updated.append(entry)
     _save_custom_models(updated)
     return entry
@@ -234,12 +310,34 @@ def get_merged_registry() -> Dict[str, Dict[str, Any]]:
     return merged
 
 
+def resolve_default_model_key(registry: Optional[Dict[str, Dict[str, Any]]] = None) -> str:
+    """Pick the most sensible local GGUF key: env override -> ready custom -> ready builtin -> any custom -> builtin."""
+    reg = registry if registry is not None else get_merged_registry()
+    env_key = os.getenv('LLAMA_SERVER_MODEL_KEY', '').strip()
+    if env_key and env_key in reg:
+        return env_key
+    custom_items = [(k, s) for k, s in reg.items() if not s.get('builtin')]
+    builtin_items = [(k, s) for k, s in reg.items() if s.get('builtin')]
+    for k, s in custom_items:
+        p = Path(s['model']) if s.get('model') else Path('')
+        if s.get('model') and p.is_file():
+            return k
+    for k, s in builtin_items:
+        p = Path(s['model']) if s.get('model') else Path('')
+        if s.get('model') and p.is_file():
+            return k
+    if custom_items:
+        return custom_items[0][0]
+    return DEFAULT_MODEL_KEY
+
+
 def scan_gguf_models(root: Optional[Path] = None) -> List[Dict[str, Any]]:
     """Scan up to depth 3 under *root* (default ``models_root()``) for GGUF LLM files."""
     base = root or models_root()
     if not base.is_dir():
         return []
     hits: List[Dict[str, Any]] = []
+    seen_keys: set[str] = set()
     # Skip audio.cpp subdirectories/files by heuristics & inspect depth <= 3
     for dirpath, dirnames, filenames in os.walk(base):
         rel_parts = Path(dirpath).relative_to(base).parts
@@ -250,24 +348,45 @@ def scan_gguf_models(root: Optional[Path] = None) -> List[Dict[str, Any]]:
             continue
         mmprojs = [f for f in ggufs if 'mmproj' in f.lower()]
         mtps = [f for f in ggufs if f.lower().startswith('mtp-') or '-mtp-' in f.lower()]
+        primaries: List[tuple[Path, str]] = []
         for fname in ggufs:
             low = fname.lower()
             if 'mmproj' in low or low.startswith('mtp-') or '-mtp-' in low:
                 continue
             full = Path(dirpath) / fname
+            split_info = _split_gguf_info(full)
+            if split_info is not None:
+                base_stem, part_num, _ = split_info
+                if part_num != 1:
+                    continue
+            else:
+                base_stem = full.stem
+            primaries.append((full, base_stem))
+
+        multi_primary = len(primaries) > 1
+        for full, base_stem in primaries:
             try:
-                size_gb = round(full.stat().st_size / (1024 ** 3), 2)
+                size_gb = round(_gguf_total_size_bytes(full) / (1024 ** 3), 2)
             except OSError:
                 size_gb = 0.0
-            stem = full.stem
-            key = re.sub(r'[^a-zA-Z0-9._-]+', '-', stem).strip('-').lower() or 'local-model'
+            slug = re.sub(r'[^a-zA-Z0-9._-]+', '-', base_stem).strip('-').lower() or 'local-model'
+            key = slug
+            if key in seen_keys:
+                parent_slug = re.sub(r'[^a-zA-Z0-9._-]+', '-', full.parent.name).strip('-').lower()
+                key = f'{parent_slug}-{slug}' if parent_slug else slug
+                idx = 2
+                base_key = key
+                while key in seen_keys:
+                    key = f'{base_key}-{idx}'
+                    idx += 1
+            seen_keys.add(key)
             hits.append({
                 'key': key,
-                'label': stem,
+                'label': base_stem,
                 'path': str(full),
                 'relPath': str(full.relative_to(base)),
-                'mmproj': str(Path(dirpath) / mmprojs[0]) if mmprojs else '',
-                'mtp': str(Path(dirpath) / mtps[0]) if mtps else '',
+                'mmproj': _match_auxiliary_file(base_stem, mmprojs, Path(dirpath), multi_primary),
+                'mtp': _match_auxiliary_file(base_stem, mtps, Path(dirpath), multi_primary),
                 'sizeGb': size_gb,
             })
     return hits
@@ -375,9 +494,11 @@ def describe_models() -> List[Dict[str, Any]]:
         size_gb = 0.0
         if available:
             try:
-                size_gb = round(model_path.stat().st_size / (1024 ** 3), 2)
+                size_gb = round(_gguf_total_size_bytes(model_path) / (1024 ** 3), 2)
             except OSError:
                 size_gb = 0.0
+        flash_attn = bool(spec.get('flash_attn', True))
+        kv_type = _normalize_kv_flash(str(spec.get('kv_type') or KV_TYPE), flash_attn)
         out.append({
             'key': key,
             'label': spec['label'],
@@ -391,8 +512,8 @@ def describe_models() -> List[Dict[str, Any]]:
             'ctx': int(spec.get('ctx') or N_CTX),
             'ngl': spec.get('ngl') if spec.get('ngl') is not None else N_GPU_LAYERS,
             'device': spec.get('device') or 'auto',
-            'kv_type': spec.get('kv_type') or KV_TYPE,
-            'flash_attn': bool(spec.get('flash_attn', True)),
+            'kv_type': kv_type,
+            'flash_attn': flash_attn,
             'jinja': bool(spec.get('jinja', True)),
             'builtin': bool(spec.get('builtin', False)),
             'size_gb': size_gb,
@@ -414,8 +535,8 @@ def build_args(model_key: str = DEFAULT_MODEL_KEY, enable_mtp: bool = False) -> 
     is_cpu = raw_device.lower() == 'cpu'
     device = '' if is_cpu else (raw_device if raw_device and raw_device.lower() != 'auto' else resolve_device())
     ngl = 0 if is_cpu else (int(spec['ngl']) if spec.get('ngl') is not None else N_GPU_LAYERS)
-    kv_type = str(spec.get('kv_type') or KV_TYPE)
     flash_attn = bool(spec.get('flash_attn', True))
+    kv_type = _normalize_kv_flash(str(spec.get('kv_type') or KV_TYPE), flash_attn)
     use_jinja = bool(spec.get('jinja', True))
 
     args: List[str] = [
@@ -452,6 +573,52 @@ def build_args(model_key: str = DEFAULT_MODEL_KEY, enable_mtp: bool = False) -> 
     return args
 
 
+def is_managed_local_url(base_url: str) -> bool:
+    """True if *base_url* targets this managed llama-server host/port (or is empty)."""
+    raw = (base_url or '').strip()
+    if not raw:
+        return True
+    try:
+        parsed = urlparse(raw if '://' in raw else f'http://{raw}')
+    except Exception:
+        return False
+    host = (parsed.hostname or '').lower()
+    if host not in ('127.0.0.1', 'localhost', '0.0.0.0', '::1'):
+        return False
+    port = parsed.port or (443 if parsed.scheme == 'https' else 80)
+    return port == SERVER_PORT
+
+
+def _is_oom_error(message: str) -> bool:
+    low = (message or '').lower()
+    hints = (
+        'out of memory',
+        'out of device memory',
+        'vk_error_out_of_device_memory',
+        'cuda_error_out_of_memory',
+        'failed to allocate',
+        'insufficient memory',
+        'cannot allocate',
+    )
+    return any(h in low for h in hints)
+
+
+def _release_audio_vram() -> list[str]:
+    """Best-effort release of local TTS and STT VRAM on GPU OOM."""
+    released: list[str] = []
+    try:
+        from .tts_service import release_all_local_tts
+        released.extend(release_all_local_tts())
+    except Exception as exc:
+        logger.debug('释放本地 TTS 显存失败（忽略）: %s', exc)
+    try:
+        from .stt_registry import get_registry
+        released.extend(f'stt:{s}' for s in get_registry().stop_all())
+    except Exception as exc:
+        logger.debug('释放本地 STT 显存失败（忽略）: %s', exc)
+    return released
+
+
 class LlamaServerEngine:
     '''llama-server 子进程的启停、探活与状态查询（进程级单例）。'''
 
@@ -473,8 +640,8 @@ class LlamaServerEngine:
         self._ready = False
         self._started_at: Optional[float] = None
         self._last_error: str = ''
-        # 当前驻留的模型与 MTP 开关。切换模型必须 stop -> start，显存只够放一份权重。
-        self._model_key: str = DEFAULT_MODEL_KEY
+        # 空串表示尚未选择/加载模型，避免在未启动时误报内置模型名。
+        self._model_key: str = ''
         self._mtp_enabled: bool = False
 
     # ------------------------------------------------------------------
@@ -551,45 +718,60 @@ class LlamaServerEngine:
 
     def _port_owner_pid(self) -> Optional[int]:
         '''Listening pid on SERVER_PORT, or None when nothing holds it.'''
+        if os.name == 'nt':
+            try:
+                out = subprocess.run(
+                    ['netstat', '-ano', '-p', 'TCP'],
+                    capture_output=True, text=True, timeout=10,
+                    creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0),
+                ).stdout
+            except Exception as e:
+                logger.warning('netstat 失败：%s', e)
+                return None
+            for line in out.splitlines():
+                if f':{SERVER_PORT}' not in line or 'LISTENING' not in line.upper():
+                    continue
+                pid = line.split()[-1].strip()
+                if pid.isdigit():
+                    return int(pid)
+            return None
         try:
             out = subprocess.run(
-                ['netstat', '-ano', '-p', 'TCP'],
+                ['lsof', '-ti', f'tcp:{SERVER_PORT}', '-sTCP:LISTEN'],
                 capture_output=True, text=True, timeout=10,
-                creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0),
             ).stdout
-        except Exception as e:
-            logger.warning('netstat 失败：%s', e)
-            return None
-        for line in out.splitlines():
-            if f':{SERVER_PORT}' not in line or 'LISTENING' not in line.upper():
-                continue
-            pid = line.split()[-1].strip()
-            if pid.isdigit():
-                return int(pid)
+            for line in out.splitlines():
+                line = line.strip()
+                if line.isdigit():
+                    return int(line)
+        except Exception:
+            pass
         return None
 
     def _is_llama_binary(self, pid: int) -> bool:
-        '''True only for llama-server.exe, never for whatever else grabbed the port.
-
-        The runtime is shared with another project on this machine and both
-        copies bind 8080, so a blind taskkill would end the other application's
-        model. Name check first, kill second.
-        '''
+        '''True only for llama-server, never for whatever else grabbed the port.'''
+        if os.name == 'nt':
+            try:
+                out = subprocess.run(
+                    ['tasklist', '/FI', f'PID eq {pid}', '/FO', 'CSV', '/NH'],
+                    capture_output=True, text=True, timeout=10,
+                    creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0),
+                ).stdout
+            except Exception as e:
+                logger.warning('tasklist 失败：%s', e)
+                return False
+            return llama_server_exe_name().lower() in out.lower()
         try:
             out = subprocess.run(
-                ['tasklist', '/FI', f'PID eq {pid}', '/FO', 'CSV', '/NH'],
+                ['ps', '-p', str(pid), '-o', 'comm='],
                 capture_output=True, text=True, timeout=10,
-                creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0),
             ).stdout
-        except Exception as e:
-            logger.warning('tasklist 失败：%s', e)
+            return 'llama-server' in out.lower()
+        except Exception:
             return False
-        return 'llama-server.exe' in out.lower()
 
     def _kill_port_owner(self) -> None:
         '''孤儿实例兜底清理：只在本进程没有句柄但端口仍被占用时使用。'''
-        if os.name != 'nt':
-            return
         pid = self._port_owner_pid()
         if pid is None:
             return
@@ -600,11 +782,14 @@ class LlamaServerEngine:
             )
             return
         try:
-            subprocess.run(
-                ['taskkill', '/F', '/PID', str(pid)],
-                capture_output=True, timeout=10,
-                creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0),
-            )
+            if os.name == 'nt':
+                subprocess.run(
+                    ['taskkill', '/F', '/PID', str(pid)],
+                    capture_output=True, timeout=10,
+                    creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0),
+                )
+            else:
+                os.kill(pid, signal.SIGTERM)
             logger.info('已结束端口 %s 上的残留 llama-server（pid %s）', SERVER_PORT, pid)
         except Exception as e:
             logger.warning('清理端口 %s 占用进程失败：%s', SERVER_PORT, e)
@@ -664,15 +849,16 @@ class LlamaServerEngine:
         enable_mtp: Optional[bool] = None,
     ) -> Dict[str, Any]:
         registry = get_merged_registry()
-        key = model_key or self._model_key or DEFAULT_MODEL_KEY
+        key = model_key or self._model_key or resolve_default_model_key(registry)
         spec = registry.get(key)
         if spec is None:
             raise RuntimeError(f'未知模型 key：{key}')
-        want_mtp = self._mtp_enabled if enable_mtp is None else bool(enable_mtp)
+        mtp_path = Path(spec['mtp']) if spec.get('mtp') else None
+        want_mtp = bool(self._mtp_enabled if enable_mtp is None else enable_mtp) and bool(mtp_path and mtp_path.exists())
 
         exe = _server_exe()
         if not exe.exists():
-            raise RuntimeError(f'llama-server.exe 不存在：{exe}')
+            raise RuntimeError(f'{llama_server_exe_name()} 不存在：{exe}')
         model_path = Path(spec['model'])
         if not model_path.exists():
             raise RuntimeError(f'模型文件不存在：{model_path}')
@@ -684,11 +870,6 @@ class LlamaServerEngine:
             running = self._running_alias()
             same_model = (not running) or running == key
             if same_model and want_mtp == self._mtp_enabled:
-                # Reuse is only safe once the instance is bound to this process's
-                # job: an unbound server survives a hard kill of the backend and
-                # keeps holding port 8080 and its VRAM. Bind it by pid; when that
-                # fails, fall through to kill-and-relaunch rather than adopting an
-                # orphan this process could never clean up.
                 reuse_pid = self._port_owner_pid()
                 reusable = os.name != 'nt' or (
                     reuse_pid is not None
@@ -725,6 +906,12 @@ class LlamaServerEngine:
                 raise RuntimeError(f'端口 {SERVER_PORT} 释放失败，无法切换模型')
 
         started = self._launch_locked(key, want_mtp)
+        if not started and _is_oom_error(self._last_error):
+            freed = _release_audio_vram()
+            if freed:
+                logger.warning('llama-server 显存不足，已自动卸载音频引擎 (%s) 并重试启动', ', '.join(freed))
+                self._kill_locked()
+                started = self._launch_locked(key, want_mtp)
         if not started and want_mtp:
             # draft 头不被当前 llama.cpp 识别时退回纯主模型，避免整个服务起不来
             logger.warning('带 MTP 启动失败，回退到不带 draft 重试：%s', self._last_error)
@@ -746,8 +933,12 @@ class LlamaServerEngine:
     ) -> Dict[str, Any]:
         '''确保目标模型在运行；已在运行且是同一权重、同一 MTP 档位则直接返回状态。阻塞直到就绪。'''
         with self._lock:
-            key = model_key or self._model_key or DEFAULT_MODEL_KEY
-            want_mtp = self._mtp_enabled if enable_mtp is None else bool(enable_mtp)
+            registry = get_merged_registry()
+            key = model_key or self._model_key or resolve_default_model_key(registry)
+            spec = registry.get(key) or {}
+            mtp_path = Path(spec['mtp']) if spec.get('mtp') else None
+            has_mtp = bool(mtp_path and mtp_path.exists())
+            want_mtp = bool(self._mtp_enabled if enable_mtp is None else enable_mtp) and has_mtp
             if (
                 self._proc is not None
                 and self._proc.poll() is None
@@ -759,6 +950,27 @@ class LlamaServerEngine:
                 return self.status()
             return self._spawn_locked(key, want_mtp)
 
+    def ensure_running(
+        self,
+        model_key: Optional[str] = None,
+        enable_mtp: Optional[bool] = None,
+    ) -> Dict[str, Any]:
+        '''Ensure local llama-server is serving *model_key* before inference (auto-start / switch on demand).'''
+        with self._lock:
+            target = (model_key or '').strip()
+            registry = get_merged_registry()
+            if self._healthy(timeout=1.5):
+                if not target:
+                    return self.status()
+                running = self._model_key or self._running_alias()
+                # If an external llama-server is already up and target isn't a local registry key, keep it.
+                if target not in registry and self._proc is None:
+                    return self.status()
+                if running == target and (enable_mtp is None or bool(enable_mtp) == self._mtp_enabled):
+                    return self.status()
+            resolved = target if target in registry else (self._model_key or resolve_default_model_key(registry))
+            return self.start(resolved, enable_mtp)
+
     def stop(self) -> Dict[str, Any]:
         '''停止进程并释放显存。'''
         with self._lock:
@@ -769,6 +981,8 @@ class LlamaServerEngine:
             deadline = time.time() + 5
             while time.time() < deadline and not self._port_free():
                 time.sleep(0.2)
+            self._model_key = ''
+            self._mtp_enabled = False
             logger.info('llama-server 已停止（was_running=%s）', was_running)
             return {'stopped': True, 'was_running': was_running}
 
@@ -810,9 +1024,14 @@ class LlamaServerEngine:
         uptime = int(time.time() - self._started_at) if (self._started_at and healthy) else 0
         device = resolve_device()
         device_name = next((d['name'] for d in list_devices() if d['id'] == device), '')
-        key = self._model_key
         registry = get_merged_registry()
-        spec = registry.get(key) or next(iter(registry.values()), {})
+        if healthy:
+            key = self._model_key or self._running_alias() or resolve_default_model_key(registry)
+            spec = registry.get(key) or {}
+        else:
+            key = ''
+            spec = {}
+        fallback_spec = spec or registry.get(resolve_default_model_key(registry)) or {}
         model_path = Path(spec['model']) if spec.get('model') else Path('')
         mmproj_path = Path(spec['mmproj']) if spec.get('mmproj') else None
         mtp_path = Path(spec['mtp']) if spec.get('mtp') else None
@@ -823,16 +1042,17 @@ class LlamaServerEngine:
             'port': SERVER_PORT,
             'base_url': f'{self._base_url()}/v1',
             'model': key,
-            'model_label': spec.get('label', key),
+            'default_model': resolve_default_model_key(registry),
+            'model_label': spec.get('label', key) if key else '',
             'model_path': str(model_path) if spec.get('model') else '',
             'mmproj': str(mmproj_path) if (ENABLE_MMPROJ and mmproj_path and mmproj_path.exists()) else '',
-            'mtp': bool(self._mtp_enabled and mtp_path and mtp_path.exists()),
+            'mtp': bool(healthy and self._mtp_enabled and mtp_path and mtp_path.exists()),
             'mtp_path': str(mtp_path) if mtp_path else '',
-            'ctx': int(spec.get('ctx') or N_CTX),
-            'ngl': spec.get('ngl') if spec.get('ngl') is not None else N_GPU_LAYERS,
+            'ctx': int((spec or fallback_spec).get('ctx') or N_CTX),
+            'ngl': (spec or fallback_spec).get('ngl') if (spec or fallback_spec).get('ngl') is not None else N_GPU_LAYERS,
             'parallel': N_PARALLEL,
             'ubatch': UBATCH,
-            'kv_type': spec.get('kv_type') or KV_TYPE,
+            'kv_type': (spec or fallback_spec).get('kv_type') or KV_TYPE,
             'embed_on_cpu': OFFLOAD_EMBEDDING,
             'device': device,
             'device_name': device_name,

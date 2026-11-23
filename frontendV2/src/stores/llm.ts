@@ -112,7 +112,8 @@ export const useLlmStore = defineStore('llm', () => {
       Boolean(picked) &&
       (known.includes(picked) || localModelList.value.some((m) => m.key === picked))
     if (exists) return picked
-    return p.localModelKey || known[0] || ''
+    const firstReady = localModelList.value.find((m) => m.available !== false)?.key ?? ''
+    return p.localModelKey || firstReady || known[0] || localModelList.value[0]?.key || ''
   })
 
   /** Key that identifies the model whose parameters are showing. */
@@ -129,11 +130,13 @@ export const useLlmStore = defineStore('llm', () => {
     return { ...DEFAULT_PARAMS, ...flat(p), ...(per ?? {}) }
   })
 
-  /** The id the backend must receive: a weights key locally, a model name remotely. */
+  /** The id the backend must receive: selected/loaded weights key locally, model name remotely. */
   const requestModel = computed(() => {
     const p = currentProvider.value
     if (!p) return ''
-    if (p.provider === 'llama-cpp') return p.localModelKey || localModelKey.value || ''
+    if (p.provider === 'llama-cpp') {
+      return localSelection.value || p.localModelKey || localModelKey.value || ''
+    }
     return selectedModel.value || p.models[0] || ''
   })
 
@@ -226,6 +229,11 @@ export const useLlmStore = defineStore('llm', () => {
   function selectLocalModel(key: string): void {
     selectedLocalModel.value = key
     write(LOCAL_MODEL_KEY, key)
+    const p = currentProvider.value
+    if (p && p.provider === 'llama-cpp' && p.localModelKey !== key) {
+      p.localModelKey = key
+      scheduleSave()
+    }
   }
 
   function setParam(key: keyof ModelParams, value: number | boolean | null): void {
@@ -406,14 +414,24 @@ export const useLlmStore = defineStore('llm', () => {
         localDevices().catch(() => ({ devices: [] })),
       ])
       localRunning.value = Boolean(st.running)
-      localModelKey.value = String(st.model ?? '')
-      if (currentProvider.value && st.model) {
-        currentProvider.value.localModelKey = String(st.model)
-      }
+      localModelKey.value = st.running ? String(st.model ?? '') : ''
       localModelList.value = models.models ?? []
       localDeviceList.value = (devs.devices as typeof localDeviceList.value) ?? []
       const p = currentProvider.value
-      if (p && !p.localModelKey && models.current) p.localModelKey = models.current
+      if (p && p.provider === 'llama-cpp') {
+        if (st.running && st.model && !p.localModelKey) {
+          p.localModelKey = String(st.model)
+          scheduleSave()
+        } else if (!p.localModelKey) {
+          const fallbackKey =
+            localModelList.value.find((m) => m.available !== false)?.key ||
+            models.current ||
+            models.default ||
+            localModelList.value[0]?.key ||
+            ''
+          if (fallbackKey) p.localModelKey = fallbackKey
+        }
+      }
     } catch (e) {
       lastError.value = e instanceof Error ? e.message : String(e)
     }
@@ -422,14 +440,28 @@ export const useLlmStore = defineStore('llm', () => {
   async function saveCustomLocalModel(payload: LocalModelSavePayload): Promise<void> {
     const res = await saveLocalModel(payload)
     localModelList.value = res.models ?? []
+    const p = currentProvider.value
+    if (p && payload.old_key && payload.old_key !== res.entry.key && p.modelParams?.[payload.old_key]) {
+      p.modelParams[res.entry.key] = { ...p.modelParams[payload.old_key] }
+      delete p.modelParams[payload.old_key]
+    }
     selectLocalModel(res.entry.key)
   }
 
   async function removeCustomLocalModel(key: string): Promise<void> {
     const res = await deleteLocalModel(key)
     localModelList.value = res.models ?? []
+    const p = currentProvider.value
+    if (p?.modelParams?.[key]) {
+      delete p.modelParams[key]
+      scheduleSave()
+    }
     if (selectedLocalModel.value === key) {
-      selectLocalModel(localModelList.value[0]?.key ?? '')
+      const next =
+        localModelList.value.find((m) => m.available !== false)?.key ||
+        localModelList.value[0]?.key ||
+        ''
+      selectLocalModel(next)
     }
   }
 
@@ -438,11 +470,18 @@ export const useLlmStore = defineStore('llm', () => {
     return res.models ?? []
   }
 
-  async function startLocal(modelKey?: string): Promise<void> {
+  async function startLocal(modelKey?: string, enableMtp?: boolean): Promise<void> {
     localBusy.value = true
+    lastError.value = ''
     try {
-      await localStart(modelKey ?? localSelection.value)
+      const targetKey = modelKey ?? localSelection.value
+      const wantMtp = enableMtp ?? activeParams.value.enableMtp
+      await localStart(targetKey, wantMtp)
       await refreshLocal()
+      if (currentProvider.value && currentProvider.value.provider === 'llama-cpp' && targetKey) {
+        currentProvider.value.localModelKey = targetKey
+        scheduleSave()
+      }
     } catch (e) {
       lastError.value = e instanceof Error ? e.message : String(e)
     } finally {

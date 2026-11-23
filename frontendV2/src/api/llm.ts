@@ -59,6 +59,20 @@ export const PROVIDER_TYPES: ProviderTypeOption[] = [
   { value: 'llama-cpp', label: 'Local (llama.cpp)', defaultBaseUrl: 'http://localhost:8080/v1/' },
 ]
 
+export const LOCAL_SAMPLING_PROVIDERS = new Set(['llama-cpp', 'ollama', 'lmstudio', 'local-openai'])
+export const OPENAI_PENALTY_PROVIDERS = new Set([
+  'openai',
+  'chatgpt',
+  'deepseek',
+  'qwen',
+  'grok',
+  'xiaomimimo',
+  'volcengine',
+  'ollama',
+  'lmstudio',
+  'local-openai',
+])
+
 export const DEFAULT_PARAMS: ModelParams = {
   temperature: 0.6,
   maxTokens: 4096,
@@ -102,6 +116,7 @@ export interface LocalModelInfo {
 
 export interface LocalModelSavePayload {
   key: string
+  old_key?: string
   label?: string
   detail?: string
   model: string
@@ -128,6 +143,7 @@ export interface ScannedGgufModel {
 export interface LocalStatus {
   running: boolean
   model?: string
+  default_model?: string
   model_path?: string
   mtp?: boolean
   port?: number

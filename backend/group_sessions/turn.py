@@ -451,6 +451,7 @@ async def _turn_stream(
         repeat_penalty=llm_config.get("repeat_penalty"),
         frequency_penalty=llm_config.get("frequency_penalty"),
         presence_penalty=llm_config.get("presence_penalty"),
+        enable_mtp=llm_config.get("enable_mtp"),
     ):
         kind = event.get("type")
         if kind == "content":

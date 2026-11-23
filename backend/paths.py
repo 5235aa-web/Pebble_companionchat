@@ -259,15 +259,21 @@ def audio_cpp_dir() -> Path:
     return Path(__file__).resolve().parent / "audio-cpp"
 
 
+def llama_server_exe_name() -> str:
+    """Platform executable filename for llama-server."""
+    return "llama-server.exe" if os.name == "nt" else "llama-server"
+
+
 def _find_llama_in(base: Path) -> Optional[Path]:
     """Return a llama.cpp runtime sitting directly inside *base*, if any."""
     if not base or not base.exists():
         return None
+    exe_name = llama_server_exe_name()
     exact = base / "llama"
-    if (exact / "llama-server.exe").exists():
+    if (exact / exe_name).exists():
         return exact
     for hit in sorted(base.glob("llama-*")):
-        if (hit / "llama-server.exe").exists():
+        if (hit / exe_name).exists():
             return hit
     return None
 
@@ -289,7 +295,7 @@ def llama_dir() -> Path:
         target = Path(configured).expanduser()
         if target.is_file():
             return target.parent
-        if (target / "llama-server.exe").exists():
+        if (target / llama_server_exe_name()).exists():
             return target
         hit = _find_llama_in(target)
         if hit:

@@ -552,16 +552,35 @@ async def list_voice_refs():
     return {"voices": sorted(stems)}
 
 
-@router.post("/tts/unload")
-async def unload_tts_engine(req: TtsUnloadRequest):
-    """Free the VRAM of one local engine, or every local engine."""
-    engines = {
+def _local_tts_engines() -> dict[str, Any]:
+    return {
         "omnivoice": _omnivoice,
         "dotstts": _dotstts,
         "fishaudio": _fishaudio,
         "ming3tts": _ming3tts,
         "audiocpp_tts": _audiocpp_tts,
     }
+
+
+def release_all_local_tts(keep: str = "") -> list[str]:
+    """Synchronously release local TTS engines (except *keep*) to reclaim VRAM."""
+    released: list[str] = []
+    for name, engine in _local_tts_engines().items():
+        if keep and name == keep:
+            continue
+        try:
+            result = engine.release()
+            if isinstance(result, dict) and result.get("released"):
+                released.append(name)
+        except Exception as e:
+            logger.warning("release_all_local_tts: %s 释放失败（忽略）: %s", name, e)
+    return released
+
+
+@router.post("/tts/unload")
+async def unload_tts_engine(req: TtsUnloadRequest):
+    """Free the VRAM of one local engine, or every local engine."""
+    engines = _local_tts_engines()
     name = (req.engine or "").strip()
     if not name:
         targets = engines
@@ -590,24 +609,7 @@ async def _release_other_local_engines(keep: str) -> list[str]:
     the weights go. A single engine failing is logged and skipped, never fatal
     — the caller is on its way to synthesizing something.
     """
-    engines = {
-        "omnivoice": _omnivoice,
-        "dotstts": _dotstts,
-        "fishaudio": _fishaudio,
-        "ming3tts": _ming3tts,
-        "audiocpp_tts": _audiocpp_tts,
-    }
-    released = []
-    for name, engine in engines.items():
-        if name == keep:
-            continue
-        try:
-            result = await asyncio.to_thread(engine.release)
-            if isinstance(result, dict) and result.get("released"):
-                released.append(name)
-        except Exception as e:
-            logger.warning("release_others: %s 释放失败（忽略）: %s", name, e)
-    return released
+    return await asyncio.to_thread(release_all_local_tts, keep)
 
 
 @router.post("/tts/release_others")

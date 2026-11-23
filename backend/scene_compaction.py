@@ -16,9 +16,9 @@ import re
 from typing import Any, Dict, List, Optional
 
 from .companion_db import get_messages_with_swipes, mark_messages_compacted
-from .llm_client import call_llm_stream
+from .llm_client import call_llm_stream, resolve_model_max_context
 from .script_db import add_scene_summary, list_scene_summaries, list_session_nodes
-from .token_engine import count_text as count_text_tokens
+from .token_engine import LOCAL_PROVIDERS, _is_local_base_url, count_text as count_text_tokens
 from . import segmented_summary
 
 logger = logging.getLogger(__name__)
@@ -53,8 +53,18 @@ _NETWORK_HINTS = (
 
 def input_token_limit(llm_config: Optional[Dict]) -> int:
     """How much transcript one summarizer request may carry."""
-    provider = str((llm_config or {}).get("provider_type") or "").lower()
-    return LOCAL_INPUT_TOKENS if provider == "llama-cpp" else CLOUD_INPUT_TOKENS
+    cfg = llm_config or {}
+    provider = str(cfg.get("provider_type") or "").strip().lower()
+    base_url = str(cfg.get("base_url") or "")
+    model = str(cfg.get("model") or "")
+    explicit_ctx = int(cfg.get("max_context") or 0)
+    if explicit_ctx <= 0 and model:
+        explicit_ctx = resolve_model_max_context(model)
+    is_local = provider in LOCAL_PROVIDERS or _is_local_base_url(base_url)
+    base_limit = LOCAL_INPUT_TOKENS if is_local else CLOUD_INPUT_TOKENS
+    if explicit_ctx > 0:
+        return max(4_000, min(base_limit, int(explicit_ctx * 0.6)))
+    return base_limit
 
 SYSTEM_PROMPT = (
     "[Script Compaction]\n"

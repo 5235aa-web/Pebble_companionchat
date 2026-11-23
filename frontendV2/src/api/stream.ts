@@ -56,10 +56,12 @@ export interface LlmConfig {
   temperature?: number
   top_p?: number
   max_tokens?: number
-  // Only sent for llama-cpp; the backend drops them for cloud providers.
+  max_context?: number
+  // Local/compatible sampling parameters; backend drops/falls back cleanly if unsupported.
   top_k?: number | null
   min_p?: number | null
   repeat_penalty?: number | null
+  enable_mtp?: boolean
   // Only sent for OpenAI-compatible providers.
   frequency_penalty?: number | null
   presence_penalty?: number | null

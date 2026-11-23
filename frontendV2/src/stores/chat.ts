@@ -145,14 +145,14 @@ export function llmConfig(): LlmConfig {
     temperature: params.temperature,
     top_p: params.topP,
     max_tokens: params.maxTokens,
-    // These used to be configured in the panel and never sent, so every slider
-    // below Temperature was decoration. The backend decides per provider which
-    // of them may go on the wire.
+    max_context: params.maxContext > 0 ? params.maxContext : undefined,
+    // Backend decides per provider which extension fields are sent or stripped cleanly on 400.
     top_k: params.topK,
     min_p: params.minP,
     repeat_penalty: params.repeatPenalty,
     frequency_penalty: params.frequencyPenalty,
     presence_penalty: params.presencePenalty,
+    enable_mtp: p?.provider === 'llama-cpp' ? params.enableMtp : undefined,
   }
 }
 

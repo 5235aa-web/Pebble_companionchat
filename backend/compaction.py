@@ -11,9 +11,9 @@ from typing import List, Dict, Optional, Tuple
 from dataclasses import dataclass, field
 from datetime import datetime
 
-from .token_engine import acount_messages, atruncate_to_tokens, count_text
-from .token_counter import get_context_window
-from .llm_client import call_llm_stream
+from .token_engine import LOCAL_PROVIDERS, _is_local_base_url, acount_messages, atruncate_to_tokens, count_text
+from .token_counter import DEFAULT_CONTEXT_WINDOWS, get_context_window
+from .llm_client import call_llm_stream, resolve_model_max_context
 from . import segmented_summary
 
 logger = logging.getLogger(__name__)
@@ -468,21 +468,35 @@ def _row_tokens(text: str) -> int:
 def _summary_input_budget(llm_config: Optional[Dict]) -> int:
     """How much rendered transcript one summarizer request may carry.
 
-    Derived from the model window when it is known — the window minus the summary
-    we ask for, minus the prompt — never a fixed number. A 128k model lands near
-    60k, which is roughly what the old 80k-character cap approximated by hand.
+    Uses explicit `max_context` / provider config / local GGUF registry first,
+    then known built-in model windows, and falls back conservatively for
+    unknown local models so small local weights do not overflow their context.
     """
     cfg = llm_config or {}
     model = str(cfg.get("model") or "")
-    window = 0
-    if model:
+    provider = str(cfg.get("provider_type") or "").strip().lower()
+    base_url = str(cfg.get("base_url") or "")
+    window = int(cfg.get("max_context") or 0)
+    if window <= 0 and model:
         try:
-            window = int(get_context_window(model) or 0)
-        except Exception:  # noqa: BLE001 - an unknown model must not break compaction
+            window = resolve_model_max_context(model)
+        except Exception:  # noqa: BLE001
             window = 0
+    if window <= 0 and model:
+        model_lower = model.lower()
+        known_match = (
+            model in DEFAULT_CONTEXT_WINDOWS
+            or any(k != "default" and k in model_lower for k in DEFAULT_CONTEXT_WINDOWS)
+        )
+        if known_match:
+            try:
+                window = int(get_context_window(model) or 0)
+            except Exception:  # noqa: BLE001
+                window = 0
     if window <= 0:
-        window = 128_000
-    return max(8_000, min(120_000, int(window * 0.6)))
+        is_local = provider in LOCAL_PROVIDERS or _is_local_base_url(base_url)
+        window = 32_768 if is_local else 128_000
+    return max(4_000, min(120_000, int(window * 0.6)))
 
 
 def _limit_retirement_set(

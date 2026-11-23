@@ -29,7 +29,14 @@ import {
   importComfyWorkflow,
   type ComfyStatus,
 } from '@/api/pictures'
-import { PROVIDER_TYPES, type LlmProvider, type LocalModelInfo, type ScannedGgufModel } from '@/api/llm'
+import {
+  LOCAL_SAMPLING_PROVIDERS,
+  OPENAI_PENALTY_PROVIDERS,
+  PROVIDER_TYPES,
+  type LlmProvider,
+  type LocalModelInfo,
+  type ScannedGgufModel,
+} from '@/api/llm'
 import { useI18n } from '@/i18n'
 import { getAppConfig, setAppConfig } from '@/api/app'
 import type { SttEngineInfo } from '@/api/stt'
@@ -569,6 +576,7 @@ async function onProbeModels() {
 }
 
 const localFormOpen = ref(false)
+const localFormOrigKey = ref('')
 const localFormError = ref('')
 const localForm = ref({
   key: '',
@@ -602,7 +610,22 @@ const kvTypeOptions = [
   { value: 'q4_0', label: 'q4_0' },
 ]
 
+function onLocalKvChange(nextKv: string) {
+  localForm.value.kv_type = nextKv
+  if (nextKv !== 'f16') {
+    localForm.value.flash_attn = true
+  }
+}
+
+function onLocalFlashAttnChange(nextFlash: boolean) {
+  localForm.value.flash_attn = nextFlash
+  if (!nextFlash && localForm.value.kv_type !== 'f16') {
+    localForm.value.kv_type = 'f16'
+  }
+}
+
 function openNewLocalModelForm() {
+  localFormOrigKey.value = ''
   localFormError.value = ''
   localForm.value = {
     key: '',
@@ -621,7 +644,10 @@ function openNewLocalModelForm() {
 }
 
 function openEditLocalModelForm(m: LocalModelInfo) {
+  localFormOrigKey.value = m.key
   localFormError.value = ''
+  const flash = m.flash_attn !== false
+  const rawKv = String(m.kv_type || 'q8_0')
   localForm.value = {
     key: m.key,
     label: m.label || m.key,
@@ -631,8 +657,8 @@ function openEditLocalModelForm(m: LocalModelInfo) {
     ctx: Number(m.ctx || 32768),
     ngl: m.ngl !== undefined && m.ngl !== null ? String(m.ngl) : '99',
     device: String(m.device || 'auto'),
-    kv_type: String(m.kv_type || 'q8_0'),
-    flash_attn: m.flash_attn !== false,
+    kv_type: flash || rawKv === 'f16' ? rawKv : 'f16',
+    flash_attn: flash,
     jinja: m.jinja !== false,
   }
   localFormOpen.value = true
@@ -646,11 +672,17 @@ async function saveLocalModelForm() {
     localFormError.value = 'GGUF path is required'
     return
   }
-  const stem = modelPath.split(/[\\/]/).pop()?.replace(/\.gguf$/i, '') || 'custom-model'
-  const key = (f.key.trim() || stem.toLowerCase().replace(/[^a-z0-9._-]+/g, '-'))
+  const stem =
+    modelPath
+      .split(/[\\/]/)
+      .pop()
+      ?.replace(/\.gguf$/i, '')
+      .replace(/-\d{5}-of-\d{5}$/i, '') || 'custom-model'
+  const key = f.key.trim() || stem.toLowerCase().replace(/[^a-z0-9._-]+/g, '-')
   try {
     await llm.saveCustomLocalModel({
       key,
+      old_key: localFormOrigKey.value && localFormOrigKey.value !== key ? localFormOrigKey.value : undefined,
       label: f.label.trim() || stem,
       model: modelPath,
       mmproj: f.mmproj.trim(),
@@ -662,6 +694,7 @@ async function saveLocalModelForm() {
       flash_attn: f.flash_attn,
       jinja: f.jinja,
     })
+    localFormOrigKey.value = ''
     localFormOpen.value = false
   } catch (err) {
     localFormError.value = err instanceof Error ? err.message : String(err)
@@ -672,7 +705,7 @@ async function onDeleteLocalModel(key: string) {
   localFormError.value = ''
   try {
     await llm.removeCustomLocalModel(key)
-    if (localForm.value.key === key) localFormOpen.value = false
+    if (localForm.value.key === key || localFormOrigKey.value === key) localFormOpen.value = false
   } catch (err) {
     localFormError.value = err instanceof Error ? err.message : String(err)
   }
@@ -712,6 +745,12 @@ async function addScannedModel(item: ScannedGgufModel) {
 
 const selectedLocalInfo = computed(
   () => llm.localModelList.find((m) => m.key === llm.localSelection) ?? null,
+)
+const supportsLocalSampling = computed(() =>
+  LOCAL_SAMPLING_PROVIDERS.has(llm.currentProvider?.provider ?? ''),
+)
+const supportsOpenAiPenalties = computed(() =>
+  OPENAI_PENALTY_PROVIDERS.has(llm.currentProvider?.provider ?? ''),
 )
 
 const engineMenu = ref(false)
@@ -1267,7 +1306,7 @@ function commitModel() {
             <button
               class="lb-btn"
               :disabled="llm.localBusy || (!llm.localRunning && selectedLocalInfo?.available === false)"
-              @click="llm.localRunning && !localLoadedOther ? llm.stopLocal() : llm.startLocal()"
+              @click="llm.localRunning && !localLoadedOther ? llm.stopLocal() : llm.startLocal(undefined, llm.activeParams.enableMtp)"
             >
               {{ llm.localRunning && !localLoadedOther ? t('backstage.localStop') : t('backstage.localStart') }}
             </button>
@@ -1420,6 +1459,21 @@ function commitModel() {
               </div>
             </label>
             <label class="num">
+              <span class="num-name">{{ t('backstage.mtpPath') }}</span>
+              <div class="path-pick-wrap">
+                <input v-model="localForm.mtp" class="num-in path" placeholder="(optional)" />
+                <button
+                  type="button"
+                  class="mini-btn"
+                  @click="openPathPicker({
+                    title: t('backstage.mtpPath'),
+                    ext: '.gguf',
+                    onSelect: (p) => { localForm.mtp = p },
+                  })"
+                >{{ t('backstage.browse') }}</button>
+              </div>
+            </label>
+            <label class="num">
               <span class="num-name">{{ t('backstage.ctxSize') }}</span>
               <input v-model.number="localForm.ctx" class="num-in" type="number" min="512" />
             </label>
@@ -1440,19 +1494,24 @@ function commitModel() {
               <UiSelect
                 :model-value="localForm.kv_type"
                 :options="kvTypeOptions"
-                @update:model-value="localForm.kv_type = $event"
+                @update:model-value="onLocalKvChange($event)"
               />
             </label>
-            <UiLever v-model="localForm.flash_attn" :label="t('backstage.flashAttn')" />
+            <UiLever
+              :model-value="localForm.flash_attn"
+              :label="t('backstage.flashAttn')"
+              @update:model-value="onLocalFlashAttnChange($event)"
+            />
+            <div class="path-hint">{{ t('backstage.kvFlashHint') }}</div>
             <UiLever v-model="localForm.jinja" :label="t('backstage.useJinja')" />
             <div v-if="localFormError" class="path-err">{{ localFormError }}</div>
             <div class="path-row">
               <button class="mini-btn primary" @click="saveLocalModelForm">{{ t('backstage.saveModel') }}</button>
               <button class="mini-btn" @click="localFormOpen = false">{{ t('dialog.cancel') }}</button>
               <button
-                v-if="localForm.key"
+                v-if="localFormOrigKey && !selectedLocalInfo?.builtin"
                 class="mini-btn danger"
-                @click="onDeleteLocalModel(localForm.key)"
+                @click="onDeleteLocalModel(localFormOrigKey)"
               >{{ t('backstage.deleteModel') }}</button>
             </div>
           </div>
@@ -1470,7 +1529,7 @@ function commitModel() {
               :max="1"
               @update:model-value="(v: number) => llm.setParam('topP', v)"
             />
-            <template v-if="llm.isLocal">
+            <template v-if="supportsLocalSampling">
               <UiSlider
                 :model-value="llm.activeParams.topK ?? 64"
                 :label="t('backstage.topK')"
@@ -1490,10 +1549,7 @@ function commitModel() {
                 @update:model-value="(v: number) => llm.setParam('repeatPenalty', v)"
               />
             </template>
-            <!-- Cloud providers reject top_k / min_p / repeat_penalty and take
-                 these two instead. Showing the wrong pair was how the panel
-                 ended up with faders that changed nothing. -->
-            <template v-else>
+            <template v-if="supportsOpenAiPenalties">
               <UiSlider
                 :model-value="llm.activeParams.frequencyPenalty ?? 0"
                 :label="t('backstage.frequencyPenalty')"
@@ -1509,6 +1565,12 @@ function commitModel() {
                 @update:model-value="(v: number) => llm.setParam('presencePenalty', v)"
               />
             </template>
+            <UiLever
+              v-if="llm.isLocal && (selectedLocalInfo?.has_mtp || selectedLocalInfo?.mtp)"
+              :model-value="llm.activeParams.enableMtp"
+              :label="t('backstage.enableMtp')"
+              @update:model-value="(v: boolean) => llm.setParam('enableMtp', v)"
+            />
             <div class="nums">
               <div class="num">
                 <span class="num-name">{{ t('backstage.maxTokens') }}</span>

@@ -23,6 +23,7 @@ from .paths import (
     audio_cpp_dir,
     load_app_config,
     llama_dir,
+    llama_server_exe_name,
     models_root,
     save_app_config,
 )
@@ -32,8 +33,8 @@ from .group_sessions.routes import router as group_router
 from .llm_client import SUPPORTED_PROVIDERS
 from . import audio_cpp_job
 from .llama_server_engine import (
-    llama_server, list_devices, resolve_device, MODEL_PATH, SERVER_EXE,
-    describe_models, DEFAULT_MODEL_KEY,
+    llama_server, list_devices, resolve_device, MODEL_PATH, _server_exe,
+    describe_models, resolve_default_model_key,
     upsert_custom_model, delete_custom_model, scan_gguf_models,
 )
 
@@ -390,7 +391,7 @@ async def get_app_config():
         "modelsRootExists": root.exists(),
         "configuredLlamaRoot": config.get("llamaRoot") or "",
         "llamaRoot": str(llama),
-        "llamaFound": (llama / "llama-server.exe").exists(),
+        "llamaFound": (llama / llama_server_exe_name()).exists(),
         "audioCppDir": str(audio_dir),
         "audioCppFound": (audio_dir / "audiocpp_server.exe").exists(),
         "dataRoot": str(DATA_ROOT),
@@ -553,7 +554,7 @@ def local_llm_devices():
     return {
         "devices": list_devices(),
         "resolved": resolve_device(),
-        "server_exe": str(SERVER_EXE),
+        "server_exe": str(_server_exe()),
         "model": status.get("model", ""),
         "model_path": status.get("model_path", str(MODEL_PATH)),
         "models": status.get("models", describe_models()),
@@ -572,8 +573,8 @@ def local_llm_models():
     status = llama_server.status()
     return {
         "models": describe_models(),
-        "default": DEFAULT_MODEL_KEY,
-        "current": status.get("model", DEFAULT_MODEL_KEY),
+        "default": resolve_default_model_key(),
+        "current": status.get("model", ""),
         "mtp": status.get("mtp", False),
     }
 
@@ -620,6 +621,7 @@ async def local_llm_release():
 
 class LocalModelSaveRequest(BaseModel):
     key: str
+    old_key: str = ""
     label: str = ""
     detail: str = ""
     model: str

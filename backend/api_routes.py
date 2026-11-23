@@ -241,39 +241,12 @@ async def delete_branch_image_endpoint(
 
 
 def _resolve_provider_max_context(model: str) -> int:
-    """
-    Look up the context window configured for the provider serving `model`.
-
-    The provider is matched by model name first so a model that belongs to a
-    non-active provider still gets its own window; otherwise the active
-    provider's value applies. 0 means the built-in table decides.
-    """
+    """Look up the context window configured for `model` across user providers and custom local GGUFs."""
     try:
-        config_path = LLM_CONFIG_PATH
-        if not config_path.exists():
-            return 0
-        with open(config_path, "r", encoding="utf-8") as f:
-            config = json.load(f)
-        providers = config.get("providers", [])
-        for provider in providers:
-            if model and model in (provider.get("models") or []):
-                return int(provider.get("maxContext") or 0)
-        # A local weights key never appears in provider.models: its window comes
-        # from the launch args recorded in MODEL_REGISTRY.
-        if model:
-            try:
-                from .llama_server_engine import MODEL_REGISTRY
-                spec = MODEL_REGISTRY.get(model)
-                if spec and spec.get("ctx"):
-                    return int(spec["ctx"])
-            except Exception:
-                pass
-        active_idx = config.get("activeProviderIndex", 0)
-        if providers and 0 <= active_idx < len(providers):
-            return int(providers[active_idx].get("maxContext") or 0)
+        from .llm_client import resolve_model_max_context
+        return resolve_model_max_context(model)
     except Exception:
         return 0
-    return 0
 
 
 # ==================== Pydantic Models ====================
