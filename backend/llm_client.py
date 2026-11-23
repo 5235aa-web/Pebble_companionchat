@@ -1,8 +1,3 @@
-"""
-llm_client.py - 完全独立的LLM流式调用模块。
-从 brain.py 的 _call_external_llm_stream 和 _async_chat_stream 复制并简化。
-不依赖 Brain 实例，不依赖任何现有系统组件。
-"""
 import re
 import json
 from pathlib import Path

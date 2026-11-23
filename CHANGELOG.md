@@ -4,6 +4,16 @@ All notable releases for Pebble Companion Chat are recorded here.
 Each `## x.y.z` section is used by `npm run release -- x.y.z` as both the
 GitHub Release description and the in-app update panel notes.
 
+## 0.5.0
+
+- Fixed Picture Studio `Auto picture in story mode` (`autoScript`): story-mode chat turns in `/companions/chat/stream` now trigger `maybe_auto(..., source="script")` alongside scene advances and HUD updates, and the frontend (`App.vue` and `useScriptStore`) now polls and refreshes the stage when `autoScript` is enabled.
+- Split the text chat streaming routes (`/chat/stream`, `/chat/continue/stream`, `/chat/regenerate/stream`, `/chat/reedit/stream`) out of `backend/api_routes.py` into `backend/api_routesV2.py` mounted onto `api_routes.router`.
+- Fixed `[data-tip]` tooltip clipping across the Backstage settings panel (`BackstagePanel.vue`): unified wrapped, inward-anchored tooltips for all Backstage tabs (including Voice/TTS `audio.cpp` request options and Picture Studio parameters), prevented `overflow: hidden` from clipping the loaded-model hint via `.lb-note-wrap`, and anchored `.local-bar` tooltips downward with right-edge alignment on the release button.
+
+## 0.4.0
+
+- Multiple improvements. It can now directly access the picture generation model and workflow within your comfyui application, and also supports the injection of prompt template.
+
 ## 0.3.0
 
 - Added support for RisuAI shorthand `<img="...">` tags in CHARX greetings and chat messages so bundled character expressions and inline images render properly instead of being stripped.

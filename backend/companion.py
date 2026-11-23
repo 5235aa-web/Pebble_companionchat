@@ -1,11 +1,3 @@
-"""
-Companion - 完全独立的AI伴侣核心类。
-不依赖 Brain、MemoryEngine、EmotionalCore、db.py 等任何现有模块。
-每个Companion实例拥有独立的：
-  - 人格prompt（角色卡字段）
-  - 聊天记录（按companion_id + branch_id隔离）
-  - LLM调用（复用llm_providers.json配置）
-"""
 import json
 import logging
 import os

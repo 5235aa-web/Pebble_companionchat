@@ -1,8 +1,3 @@
-"""
-api_routes.py - 多AI伴侣独立API路由。
-所有端点完全独立，不依赖现有系统的任何路由或逻辑。
-通过 include_router 挂载到 api_server.py。
-"""
 import json
 import os
 import functools
@@ -31,7 +26,6 @@ from .companion_db import (
     update_message_content,
     get_user_settings, update_user_settings, replace_branch_messages, get_branch_stats,
     set_message_swipe_id, get_last_assistant_message, search_messages,
-    is_last_active_message,
     # 新增：压缩历史和消息重要性
     save_compaction_history, get_compaction_history, get_compaction_stats,
     set_message_importance, get_important_messages,
@@ -41,7 +35,6 @@ from .companion_db import (
 )
 from .companion import Companion
 from .script_db import get_session_by_branch
-from .picturesys import service as picture_service
 from .paths import AVATAR_DIR, COMPANION_ASSETS_DIR, DATA_ROOT, LLM_CONFIG_PATH, TMP_UPLOAD_DIR
 from .llm_client import load_default_llm_config
 from .tavern_importer import import_card_file, import_from_bytes
@@ -91,7 +84,21 @@ from .world_book_db import (    create_world_book, get_world_book, get_all_world
     export_world_book_to_json, import_world_book_from_json
 )
 
+from .api_routesV2 import (
+    ChatStreamRequest,
+    ContinueStreamRequest,
+    ReeditStreamRequest,
+    RegenerateStreamRequest,
+    companion_chat_continue_stream,
+    companion_chat_reedit_stream,
+    companion_chat_regenerate_stream,
+    companion_chat_stream,
+    record_usage_chunk as _record_usage_chunk,
+    router as v2_router,
+)
+
 router = APIRouter(prefix="/companions", tags=["multi-companion"])
+router.include_router(v2_router)
 
 logger = logging.getLogger(__name__)
 
@@ -161,12 +168,6 @@ async def _stream_upload_to_tempfile(
     except Exception:
         tmp_path.unlink(missing_ok=True)
         raise
-
-
-def _record_usage_chunk(chunk: Any, companion_id: str, branch_id: str) -> None:
-    """Persist provider-reported usage so the token panel shows measured values."""
-    if isinstance(chunk, dict) and chunk.get("type") == "usage":
-        token_engine.record_usage(companion_id, branch_id, chunk)
 
 
 @router.post("/attachments/parse")
@@ -277,63 +278,11 @@ def _resolve_provider_max_context(model: str) -> int:
 
 # ==================== Pydantic Models ====================
 
-class ChatStreamRequest(BaseModel):
-    message: str
-    companion_id: str
-    branch_id: str = "main"
-    enable_thinking: bool = False
-    llm_config: Optional[Dict[str, Any]] = None
-    temperature: Optional[float] = 0.7
-    top_p: Optional[float] = 0.9
-    # Attachments travel with the message: images become multimodal parts,
-    # documents are already extracted to text by /attachments/parse.
-    attachments: Optional[List[Dict[str, Any]]] = None
-    # "user" for a line the user's character says, "narrator" for authored
-    # direction (scene, other people, time passing). Narration is stored with
-    # its own message_type so the model can tell it apart from dialogue.
-    sender: Optional[str] = "user"
-    # When set, the turn runs inside a scripted playthrough: the script prompt
-    # replaces the card prompt, and memory is neither injected nor extracted.
-    script_session_id: Optional[int] = None
-
-
-class ContinueStreamRequest(BaseModel):
-    companion_id: str
-    branch_id: str = "main"
-    enable_thinking: bool = False
-    llm_config: Optional[Dict[str, Any]] = None
-    temperature: Optional[float] = 0.7
-    top_p: Optional[float] = 0.9
-
-
-class RegenerateStreamRequest(BaseModel):
-    companion_id: str
-    message_id: int
-    branch_id: str = "main"
-    enable_thinking: bool = False
-    llm_config: Optional[Dict[str, Any]] = None
-    temperature: Optional[float] = 0.7
-    top_p: Optional[float] = 0.9
-
-
 class SwipeRequest(BaseModel):
     companion_id: str
     message_id: int
     branch_id: str = "main"
     swipe_id: int = 0
-
-
-class ReeditStreamRequest(BaseModel):
-    """改写一条用户消息，并让模型基于新问题重新回答。"""
-
-    companion_id: str
-    message_id: int
-    content: str
-    branch_id: str = "main"
-    enable_thinking: bool = False
-    llm_config: Optional[Dict[str, Any]] = None
-    temperature: Optional[float] = 0.7
-    top_p: Optional[float] = 0.9
 
 
 class CompanionUpdateRequest(BaseModel):
@@ -1738,73 +1687,6 @@ async def get_branch_latest_summary(companion_id: str, branch_id: str):
         "summary": summary,
     }
 
-@router.post("/chat/stream")
-async def companion_chat_stream(request: ChatStreamRequest):
-    """
-    流式聊天端点。
-    完全独立的SSE流，不依赖现有/chat/stream。
-    """
-    import logging
-    logger = logging.getLogger("companion_chat")
-    logger.info(f"Received companion chat request: companion_id={request.companion_id}, message={request.message[:50]}")
-    
-    # 验证companion存在
-    companion_data = get_companion(request.companion_id)
-    if not companion_data:
-        logger.error(f"Companion not found: {request.companion_id}")
-        raise HTTPException(status_code=404, detail="Companion not found")
-    logger.info(f"Companion found: {companion_data['name']}")
-    
-    async def event_generator():
-        try:
-            companion = Companion(request.companion_id)
-            chunk_count = 0
-            async for chunk in companion.generate_response_stream(
-                user_message=request.message,
-                branch_id=request.branch_id,
-                llm_config=request.llm_config,
-                enable_thinking=request.enable_thinking,
-                temperature=request.temperature,
-                top_p=request.top_p,
-                attachments=request.attachments,
-                sender=request.sender or "user",
-                script_session_id=request.script_session_id,
-            ):
-                chunk_count += 1
-                logger.debug(f"Yielding chunk #{chunk_count}: type={chunk.get('type')}")
-                _record_usage_chunk(chunk, request.companion_id, request.branch_id)
-                yield f"data: {json.dumps(chunk, ensure_ascii=False)}\n\n"
-            logger.info(f"Stream complete, yielded {chunk_count} chunks")
-            # Picture Studio hook. Only plain chat: script branches are driven by
-            # their HUD, and firing here as well would double up on the same turn.
-            # The call is fire-and-forget and swallows its own errors, so a broken
-            # image provider can never turn a finished reply into a stream error.
-            if not request.script_session_id:
-                try:
-                    picture_service.maybe_auto(
-                        companion_id=request.companion_id,
-                        branch_id=request.branch_id,
-                        source="chat",
-                    )
-                except Exception as exc:  # noqa: BLE001
-                    logger.debug("picture auto trigger skipped: %s", exc)
-            yield "data: [DONE]\n\n"
-        except Exception as e:
-            logger.error(f"Stream error: {e}", exc_info=True)
-            error_chunk = {"type": "error", "message": str(e)}
-            yield f"data: {json.dumps(error_chunk, ensure_ascii=False)}\n\n"
-            yield "data: [DONE]\n\n"
-    
-    return StreamingResponse(
-        event_generator(), 
-        media_type="text/event-stream",
-        headers={
-            "Cache-Control": "no-cache",
-            "Connection": "keep-alive",
-            "X-Accel-Buffering": "no"
-        }
-    )
-
 
 # ==================== Chat Audio (Streaming + STT) ====================
 
@@ -2096,149 +1978,6 @@ async def companion_chat_audio_stream(
         temperature_float=float(temperature) if temperature else 0.7,
         top_p_float=float(top_p) if top_p else 0.9,
         sender=sender,
-    )
-
-
-# ==================== Chat Continue (Streaming) ====================
-
-@router.post("/chat/continue/stream")
-async def companion_chat_continue_stream(request: ContinueStreamRequest):
-    """
-    续写最后一条AI回复。
-    流式SSE，与/chat/stream格式完全一致。
-    """
-    import logging
-    logger = logging.getLogger("companion_chat_continue")
-    logger.info(f"Received continue request: companion_id={request.companion_id}")
-
-    companion_data = get_companion(request.companion_id)
-    if not companion_data:
-        raise HTTPException(status_code=404, detail="Companion not found")
-
-    async def event_generator():
-        try:
-            companion = Companion(request.companion_id)
-            async for chunk in companion.generate_continue_stream(
-                branch_id=request.branch_id,
-                llm_config=request.llm_config,
-                enable_thinking=request.enable_thinking,
-                temperature=request.temperature,
-                top_p=request.top_p,
-            ):
-                _record_usage_chunk(chunk, request.companion_id, request.branch_id)
-                yield f"data: {json.dumps(chunk, ensure_ascii=False)}\n\n"
-            yield "data: [DONE]\n\n"
-        except Exception as e:
-            logger.error(f"Continue stream error: {e}", exc_info=True)
-            error_chunk = {"type": "error", "message": str(e)}
-            yield f"data: {json.dumps(error_chunk, ensure_ascii=False)}\n\n"
-            yield "data: [DONE]\n\n"
-
-    return StreamingResponse(
-        event_generator(), 
-        media_type="text/event-stream",
-        headers={
-            "Cache-Control": "no-cache",
-            "Connection": "keep-alive",
-            "X-Accel-Buffering": "no"
-        }
-    )
-
-
-# ==================== Chat Regenerate (Streaming) ====================
-
-@router.post("/chat/regenerate/stream")
-async def companion_chat_regenerate_stream(request: RegenerateStreamRequest):
-    """
-    重新生成指定AI消息。
-    流式SSE，与/chat/stream格式完全一致。
-    """
-    import logging
-    logger = logging.getLogger("companion_chat_regenerate")
-    logger.info(f"Received regenerate request: companion_id={request.companion_id}, msg_id={request.message_id}")
-
-    companion_data = get_companion(request.companion_id)
-    if not companion_data:
-        raise HTTPException(status_code=404, detail="Companion not found")
-
-    record_branch_usage = is_last_active_message(
-        request.companion_id, request.branch_id, request.message_id
-    )
-
-    async def event_generator():
-        try:
-            companion = Companion(request.companion_id)
-            async for chunk in companion.generate_regenerate_stream(
-                message_id=request.message_id,
-                branch_id=request.branch_id,
-                llm_config=request.llm_config,
-                enable_thinking=request.enable_thinking,
-                temperature=request.temperature,
-                top_p=request.top_p,
-            ):
-                if record_branch_usage:
-                    _record_usage_chunk(chunk, request.companion_id, request.branch_id)
-                elif isinstance(chunk, dict) and chunk.get("type") == "usage":
-                    token_engine.clear_recorded_usage(request.companion_id, request.branch_id)
-                yield f"data: {json.dumps(chunk, ensure_ascii=False)}\n\n"
-            yield "data: [DONE]\n\n"
-        except Exception as e:
-            logger.error(f"Regenerate stream error: {e}", exc_info=True)
-            error_chunk = {"type": "error", "message": str(e)}
-            yield f"data: {json.dumps(error_chunk, ensure_ascii=False)}\n\n"
-            yield "data: [DONE]\n\n"
-
-    return StreamingResponse(
-        event_generator(), 
-        media_type="text/event-stream",
-        headers={
-            "Cache-Control": "no-cache",
-            "Connection": "keep-alive",
-            "X-Accel-Buffering": "no"
-        }
-    )
-
-
-@router.post("/chat/reedit/stream")
-async def companion_chat_reedit_stream(request: ReeditStreamRequest):
-    """改写一条用户消息并重新生成回复。
-
-    改写会作废该消息之后的整段对话，所以后端先删掉那些消息再生成，
-    前端收到 done 后重新拉取整个分支即可，不需要自己推算删了多少条。
-    """
-    companion_data = get_companion(request.companion_id)
-    if not companion_data:
-        raise HTTPException(status_code=404, detail="Companion not found")
-
-    async def event_generator():
-        try:
-            companion = Companion(request.companion_id)
-            async for chunk in companion.generate_reedit_stream(
-                message_id=request.message_id,
-                new_content=request.content,
-                branch_id=request.branch_id,
-                llm_config=request.llm_config,
-                enable_thinking=request.enable_thinking,
-                temperature=request.temperature,
-                top_p=request.top_p,
-            ):
-                _record_usage_chunk(chunk, request.companion_id, request.branch_id)
-                yield f"data: {json.dumps(chunk, ensure_ascii=False)}\n\n"
-            yield "data: [DONE]\n\n"
-        except Exception as e:
-            logger.error(f"Reedit stream error: {e}", exc_info=True)
-            error_chunk = {"type": "error", "message": str(e)}
-            yield f"data: {json.dumps(error_chunk, ensure_ascii=False)}\n\n"
-            yield "data: [DONE]\n\n"
-
-    return StreamingResponse(
-        event_generator(),
-        media_type="text/event-stream",
-        headers={
-            "Cache-Control": "no-cache",
-            "Connection": "keep-alive",
-            "X-Accel-Buffering": "no"
-        }
     )
 
 

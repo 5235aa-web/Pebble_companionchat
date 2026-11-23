@@ -182,8 +182,11 @@
 .lb-dot{width:6px;height:6px;border-radius:50%;background:var(--ink-4);flex:none;}
 .lb-dot.on{background:var(--accent);box-shadow:0 0 0 3px rgb(var(--accent-rgb) / .14);}
 .lb-state{font-family:var(--mono);font-size:9px;letter-spacing:.1em;text-transform:uppercase;color:var(--ink-3);}
-/* Says which weight is loaded when it differs from the selected one. */
-.lb-note{font-family:var(--mono);font-size:9px;letter-spacing:.04em;color:var(--ink-4);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:170px;}
+/* Says which weight is loaded when it differs from the selected one.
+   overflow:hidden sits on the inner .lb-note so the wrapper's [data-tip]::after
+   bubble is never clipped. */
+.lb-note-wrap{display:inline-flex;min-width:0;max-width:170px;}
+.lb-note{display:block;max-width:100%;font-family:var(--mono);font-size:9px;letter-spacing:.04em;color:var(--ink-4);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
 .lb-btn{
   margin-left:auto;font-family:var(--mono);font-size:9px;letter-spacing:.08em;
   text-transform:uppercase;color:var(--ink-3);padding:3px 7px;border-radius:3px;
@@ -288,3 +291,28 @@
 .path-dlg-name{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
 .path-dlg-size{flex:none;font-family:var(--mono);font-size:9.5px;color:var(--ink-4);}
 .path-dlg-empty{padding:24px;text-align:center;font-size:11.5px;color:var(--ink-4);}
+
+/* ---- backstage tooltips ----
+   The shared [data-tip] bubble in 07-tooltip.css is single-line and centred,
+   which clips against .d-body's edges on left-column labels (e.g. Voice /
+   Picture options) and right-edge buttons in the desk. Wrap all desk tips and
+   anchor them inward. */
+.desk [data-tip]::after{
+  left:0;right:auto;
+  transform:translateY(4px);
+  white-space:normal;
+  width:max-content;
+  max-width:min(320px,calc(100vw - 110px));
+  line-height:1.75;
+  letter-spacing:.03em;
+  text-align:left;
+  padding:8px 11px;
+}
+.desk [data-tip]:hover::after{transform:translateY(0);}
+.desk .local-bar [data-tip]::after{
+  top:calc(100% + 10px);bottom:auto;
+  transform:translateY(-4px);
+  max-width:min(280px,calc(100vw - 90px));
+}
+.desk .local-bar [data-tip]:hover::after{transform:translateY(0);}
+.desk .local-bar .lb-btn[data-tip]::after{left:auto;right:0;}

@@ -1,11 +1,3 @@
-"""
-memory_db.py - 角色记忆的持久化层
-
-记忆由对话自动提取，按 (companion_id, branch_id) 隔离：角色之间互不可见，
-分支之间也互不可见——分支是平行世界，A 分支里发生的事在 B 分支不成立。
-
-容量按角色+分支封顶，超出时按"最不重要、最少被用到、最久没被用到"淘汰。
-"""
 import json
 import logging
 import re

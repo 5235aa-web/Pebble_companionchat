@@ -1,8 +1,3 @@
-"""
-world_book_engine.py - 世界书引擎
-实现关键词匹配和条目激活逻辑
-参考 WorldInfoBuffer 和 checkWorldInfo 的设计
-"""
 import re
 import random
 import logging

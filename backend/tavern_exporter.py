@@ -1,8 +1,3 @@
-"""
-tavern_exporter.py - 角色卡导出器
-支持导出为 JSON 文件和 PNG 元数据格式
-基于通用角色卡格式规范（V2/V3）
-"""
 import json
 import base64
 import struct

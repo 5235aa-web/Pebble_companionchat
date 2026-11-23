@@ -1144,8 +1144,8 @@ function commitModel() {
           <div v-if="llm.isLocal" class="local-bar">
             <span class="lb-dot" :class="{ on: llm.localRunning }"></span>
             <span class="lb-state">{{ llm.localRunning ? t('backstage.localRunning') : t('backstage.localStopped') }}</span>
-            <span v-if="localLoadedOther" class="lb-note" :data-tip="t('backstage.localLoadedHint')">
-              {{ t('backstage.localLoaded', { model: llm.localModelKey }) }}
+            <span v-if="localLoadedOther" class="lb-note-wrap" :data-tip="t('backstage.localLoadedHint')">
+              <span class="lb-note">{{ t('backstage.localLoaded', { model: llm.localModelKey }) }}</span>
             </span>
             <button
               class="lb-btn"

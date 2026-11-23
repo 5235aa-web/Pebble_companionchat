@@ -413,24 +413,6 @@ html[data-theme="day"] .album-lightbox{background:rgb(20 18 16 / .78);}
 }
 .pic-area:focus{outline:none;border-color:rgb(var(--accent-rgb) / .5);}
 
-/* ---- provider parameter tooltips ----
-   The shared [data-tip] bubble in 07-tooltip.css is single-line and centred,
-   which suits a two-word label on an icon but not a sentence. Here it wraps,
-   aligns to the field's left edge, and is capped so it cannot run past the
-   panel. Only the picture fields carry this class, so nothing else moves. */
-.pic-params [data-tip]::after{
-  left:0;right:auto;
-  transform:translateY(4px);
-  white-space:normal;
-  width:max-content;
-  max-width:320px;
-  line-height:1.75;
-  letter-spacing:.03em;
-  text-align:left;
-  padding:8px 11px;
-}
-.pic-params [data-tip]:hover::after{transform:translateY(0);}
-
 /* ---- comfyui card ----
    ComfyUI is a desktop program the user starts separately, so its state gets a
    visible strip instead of an error at generation time: dot, word, version,

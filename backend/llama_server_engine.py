@@ -1,24 +1,3 @@
-# -*- coding: utf-8 -*-
-r'''
-LlamaServer 引擎 —— llama.cpp 的 llama-server 常驻子进程（Vulkan GPU）
-
-- 模型：由 MODEL_REGISTRY 决定，一块卡同一时刻只驻留一份权重
-  （Gemma 4 12B Heretic / Gemma 4 12B QAT Uncensored / Rocinante X 12B v1），
-  权重都在 E:\dearpebble\models 下
-- 运行时：llama.cpp b11748 的 llama-server.exe（OpenAI 兼容 HTTP，Vulkan 后端）
-- 架构：Gemma 4 混合注意力（40 层滑动窗口 1024 + 8 层全局，全局层 1 个 KV head），
-  128K 上下文的 KV 只有约 1.34GB，比同尺寸常规模型小一个量级
-- 显存预算：权重 8.55GB（含 tied embedding）+ KV 0.67GB（q8_0，128K）+ compute ~0.5GB ≈ 9.7GB
-- 设备：显式 --device 锁独显（本机 Vulkan 同时枚举 RX 9070 GRE 与 CPU 核显，不指定可能跑错）
-- 量化实测（b11748 / Vulkan / tg128）：全 GPU 40.0 tok/s；token_embd=CPU 21.5 tok/s
-  （该 GGUF 无独立 output.weight，属 tied embedding，把 token_embd 放 CPU 会连带 lm_head 一起下 CPU）
-- 生命周期：懒启动 -> 常驻 -> atexit 清理；端口复用防孤儿进程；崩溃后由调用方决定是否重启
-- 卸载：llama-server 单模型模式没有 unload API（/models/unload 只在 router 多模型模式有效），
-  因此 release() 等价于 stop()，会释放全部显存，下次 start() 需要重新加载（实测 10-20 秒）
-
-与 omnivoice_engine 的区别：那边靠 audio.cpp 的 /v1/tasks/unload_all_models 能在保留进程的前提下
-卸载模型；llama.cpp 没有等价端点，所以这里把「卸载」明确定义为停进程，语义上不骗调用方。
-'''
 import atexit
 import json
 import logging

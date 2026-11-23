@@ -26,6 +26,7 @@ import { useSessionStore } from './stores/session'
 import { useChatStore } from './stores/chat'
 import { useLlmStore } from './stores/llm'
 import { usePictureStore } from './stores/pictures'
+import { useScriptStore } from './stores/script'
 import { onSocketReady } from './api/client'
 
 const ui = useUiStore()
@@ -33,6 +34,7 @@ const session = useSessionStore()
 const chat = useChatStore()
 const llm = useLlmStore()
 const pictures = usePictureStore()
+const script = useScriptStore()
 
 const glowX = ref(-400)
 const glowY = ref(-400)
@@ -120,7 +122,10 @@ watch(
   (busy) => {
     if (busy) return
     const cfg = pictures.config
-    if (!cfg?.enabled || !cfg?.autoChat) return
+    const inScript = Boolean(
+      script.playing && script.session?.branch_id === session.activeBranch,
+    )
+    if (!cfg?.enabled || !(inScript ? cfg?.autoScript : cfg?.autoChat)) return
     void pictures.refresh()
     pictures.kick(90000)
   },

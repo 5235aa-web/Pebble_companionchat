@@ -1,5 +1,6 @@
 import { defineStore } from 'pinia'
 import { computed, ref } from 'vue'
+import { usePictureStore } from './pictures'
 import {
   advanceSession,
   compactScene,
@@ -162,10 +163,19 @@ export const useScriptStore = defineStore('script', () => {
     return r
   }
 
+  function kickAutoPicture() {
+    const pictures = usePictureStore()
+    const cfg = pictures.config
+    if (!cfg?.enabled || !cfg?.autoScript) return
+    void pictures.refresh()
+    pictures.kick(90000)
+  }
+
   async function advance() {
     if (!session.value) return null
     const r = await advanceSession(session.value.id)
     play.value = r
+    kickAutoPicture()
     return r
   }
 
@@ -185,8 +195,13 @@ export const useScriptStore = defineStore('script', () => {
 
   async function setHud(next: Record<string, unknown>) {
     if (!session.value) return
+    const before = play.value?.session?.hud ?? {}
     const r = await updateHud(session.value.id, next)
     if (play.value?.session) play.value.session.hud = r.hud
+    const pictureKeys = ['outfit', 'location', 'mood'] as const
+    if (pictureKeys.some((k) => String(before[k] ?? '') !== String(r.hud?.[k] ?? ''))) {
+      kickAutoPicture()
+    }
   }
 
   /** Merge the state block the backend attaches to a scripted reply. */

@@ -1,9 +1,3 @@
-"""
-tavern_importer.py - 角色卡导入器。
-支持 JSON 文件和 PNG 元数据两种格式。
-基于 character-card-parser 规范的 Python 实现。
-完全独立，不依赖现有系统任何模块。
-"""
 import json
 import base64
 import shutil

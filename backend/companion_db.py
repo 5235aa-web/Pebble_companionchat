@@ -1,8 +1,3 @@
-"""
-companion_db.py - 多AI伴侣独立数据库层。
-使用独立SQLite文件 companions.db，与现有 pebble.db 完全隔离。
-用户设置使用现有的 conversations.db user_profiles 表。
-"""
 import sqlite3
 import json
 import logging

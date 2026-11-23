@@ -1,7 +1,3 @@
-"""
-world_book_db.py - 世界书数据库层
-参考 World Info 机制实现
-"""
 import sqlite3
 import json
 import logging
