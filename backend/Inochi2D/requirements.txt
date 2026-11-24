@@ -1,0 +1,50 @@
+# Optional dependencies for local Live2D / 2D Puppet layer decomposition (See-through).
+# Keep these inside an isolated virtual environment (recommended: backend/Inochi2D/.venv)
+# so the core app stays lightweight and users without a GPU do not need PyTorch.
+#
+# Quick setup (from repository root):
+#   1) Create & activate an isolated venv (Python 3.11 / 3.12 recommended):
+#        Windows:   python -m venv backend\Inochi2D\.venv && backend\Inochi2D\.venv\Scripts\activate
+#        macOS/Linux: python3 -m venv backend/Inochi2D/.venv && source backend/Inochi2D/.venv/bin/activate
+#
+#   2) Install PyTorch first for YOUR hardware (do NOT install CPU-only torch unless testing):
+#      - NVIDIA GPU (CUDA 12.x):
+#          pip install torch torchvision --index-url https://download.pytorch.org/whl/cu126
+#      - AMD GPU on Linux (ROCm):
+#          pip install torch torchvision --index-url https://download.pytorch.org/whl/rocm6.3
+#      - AMD GPU on Windows (ROCm / RDNA): install AMD's matching Windows ROCm PyTorch wheels per driver release
+#      - Apple Silicon (macOS MPS) / CPU fallback:
+#          pip install torch torchvision
+#
+#   3) Install the headless inference & post-processing stack:
+#        pip install -r backend/Inochi2D/requirements.txt
+#
+#   4) Download the two HuggingFace model directories into your configured modelsRoot:
+#      - seethroughv0.0.2_layerdiff3d   (https://huggingface.co/layerdifforg/seethroughv0.0.2_layerdiff3d)
+#      - seethroughv0.0.1_marigol       (or seethroughv0.0.1_marigold)
+
+# --- Diffusion & Vision Core ---
+diffusers>=0.32.0,<0.38.0
+transformers>=4.46.0
+accelerate>=1.0.0
+huggingface-hub>=0.26.0
+safetensors>=0.4.5
+timm>=1.0.15
+einops>=0.8.0
+kornia>=0.7.3
+omegaconf>=2.3.0
+
+# --- Image, PSD & Post-Processing ---
+numpy>=1.26.0
+opencv-python>=4.9.0
+pillow>=10.4.0
+scipy>=1.13.0
+scikit-image>=0.24.0
+scikit-learn>=1.5.0
+psd-tools[composite]>=1.10.0
+pycocotools>=2.0.7
+matplotlib>=3.8.0
+pyyaml>=6.0
+requests>=2.31.0
+tqdm>=4.66.0
+packaging>=24.0

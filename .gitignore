@@ -100,6 +100,16 @@ backend/audio-cpp/server*.json
 backend/audio-cpp/voice/
 
 # ----------------------------------------------------------------
+# Inochi2D / See-through local runtime, personal test assets & outputs
+# ----------------------------------------------------------------
+backend/Inochi2D/.venv/
+backend/Inochi2D/juanhui/
+backend/Inochi2D/test_output/
+backend/Inochi2D/*.png
+backend/Inochi2D/*.psd
+backend/Inochi2D/*.psd.json
+
+# ----------------------------------------------------------------
 # Local logs, scratch and generated artefacts
 # ----------------------------------------------------------------
 *.log

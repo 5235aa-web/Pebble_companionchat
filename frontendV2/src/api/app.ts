@@ -8,6 +8,8 @@ export interface AppConfig {
   /** Where the llama.cpp runtime was found. Not bundled: ~99 MB of backends. */
   llamaRoot: string
   llamaFound: boolean
+  configuredInochiPython?: string
+  inochiPython?: string
   audioCppDir?: string
   audioCppFound?: boolean
   dataRoot: string
@@ -32,7 +34,8 @@ export const getAppConfig = (): Promise<AppConfig> => get<AppConfig>('/app/confi
 export const setAppConfig = (payload: {
   modelsRoot?: string
   llamaRoot?: string
-}): Promise<{ status: string; modelsRoot: string; llamaRoot: string }> =>
+  inochiPythonPath?: string
+}): Promise<{ status: string; modelsRoot: string; llamaRoot: string; inochiPythonPath?: string }> =>
   post('/app/config', payload)
 
 export const setModelsRoot = (modelsRoot: string): Promise<{ status: string; modelsRoot: string }> =>

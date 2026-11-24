@@ -7,6 +7,8 @@
  * click, and starting at zero each time would cut the previous one off.
  */
 
+import { setSpeechLevel } from './speechMonitor'
+
 /** Lead-in before the first buffer, so a slow chunk cannot underrun. */
 const LEAD_S = 0.08
 
@@ -26,6 +28,7 @@ export class PcmPlayer {
   private ducked = false
   /** Leftover trailing byte when a transport chunk ends mid-sample (odd byte count). */
   private carryByte: number | null = null
+  private levelRaf = 0
 
   constructor(sampleRate: number) {
     this.rate = sampleRate
@@ -109,6 +112,9 @@ export class PcmPlayer {
     src.connect(this.gain)
     src.onended = () => {
       this.sources.delete(src)
+      if (this.sources.size === 0) {
+        this.stopSpeechPump()
+      }
       try {
         src.disconnect()
       } catch {
@@ -116,10 +122,33 @@ export class PcmPlayer {
       }
     }
     this.sources.add(src)
+    this.startSpeechPump()
     // Never schedule in the past: that drops the head of the buffer.
     const at = Math.max(this.ctx.currentTime + LEAD_S, this.cursor)
     src.start(at)
     this.cursor = at + buffer.duration
+  }
+
+  private startSpeechPump(): void {
+    if (this.levelRaf || this.closed) return
+    const tick = (): void => {
+      if (this.closed || this.sources.size === 0) {
+        this.levelRaf = 0
+        setSpeechLevel(0)
+        return
+      }
+      setSpeechLevel(this.getLevel())
+      this.levelRaf = window.requestAnimationFrame(tick)
+    }
+    this.levelRaf = window.requestAnimationFrame(tick)
+  }
+
+  private stopSpeechPump(): void {
+    if (this.levelRaf) {
+      window.cancelAnimationFrame(this.levelRaf)
+      this.levelRaf = 0
+    }
+    setSpeechLevel(0)
   }
 
   /** Current output level, 0..1, for the panel's waveform. */
@@ -142,6 +171,7 @@ export class PcmPlayer {
     if (this.closed) return
     this.closed = true
     this.carryByte = null
+    this.stopSpeechPump()
     for (const src of this.sources) {
       try {
         src.onended = null
@@ -172,6 +202,7 @@ export class PcmPlayer {
     if (this.closed) return
     this.closed = true
     this.carryByte = null
+    this.stopSpeechPump()
     try {
       await this.ctx.close()
     } catch {

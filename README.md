@@ -52,9 +52,12 @@ Whether running local GGUF weights, calling cloud LLM APIs, holding live voice c
 - **Up to 3 Companions per Room**: Characters appear as fanned portrait cards behind a semi-transparent reading column.
 - **Stage Direction & Pacing**: Mention specific speakers with `@`, click any card to cue their next line, enable multi-turn **Relay** rounds for autonomous back-and-forth, or manage room members with `/invite` and `/remove`.
 - **Per-Room Context**: Configure a shared room scene, room-specific user persona notes, and isolated room memories and summaries.
+- **Narration Mode (Give the conversation a break)**: One-click activation switch supporting all chat modes. In a voice-over manner, describe the behaviors and states (actions, space, psychology) of the user and character to guide the dialogue direction—affecting only the next reply without continuously contaminating surrounding context.
 
-### 3. Narration mode
-- **Give the conversation a break**: One-click activation switch, supports all types of chats. In a voice-over manner, describe the behaviors, states (such as the user's actions, the character's actions, the space, and the psychology) of the user and the character, Guide the direction of the character's dialogue, and enable the user to control the process of the chat-playing.It only affects the content of the next reply and will not continuously contaminate the surrounding context.
+### 3. Live2D
+This is an **optional** module (`backend/Inochi2D` + WebGL2 stage) and **does not affect normal usage** when skipped—core text chat, voice calls, picture generation, and built-in `2.5D Motion` work normally with zero PyTorch or GPU dependencies. When enabled, you can locally decompose a single character portrait or same-pose expression pack via `See-through` (`LayerDiff3D` + `Marigold`) across NVIDIA CUDA, AMD ROCm, Apple Silicon MPS, or CPU, with automatic blink-layer synthesis, collar/neck occlusion cleanup, and bilingual expression mapping.
+
+Once built, the puppet renders purely client-side in WebGL2 with breathing and body sway, spring hair/accessory physics, soft global gaze tracking, real-time TTS audio lip-sync, cheek blush shaders, and interactive pointer gestures (head pat, cheek poke/pet, and startled chest-tap recoil). Both CHARX cards and standard PNG/JSON cards can attach expression packs or add same-pose outfits incrementally through **Character Editor → Media assets** and **Live2D → Build**.
 
 ### 4. Character Cards 
 - **SillyTavern Ecosystem**: Import and export **PNG / JSON** character cards, with a built-in editor covering identity, dialogue fields (first message, conversation examples, advanced prompt), bound TTS voice clip/ID, system instructions, and raw JSON.
@@ -146,13 +149,33 @@ companionchat/
 ### 1. Install Dependencies
 
 ```bash
-# Backend dependencies
+# Core backend dependencies
 pip install -r requirements.txt
 
 # Frontend dependencies
 cd frontendV2
 npm install
 ```
+
+#### Optional: Live2D Local Decomposition Dependencies
+
+> Skip this step if you do not plan to use local Live2D portrait decomposition; the rest of the application does not require PyTorch.
+
+```bash
+# 1) Create an isolated virtual environment (recommended: backend/Inochi2D/.venv)
+# Windows:
+python -m venv backend\Inochi2D\.venv && backend\Inochi2D\.venv\Scripts\activate
+# macOS / Linux:
+python3 -m venv backend/Inochi2D/.venv && source backend/Inochi2D/.venv/bin/activate
+
+# 2) Install PyTorch for your hardware (see backend/Inochi2D/requirements.txt for CUDA/ROCm/MPS/CPU examples)
+pip install torch torchvision --index-url https://download.pytorch.org/whl/cu126
+
+# 3) Install headless Live2D inference & post-processing dependencies
+pip install -r backend/Inochi2D/requirements.txt
+```
+
+Download the two `See-through` model folders (`seethroughv0.0.2_layerdiff3d` and `seethroughv0.0.1_marigold`) into your `Models root` directory. You can also point **Backstage → Paths → `Live2D Python`** to any existing `venv` or `conda` environment (or `~/.pebblecompanion/inochi2d-venv` in packaged desktop builds).
 
 ### 2. Run in Development
 

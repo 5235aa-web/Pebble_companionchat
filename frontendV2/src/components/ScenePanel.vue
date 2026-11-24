@@ -9,8 +9,10 @@ import { usePictureStore } from '@/stores/pictures'
 import { useCardAudioStore } from '@/stores/cardAudio'
 import { useCardHudStore } from '@/stores/cardHud'
 import { useScriptStore } from '@/stores/script'
+import { useInochi2dStore } from '@/stores/inochi2d'
 import CardHudPanel from './CardHudPanel.vue'
 import SceneMotionCanvas from './SceneMotionCanvas.vue'
+import PuppetStage from './PuppetStage.vue'
 import { useI18n } from '@/i18n'
 
 const ui = useUiStore()
@@ -20,6 +22,7 @@ const pictures = usePictureStore()
 const cardAudio = useCardAudioStore()
 const cardHud = useCardHudStore()
 const script = useScriptStore()
+const inochi = useInochi2dStore()
 const { t } = useI18n()
 
 const inScene = computed(
@@ -287,6 +290,8 @@ function onPointerUp(event: PointerEvent) {
 }
 
 function onPhotoClick() {
+  // Clicking the live2d canvas interacts with the puppet instead of opening the profile panel.
+  if (inochi.activeMode === 'live2d') return
   // A drag ends with a click on the stage; that one must not open anything.
   if (suppressClick.value) return
   ui.openPanel('profile')
@@ -348,76 +353,79 @@ onMounted(() => {
       @pointercancel="onPointerUp"
       @pointerleave="onPointerUp"
     >
-      <div v-if="!shownUrl" class="scene-glow"></div>
-      <Transition name="scene-backdrop-swap">
-        <img
-          v-if="shownUrl"
-          :key="shownKey + '-bg'"
+      <PuppetStage v-if="inochi.activeMode === 'live2d'" :active-slide-url="slide?.url" />
+      <template v-else>
+        <div v-if="!shownUrl" class="scene-glow"></div>
+        <Transition name="scene-backdrop-swap">
+          <img
+            v-if="shownUrl"
+            :key="shownKey + '-bg'"
+            :src="shownUrl"
+            alt=""
+            aria-hidden="true"
+            class="scene-backdrop"
+          />
+        </Transition>
+        <Transition name="scene-swap">
+          <img
+            v-if="shownUrl"
+            :key="shownKey"
+            :src="shownUrl"
+            :alt="slideAlt"
+            class="scene-main"
+            :class="{ 'scene-gen': shownKind === 'picture' }"
+          />
+        </Transition>
+        <SceneMotionCanvas
+          v-if="motionActive"
           :src="shownUrl"
-          alt=""
-          aria-hidden="true"
-          class="scene-backdrop"
+          :pointer-x="scenePointerX"
+          :pointer-y="scenePointerY"
+          :hovering="sceneHovering"
+          :dragging="dragging"
+          :intensity="motionIntensity"
+          @ready="motionReady = $event"
         />
-      </Transition>
-      <Transition name="scene-swap">
-        <img
-          v-if="shownUrl"
-          :key="shownKey"
-          :src="shownUrl"
-          :alt="slideAlt"
-          class="scene-main"
-          :class="{ 'scene-gen': shownKind === 'picture' }"
-        />
-      </Transition>
-      <SceneMotionCanvas
-        v-if="motionActive"
-        :src="shownUrl"
-        :pointer-x="scenePointerX"
-        :pointer-y="scenePointerY"
-        :hovering="sceneHovering"
-        :dragging="dragging"
-        :intensity="motionIntensity"
-        @ready="motionReady = $event"
-      />
-      <div v-if="!shownUrl" class="scene-glyph">{{ who?.letter }}</div>
+        <div v-if="!shownUrl" class="scene-glyph">{{ who?.letter }}</div>
 
-      <button
-        v-if="canSlide"
-        class="scene-nav prev"
-        :aria-label="t('picture.prev')"
-        @pointerdown.stop
-        @click.stop="goSlide(-1)"
-      >
-        <svg viewBox="0 0 24 24"><path d="M15 5l-7 7 7 7" /></svg>
-      </button>
-      <button
-        v-if="canSlide"
-        class="scene-nav next"
-        :aria-label="t('picture.next')"
-        @pointerdown.stop
-        @click.stop="goSlide(1)"
-      >
-        <svg viewBox="0 0 24 24"><path d="M9 5l7 7-7 7" /></svg>
-      </button>
-
-      <div v-if="pictures.generating" class="scene-busy">
-        <span class="scene-busy-dot"></span>
-        <span>{{ t('picture.generating') }}</span>
-        <span v-if="busyPercent !== null" class="scene-busy-bar">
-          <i :style="{ width: busyPercent + '%' }"></i>
-        </span>
         <button
-          class="scene-cancel"
-          type="button"
-          :data-tip="t('picture.cancelTip')"
-          @click.stop="cancelGeneration"
+          v-if="canSlide"
+          class="scene-nav prev"
+          :aria-label="t('picture.prev')"
+          @pointerdown.stop
+          @click.stop="goSlide(-1)"
         >
-          {{ t('picture.cancel') }}
+          <svg viewBox="0 0 24 24"><path d="M15 5l-7 7 7 7" /></svg>
         </button>
-      </div>
-      <div v-else-if="slides.length" class="scene-count">
-        {{ slideIndex + 1 }} / {{ slides.length }}
-      </div>
+        <button
+          v-if="canSlide"
+          class="scene-nav next"
+          :aria-label="t('picture.next')"
+          @pointerdown.stop
+          @click.stop="goSlide(1)"
+        >
+          <svg viewBox="0 0 24 24"><path d="M9 5l7 7-7 7" /></svg>
+        </button>
+
+        <div v-if="pictures.generating" class="scene-busy">
+          <span class="scene-busy-dot"></span>
+          <span>{{ t('picture.generating') }}</span>
+          <span v-if="busyPercent !== null" class="scene-busy-bar">
+            <i :style="{ width: busyPercent + '%' }"></i>
+          </span>
+          <button
+            class="scene-cancel"
+            type="button"
+            :data-tip="t('picture.cancelTip')"
+            @click.stop="cancelGeneration"
+          >
+            {{ t('picture.cancel') }}
+          </button>
+        </div>
+        <div v-else-if="slides.length" class="scene-count">
+          {{ slideIndex + 1 }} / {{ slides.length }}
+        </div>
+      </template>
     </div>
 
     <div v-if="who" class="scene-info">
@@ -426,46 +434,77 @@ onMounted(() => {
       <p class="sc-desc">{{ who?.desc }}</p>
 
       <div class="scene-tools">
+        <div class="scene-mode-switch" role="group" aria-label="Stage mode">
+          <button
+            class="scene-mode-btn"
+            :class="{ on: inochi.activeMode === 'scene' }"
+            type="button"
+            @click="inochi.setMode('scene')"
+          >
+            {{ t('live2d.modeScene') }}
+          </button>
+          <button
+            class="scene-mode-btn"
+            :class="{ on: inochi.activeMode === 'live2d' }"
+            type="button"
+            @click="inochi.setMode('live2d')"
+          >
+            {{ t('live2d.modeLive2d') }}
+          </button>
+        </div>
+
         <button
-          class="sc-gen"
-          :class="{ busy: pictures.generating }"
-          :disabled="pictures.generating"
-          @click="generateNow"
-        >
-          <svg viewBox="0 0 24 24" stroke-linecap="round" stroke-linejoin="round">
-            <path d="M4 8h3l1.5-2h7L17 8h3v11H4z" />
-            <circle cx="12" cy="13.2" r="3.2" />
-          </svg>
-          <span>{{ pictures.generating ? t('picture.generating') : t('picture.generate') }}</span>
-        </button>
-        <button class="sc-open" :aria-label="t('picture.openAlbum')" @click="ui.openPanel('gallery')">
-          <svg viewBox="0 0 24 24" stroke-linecap="round" stroke-linejoin="round">
-            <rect x="3.5" y="5" width="17" height="14" rx="1.5" />
-            <path d="M3.5 15l4.5-4 4 3.5 3-2.5 5.5 4.5" />
-            <circle cx="9" cy="9.5" r="1.3" />
-          </svg>
-          <span>{{ pictures.doneItems.length }}</span>
-        </button>
-        <button
-          class="sc-open sc-motion-toggle"
-          :class="{ active: ui.sceneMotion }"
+          v-if="inochi.activeMode === 'live2d'"
+          class="sc-open sc-live2d-edit"
+          :class="{ active: inochi.editorOpen }"
           type="button"
-          :aria-pressed="ui.sceneMotion"
-          :title="t('scene.motionTip')"
-          @click="ui.toggleSceneMotion()"
+          @click="inochi.toggleEditor()"
         >
-          <span class="sc-motion-dot" aria-hidden="true"></span>
-          <span>{{ t('scene.motion') }}</span>
+          <span>{{ t('live2d.editParams') }}</span>
         </button>
-        <button
-          v-if="ui.sceneMotion"
-          class="sc-open sc-motion-level"
-          type="button"
-          :title="t('scene.motionLevelTip')"
-          @click="ui.toggleSceneMotionLevel()"
-        >
-          <span>{{ ui.sceneMotionLevel === 'vivid' ? t('scene.motionVivid') : t('scene.motionSubtle') }}</span>
-        </button>
+
+        <template v-if="inochi.activeMode === 'scene'">
+          <button
+            class="sc-gen"
+            :class="{ busy: pictures.generating }"
+            :disabled="pictures.generating"
+            @click="generateNow"
+          >
+            <svg viewBox="0 0 24 24" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M4 8h3l1.5-2h7L17 8h3v11H4z" />
+              <circle cx="12" cy="13.2" r="3.2" />
+            </svg>
+            <span>{{ pictures.generating ? t('picture.generating') : t('picture.generate') }}</span>
+          </button>
+          <button class="sc-open" :aria-label="t('picture.openAlbum')" @click="ui.openPanel('gallery')">
+            <svg viewBox="0 0 24 24" stroke-linecap="round" stroke-linejoin="round">
+              <rect x="3.5" y="5" width="17" height="14" rx="1.5" />
+              <path d="M3.5 15l4.5-4 4 3.5 3-2.5 5.5 4.5" />
+              <circle cx="9" cy="9.5" r="1.3" />
+            </svg>
+            <span>{{ pictures.doneItems.length }}</span>
+          </button>
+          <button
+            class="sc-open sc-motion-toggle"
+            :class="{ active: ui.sceneMotion }"
+            type="button"
+            :aria-pressed="ui.sceneMotion"
+            :title="t('scene.motionTip')"
+            @click="ui.toggleSceneMotion()"
+          >
+            <span class="sc-motion-dot" aria-hidden="true"></span>
+            <span>{{ t('scene.motion') }}</span>
+          </button>
+          <button
+            v-if="ui.sceneMotion"
+            class="sc-open sc-motion-level"
+            type="button"
+            :title="t('scene.motionLevelTip')"
+            @click="ui.toggleSceneMotionLevel()"
+          >
+            <span>{{ ui.sceneMotionLevel === 'vivid' ? t('scene.motionVivid') : t('scene.motionSubtle') }}</span>
+          </button>
+        </template>
       </div>
 
       <div v-if="cardAudio.bgmPlaying" class="scene-tools">

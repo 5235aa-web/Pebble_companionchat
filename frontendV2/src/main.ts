@@ -26,5 +26,6 @@ import './styles/19-scene-copy.css'
 import './styles/20-picture-studio.css'
 import './styles/21-group.css'
 import './styles/22-rich-message.css'
+import './styles/23-inochi2d.css'
 
 createApp(App).use(createPinia()).mount('#app')

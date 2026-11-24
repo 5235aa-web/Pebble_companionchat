@@ -259,6 +259,23 @@ def audio_cpp_dir() -> Path:
     return Path(__file__).resolve().parent / "audio-cpp"
 
 
+def inochi2d_dir() -> Path:
+    """Locate the external Inochi2D/See-through worker scripts and runtime sources.
+
+    Precedence:
+    1. ``<DATA_ROOT>/Inochi2D`` (user override for standalone/custom scripts)
+    2. ``<_MEIPASS>/Inochi2D`` (bundled scripts + headless see-through in frozen builds)
+    3. ``backend/Inochi2D`` in the source tree
+    """
+    custom = DATA_ROOT / "Inochi2D"
+    if (custom / "run_decompose.py").is_file() and (custom / "see-through").is_dir():
+        return custom
+    bundled = Path(bundle_root()) / "Inochi2D"
+    if (bundled / "run_decompose.py").is_file():
+        return bundled
+    return Path(__file__).resolve().parent / "Inochi2D"
+
+
 def llama_server_exe_name() -> str:
     """Platform executable filename for llama-server."""
     return "llama-server.exe" if os.name == "nt" else "llama-server"

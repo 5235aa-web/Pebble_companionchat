@@ -235,8 +235,16 @@ export const useUiStore = defineStore('ui', () => {
     transitionTo(theme.value, a, origin)
   }
 
+  /** Non-empty when another component asks BackstagePanel to focus a specific tab. */
+  const backstageTabRequest = ref('')
+
   function openPanel(id: Exclude<PanelId, null>) {
     panel.value = panel.value === id ? null : id
+  }
+
+  function openBackstageTab(tab: string) {
+    backstageTabRequest.value = tab
+    panel.value = 'backstage'
   }
 
   /**
@@ -350,6 +358,8 @@ export const useUiStore = defineStore('ui', () => {
     applyFont,
     cycleFont,
     openPanel,
+    backstageTabRequest,
+    openBackstageTab,
     closePanel,
     closeAll,
     isOpen,

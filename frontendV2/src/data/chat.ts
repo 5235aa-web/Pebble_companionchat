@@ -102,7 +102,7 @@ export interface CastMember {
 
 /** True when this cast member was imported from a CHARX package. */
 export function isCharxCard(c: Pick<CastMember, 'cardFormat' | 'assetCount'>): boolean {
-  return c.cardFormat === 'charx' || (!c.cardFormat && (c.assetCount ?? 0) > 0)
+  return c.cardFormat === 'charx'
 }
 
 export interface Branch {

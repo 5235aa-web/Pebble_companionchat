@@ -40,11 +40,27 @@ _AUDIO_DATAS = [
     (_AUDIO + '/LICENSE', 'audio-cpp'),
 ]
 
+# External worker scripts & headless See-through inference sources for optional
+# Live2D decomposition (~1.2 MB). PyTorch itself stays outside the bundle in the
+# user's isolated venv (configured via ~/.pebblecompanion/inochi2d-venv or UI).
+_INOCHI_DATAS = [
+    ('backend/Inochi2D/run_decompose.py', 'Inochi2D'),
+    ('backend/Inochi2D/puppet_builder.py', 'Inochi2D'),
+    ('backend/Inochi2D/expression_extractor.py', 'Inochi2D'),
+    ('backend/Inochi2D/requirements.txt', 'Inochi2D'),
+]
+if os.path.isdir('backend/Inochi2D/see-through'):
+    _INOCHI_DATAS += [
+        ('backend/Inochi2D/see-through/LICENSE', 'Inochi2D/see-through'),
+        ('backend/Inochi2D/see-through/common', 'Inochi2D/see-through/common'),
+        ('backend/Inochi2D/see-through/inference/scripts', 'Inochi2D/see-through/inference/scripts'),
+    ]
+
 a = Analysis(
     ['run_backend.py'],
     pathex=[],
     binaries=_AUDIO_BINARIES,
-    datas=_AUDIO_DATAS,
+    datas=_AUDIO_DATAS + _INOCHI_DATAS,
     hiddenimports=[
         # uvicorn picks its event loop and protocol backend at runtime, so none
         # of these appear in an import graph.
@@ -120,7 +136,8 @@ def _unwanted(entry: str) -> bool:
         '/tests/' in n
         or n.startswith('tests/')
         or '/__pycache__/' in n
-        or n.endswith(('.pyi', '.pyx', '.pxd'))
+        or 'inochi2d/see-through/common/assets/' in n
+        or n.endswith(('.pyi', '.pyx', '.pxd', '.ipynb'))
     )
 
 

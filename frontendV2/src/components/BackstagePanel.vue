@@ -39,6 +39,7 @@ import {
 } from '@/api/llm'
 import { useI18n } from '@/i18n'
 import { getAppConfig, setAppConfig } from '@/api/app'
+import { getInochiStatus, type InochiEnvStatus } from '@/api/inochi2d'
 import type { SttEngineInfo } from '@/api/stt'
 import PathPickerModal from './PathPickerModal.vue'
 
@@ -484,6 +485,8 @@ const resolvedModelsRoot = ref('')
 const configuredLlamaRoot = ref('')
 const llamaRoot = ref('')
 const llamaFound = ref(false)
+const configuredInochiPython = ref('')
+const inochiEnv = ref<InochiEnvStatus | null>(null)
 const audioCppDir = ref('')
 const audioCppFound = ref(false)
 const modelsRootError = ref('')
@@ -520,14 +523,30 @@ function handlePickerSelect(path: string) {
   pickerCallback = null
 }
 
-async function loadPaths() {
+watch(
+  () => [ui.isOpen('backstage'), ui.backstageTabRequest] as const,
+  ([open, req]) => {
+    if (open && req && ['llm', 'tts', 'asr', 'paths', 'pictures'].includes(req)) {
+      tab.value = req as TabId
+      ui.backstageTabRequest = ''
+      if (req === 'paths') void loadPaths(true)
+    }
+  },
+)
+
+async function loadPaths(refreshInochi = false) {
   try {
-    const cfg = await getAppConfig()
+    const [cfg, iEnv] = await Promise.all([
+      getAppConfig(),
+      getInochiStatus(refreshInochi).catch(() => null),
+    ])
     modelsRoot.value = cfg.modelsRoot || ''
     resolvedModelsRoot.value = cfg.resolvedModelsRoot
     configuredLlamaRoot.value = cfg.configuredLlamaRoot || ''
     llamaRoot.value = cfg.llamaRoot
     llamaFound.value = cfg.llamaFound
+    configuredInochiPython.value = cfg.configuredInochiPython || ''
+    inochiEnv.value = iEnv
     audioCppDir.value = cfg.audioCppDir || ''
     audioCppFound.value = Boolean(cfg.audioCppFound)
   } catch (err) {
@@ -541,8 +560,9 @@ async function applyModelsRoot() {
     await setAppConfig({
       modelsRoot: modelsRoot.value,
       llamaRoot: configuredLlamaRoot.value,
+      inochiPythonPath: configuredInochiPython.value,
     })
-    await loadPaths()
+    await loadPaths(true)
     if (llm.isLocal) void llm.refreshLocal()
     modelsSaved.value = true
     window.setTimeout(() => (modelsSaved.value = false), 2200)
@@ -2580,9 +2600,33 @@ function commitModel() {
             </div>
           </label>
           <div class="path-hint">{{ t('backstage.llamaRootHint') }}</div>
+
+          <label class="num">
+            <span class="num-name">{{ t('backstage.inochiPython') }}</span>
+            <div class="path-pick-wrap">
+              <input
+                class="num-in path"
+                :value="configuredInochiPython"
+                :placeholder="inochiEnv?.pythonPath || 'backend/Inochi2D/.venv'"
+                @input="configuredInochiPython = ($event.target as HTMLInputElement).value"
+              />
+              <button
+                type="button"
+                class="mini-btn"
+                @click="openPathPicker({
+                  title: t('backstage.inochiPython'),
+                  initialPath: configuredInochiPython || inochiEnv?.pythonPath || '',
+                  allowDir: true,
+                  onSelect: (p) => { configuredInochiPython = p },
+                })"
+              >{{ t('backstage.browse') }}</button>
+            </div>
+          </label>
+          <div class="path-hint">{{ t('backstage.inochiPythonHint') }}</div>
         </div>
         <div class="path-row">
           <button class="mini-btn primary" @click="applyModelsRoot">{{ t('backstage.apply') }}</button>
+          <button class="mini-btn" type="button" @click="loadPaths(true)">{{ t('backstage.recheck') }}</button>
           <span v-if="modelsSaved" class="path-ok">{{ t('backstage.modelsSaved') }}</span>
         </div>
         <div v-if="modelsRootError" class="path-err">{{ modelsRootError }}</div>
@@ -2601,6 +2645,37 @@ function commitModel() {
               {{ audioCppFound ? t('backstage.audioCppReady') : t('backstage.audioCppMissing') }} · {{ audioCppDir }}
             </span>
           </label>
+          <label v-if="inochiEnv" class="num">
+            <span class="num-name">{{ t('backstage.inochiRuntimeStatus') }}</span>
+            <span class="path-v" :class="{ warn: !inochiEnv.pythonPath || (inochiEnv.missingDeps?.length ?? 0) > 0 }">
+              <template v-if="inochiEnv.pythonPath && !(inochiEnv.missingDeps?.length)">
+                {{ inochiEnv.runtime?.gpuName || inochiEnv.runtime?.backend?.toUpperCase() || 'OK' }}
+                <template v-if="inochiEnv.runtime?.vramGb"> · {{ inochiEnv.runtime.vramGb }}GB</template>
+                · {{ inochiEnv.runtime?.backend }} / {{ inochiEnv.runtime?.dtype }}
+              </template>
+              <template v-else-if="inochiEnv.pythonPath">
+                {{ t('backstage.inochiDepsMissing') }}: {{ inochiEnv.missingDeps?.join(', ') }}
+              </template>
+              <template v-else>
+                {{ t('backstage.inochiVenvMissing') }}
+              </template>
+            </span>
+          </label>
+          <label v-if="inochiEnv" class="num">
+            <span class="num-name">LayerDiff3D</span>
+            <span class="path-v" :class="{ warn: !inochiEnv.layerdiffPath }">
+              {{ inochiEnv.layerdiffPath || `${t('backstage.weightExpected')}: ${inochiEnv.expectedLayerdiffDir}` }}
+            </span>
+          </label>
+          <label v-if="inochiEnv" class="num">
+            <span class="num-name">Marigold</span>
+            <span class="path-v" :class="{ warn: !inochiEnv.marigoldPath }">
+              {{ inochiEnv.marigoldPath || `${t('backstage.weightExpected')}: ${inochiEnv.expectedMarigoldDir}` }}
+            </span>
+          </label>
+        </div>
+        <div v-if="inochiEnv && !inochiEnv.ready" class="path-hint">
+          {{ t('backstage.inochiInstallTip', { req: inochiEnv.requirementsPath || 'backend/Inochi2D/requirements.txt' }) }}
         </div>
         <div class="path-note">{{ t('backstage.modelsRestart') }}</div>
       </div>

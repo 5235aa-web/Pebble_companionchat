@@ -4,6 +4,7 @@ import { useUiStore } from '@/stores/ui'
 import { useSessionStore } from '@/stores/session'
 import { useLlmStore } from '@/stores/llm'
 import { useCardAudioStore } from '@/stores/cardAudio'
+import { useInochi2dStore } from '@/stores/inochi2d'
 import { useI18n } from '@/i18n'
 import type { DisplayRegexRule } from '@/utils/displayRegex'
 import type { CharacterCard } from '@/data/character'
@@ -29,6 +30,7 @@ const ui = useUiStore()
 const session = useSessionStore()
 const llm = useLlmStore()
 const cardAudio = useCardAudioStore()
+const inochi = useInochi2dStore()
 const { t } = useI18n()
 
 const makeEmpty = (): CharacterCard => ({
@@ -410,6 +412,12 @@ function pickAssetFiles() {
   assetInput.value?.click()
 }
 
+function goLive2dBuilder() {
+  inochi.setMode('live2d')
+  inochi.openEditor('build')
+  ui.closePanel('profile')
+}
+
 async function onAssetFilesPicked(e: Event) {
   const input = e.target as HTMLInputElement
   const files = Array.from(input.files ?? [])
@@ -641,6 +649,9 @@ function removeGreeting(index: number) {
               <button class="mini-btn" type="button" :disabled="uploadingAsset" @click="pickAssetFiles">
                 {{ t('card.assetsAdd') }}
               </button>
+              <button class="mini-btn" type="button" @click="goLive2dBuilder">
+                {{ t('card.assetsToLive2d') }}
+              </button>
               <input
                 ref="assetInput"
                 type="file"
@@ -650,6 +661,7 @@ function removeGreeting(index: number) {
                 @change="onAssetFilesPicked"
               />
             </div>
+            <p class="cp-hint" style="margin: 0 0 8px">{{ t('card.assetsLive2dHint') }}</p>
 
             <div v-if="!session.companionAssets.length" class="pf-asset-empty">
               {{ t('card.assetsEmpty') }}

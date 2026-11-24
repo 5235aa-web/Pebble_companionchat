@@ -30,6 +30,7 @@ from .paths import (
 from .tts_service import router as tts_router
 from .settings_routes import router as settings_router
 from .group_sessions.routes import router as group_router
+from .Inochi2D import router as inochi2d_router
 from .llm_client import SUPPORTED_PROVIDERS
 from . import audio_cpp_job
 from .llama_server_engine import (
@@ -116,6 +117,7 @@ app.include_router(tts_router)
 app.include_router(picture_router)
 app.include_router(settings_router)
 app.include_router(group_router)
+app.include_router(inochi2d_router)
 
 # Picture Studio: create the output folder and close rows a previous process
 # left mid-flight. Wrapped because a locked or unreadable database here must
@@ -377,14 +379,17 @@ async def health():
 class AppConfigPayload(BaseModel):
     modelsRoot: Optional[str] = None
     llamaRoot: Optional[str] = None
+    inochiPythonPath: Optional[str] = None
 
 
 @app.get("/app/config")
 async def get_app_config():
+    from .Inochi2D.service import _find_python
     config = load_app_config()
     root = models_root()
     llama = llama_dir()
     audio_dir = audio_cpp_dir()
+    inochi_py = _find_python()
     return {
         "modelsRoot": config.get("modelsRoot") or "",
         "resolvedModelsRoot": str(root),
@@ -392,6 +397,8 @@ async def get_app_config():
         "configuredLlamaRoot": config.get("llamaRoot") or "",
         "llamaRoot": str(llama),
         "llamaFound": (llama / llama_server_exe_name()).exists(),
+        "configuredInochiPython": config.get("inochiPythonPath") or "",
+        "inochiPython": str(inochi_py) if inochi_py else "",
         "audioCppDir": str(audio_dir),
         "audioCppFound": (audio_dir / "audiocpp_server.exe").exists(),
         "dataRoot": str(DATA_ROOT),
@@ -437,11 +444,42 @@ async def set_app_config(payload: AppConfigPayload):
         else:
             updated["llamaRoot"] = ""
 
+    if payload.inochiPythonPath is not None:
+        pval = payload.inochiPythonPath.strip()
+        if pval:
+            target = Path(pval).expanduser()
+            if not target.exists():
+                raise HTTPException(status_code=400, detail=f"Python path does not exist: {target}")
+            if target.is_dir():
+                found = None
+                for cand in (
+                    target / "Scripts" / "python.exe",
+                    target / ".venv" / "Scripts" / "python.exe",
+                    target / "bin" / "python",
+                    target / ".venv" / "bin" / "python",
+                    target / "python.exe",
+                    target / "python",
+                ):
+                    if cand.is_file():
+                        found = cand
+                        break
+                if found is None:
+                    raise HTTPException(status_code=400, detail=f"Python executable not found in: {target}")
+                target = found
+            elif not target.is_file():
+                raise HTTPException(status_code=400, detail=f"Invalid Python executable: {target}")
+            updated["inochiPythonPath"] = str(target)
+        else:
+            updated["inochiPythonPath"] = ""
+
     save_app_config(updated)
+    from .Inochi2D.service import invalidate_env_cache
+    invalidate_env_cache()
     return {
         "status": "ok",
         "modelsRoot": updated.get("modelsRoot", ""),
         "llamaRoot": updated.get("llamaRoot", ""),
+        "inochiPythonPath": updated.get("inochiPythonPath", ""),
     }
 
 
