@@ -268,7 +268,9 @@ onBeforeUnmount(() => {
         <div v-if="inochi.env && !inochi.env.ready" class="puppet-env-alert">
           <div class="puppet-env-alert-title">{{ t('live2d.envMissing') }}</div>
           <ul class="puppet-env-list">
-            <li v-if="!inochi.env.pythonPath">Python venv: backend/Inochi2D/.venv</li>
+            <li v-if="!inochi.env.pythonPath">
+              Python venv -> {{ inochi.env.expectedVenvDir || '~/.pebblecompanion/inochi2d-venv' }}
+            </li>
             <li v-else-if="inochi.env.missingDeps?.length">
               pip: {{ inochi.env.requirementsPath || 'backend/Inochi2D/requirements.txt' }}
             </li>

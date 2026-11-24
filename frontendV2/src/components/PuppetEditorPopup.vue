@@ -497,7 +497,9 @@ async function onDeleteOutfit(oid: string): Promise<void> {
             <template v-if="inochi.env.runtime.offloadDefault"> · offload</template>
           </div>
           <ul v-else-if="!inochi.env.ready" class="puppet-env-list">
-            <li v-if="!inochi.env.pythonPath">Python venv: backend/Inochi2D/.venv</li>
+            <li v-if="!inochi.env.pythonPath">
+              Python venv -> {{ inochi.env.expectedVenvDir || '~/.pebblecompanion/inochi2d-venv' }}
+            </li>
             <li v-else-if="inochi.env.missingDeps?.length">
               pip: {{ inochi.env.requirementsPath || 'backend/Inochi2D/requirements.txt' }}
               ({{ inochi.env.missingDeps.slice(0, 4).join(', ') }})

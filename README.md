@@ -55,7 +55,7 @@ Whether running local GGUF weights, calling cloud LLM APIs, holding live voice c
 - **Narration Mode (Give the conversation a break)**: One-click activation switch supporting all chat modes. In a voice-over manner, describe the behaviors and states (actions, space, psychology) of the user and character to guide the dialogue direction—affecting only the next reply without continuously contaminating surrounding context.
 
 ### 3. Live2D
-- **Optional Local Decomposition**: This is an **optional** module (`backend/Inochi2D` + WebGL2 stage) and **does not affect normal usage** when skipped—core text chat, voice calls, picture generation, and built-in `2.5D Motion` work normally with zero PyTorch or GPU dependencies. When enabled, you can locally decompose a single character portrait or same-pose expression pack via `See-through` (`LayerDiff3D` + `Marigold`) across NVIDIA CUDA, AMD ROCm, Apple Silicon MPS, or CPU, with automatic blink-layer synthesis, collar/neck occlusion cleanup, and bilingual expression mapping.
+- **Optional Local Decomposition**: This is an **optional** module (`backend/Inochi2D` + WebGL2 stage) and **does not affect normal usage** when skipped—core text chat, voice calls, picture generation, and built-in `2.5D Motion` work normally with zero PyTorch or GPU dependencies. When enabled, you can locally decompose a single character portrait or same-pose expression pack via `See-through` (`LayerDiff3D` + `Marigold`) across NVIDIA CUDA, AMD ROCm, or CPU fallback, with automatic blink-layer synthesis, collar/neck occlusion cleanup, and bilingual expression mapping.
 - **Interactive WebGL2 Stage & Multi-Outfit**: Once built, the puppet renders purely client-side in WebGL2 with breathing and body sway, spring hair/accessory physics, soft global gaze tracking, real-time TTS audio lip-sync, cheek blush shaders, and interactive pointer gestures (head pat, cheek poke/pet, and startled chest-tap recoil). Both CHARX cards and standard PNG/JSON cards can attach expression packs or add same-pose outfits incrementally through **Character Editor → Media assets** and **Live2D → Build**.
 
 ### 4. Character Cards 
@@ -161,21 +161,19 @@ npm install
 
 > Skip this step if you do not plan to use local Live2D portrait decomposition; the rest of the application does not require PyTorch.
 
-```bash
-# 1) Create an isolated virtual environment (recommended: backend/Inochi2D/.venv)
-# Windows:
-python -m venv backend\Inochi2D\.venv && backend\Inochi2D\.venv\Scripts\activate
-# macOS / Linux:
-python3 -m venv backend/Inochi2D/.venv && source backend/Inochi2D/.venv/bin/activate
+```bat
+:: 1) Create & activate an isolated virtual environment under your global data directory (Python 3.11 / 3.12 recommended)
+python -m venv "%USERPROFILE%\.pebblecompanion\inochi2d-venv"
+"%USERPROFILE%\.pebblecompanion\inochi2d-venv\Scripts\activate.bat"
 
-# 2) Install PyTorch for your hardware (see backend/Inochi2D/requirements.txt for CUDA/ROCm/MPS/CPU examples)
+:: 2) Install PyTorch for your GPU (see backend/Inochi2D/requirements.txt for NVIDIA CUDA / AMD ROCm / CPU notes)
 pip install torch torchvision --index-url https://download.pytorch.org/whl/cu126
 
-# 3) Install headless Live2D inference & post-processing dependencies
-pip install -r backend/Inochi2D/requirements.txt
+:: 3) Install headless Live2D inference & post-processing dependencies
+pip install -r backend\Inochi2D\requirements.txt
 ```
 
-Download the two `See-through` model folders (`seethroughv0.0.2_layerdiff3d` and `seethroughv0.0.1_marigold`) into your `Models root` directory. You can also point **Backstage → Paths → `Live2D Python`** to any existing `venv` or `conda` environment (or `~/.pebblecompanion/inochi2d-venv` in packaged desktop builds).
+Download the two `See-through` model folders (`seethroughv0.0.2_layerdiff3d` and `seethroughv0.0.1_marigold`) into your `Models root` directory. Both source runs and packaged desktop builds share `~/.pebblecompanion/inochi2d-venv` automatically, and you can also point **Backstage → Paths → `Live2D Python`** to any existing `venv` or `conda` environment.
 
 ### 2. Run in Development
 

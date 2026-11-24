@@ -103,6 +103,7 @@ export interface InochiEnvStatus {
   ready: boolean
   pythonPath: string
   configuredPythonPath?: string
+  expectedVenvDir?: string
   seethroughPath: string
   modelsRoot?: string
   layerdiffPath: string

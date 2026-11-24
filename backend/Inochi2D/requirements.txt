@@ -1,23 +1,23 @@
 # Optional dependencies for local Live2D / 2D Puppet layer decomposition (See-through).
-# Keep these inside an isolated virtual environment (recommended: backend/Inochi2D/.venv)
-# so the core app stays lightweight and users without a GPU do not need PyTorch.
+# Keep these inside an isolated virtual environment (recommended: %USERPROFILE%\.pebblecompanion\inochi2d-venv,
+# so both source runs and packaged desktop builds share one environment cleanly).
 #
-# Quick setup (from repository root):
-#   1) Create & activate an isolated venv (Python 3.11 / 3.12 recommended):
-#        Windows:   python -m venv backend\Inochi2D\.venv && backend\Inochi2D\.venv\Scripts\activate
-#        macOS/Linux: python3 -m venv backend/Inochi2D/.venv && source backend/Inochi2D/.venv/bin/activate
+# Quick setup on Windows (Python 3.11 / 3.12 recommended):
+#   1) Create & activate the isolated venv:
+#        python -m venv "%USERPROFILE%\.pebblecompanion\inochi2d-venv"
+#        "%USERPROFILE%\.pebblecompanion\inochi2d-venv\Scripts\activate.bat"
 #
-#   2) Install PyTorch first for YOUR hardware (do NOT install CPU-only torch unless testing):
+#   2) Install PyTorch first for YOUR GPU (do NOT install CPU-only torch unless testing):
 #      - NVIDIA GPU (CUDA 12.x):
 #          pip install torch torchvision --index-url https://download.pytorch.org/whl/cu126
-#      - AMD GPU on Linux (ROCm):
-#          pip install torch torchvision --index-url https://download.pytorch.org/whl/rocm6.3
-#      - AMD GPU on Windows (ROCm / RDNA): install AMD's matching Windows ROCm PyTorch wheels per driver release
-#      - Apple Silicon (macOS MPS) / CPU fallback:
+#      - AMD GPU (ROCm on Windows):
+#          install AMD's matching Windows ROCm PyTorch wheels per your Adrenalin/ROCm driver release
+#      - CPU fallback (very slow):
 #          pip install torch torchvision
 #
 #   3) Install the headless inference & post-processing stack:
 #        pip install -r backend/Inochi2D/requirements.txt
+#      (In packaged desktop builds, the file is also copied to %USERPROFILE%\.pebblecompanion\inochi2d-requirements.txt)
 #
 #   4) Download the two HuggingFace model directories into your configured modelsRoot:
 #      - seethroughv0.0.2_layerdiff3d   (https://huggingface.co/layerdifforg/seethroughv0.0.2_layerdiff3d)

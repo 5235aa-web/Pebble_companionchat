@@ -264,8 +264,9 @@ def get_environment_status(refresh: bool = False) -> Dict[str, Any]:
     runtime: Dict[str, Any] = dict(probe.get("runtime") or {})
 
     missing: List[str] = []
+    expected_venv = DATA_ROOT / "inochi2d-venv"
     if py is None:
-        missing.append("~/.pebblecompanion/inochi2d-venv" if getattr(sys, "frozen", False) else "backend/Inochi2D/.venv")
+        missing.append(str(expected_venv))
     elif missing_deps:
         missing.append(f"pip deps ({', '.join(missing_deps[:5])}{'...' if len(missing_deps) > 5 else ''})")
     if not seethrough_dir.is_dir():
@@ -280,6 +281,7 @@ def get_environment_status(refresh: bool = False) -> Dict[str, Any]:
         "ready": len(missing) == 0,
         "pythonPath": str(py) if py else "",
         "configuredPythonPath": str(load_app_config().get("inochiPythonPath") or ""),
+        "expectedVenvDir": str(expected_venv),
         "seethroughPath": str(seethrough_dir) if seethrough_dir.is_dir() else "",
         "modelsRoot": str(mroot),
         "layerdiffPath": str(layerdiff_dir) if layerdiff_dir else "",

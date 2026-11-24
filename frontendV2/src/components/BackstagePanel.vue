@@ -2640,7 +2640,7 @@ function commitModel() {
               <input
                 class="num-in path"
                 :value="configuredInochiPython"
-                :placeholder="inochiEnv?.pythonPath || 'backend/Inochi2D/.venv'"
+                :placeholder="inochiEnv?.pythonPath || inochiEnv?.expectedVenvDir || '~/.pebblecompanion/inochi2d-venv'"
                 @input="configuredInochiPython = ($event.target as HTMLInputElement).value"
               />
               <button
