@@ -2742,6 +2742,11 @@ function commitModel() {
         </div>
         <div v-if="inochiEnv && !inochiEnv.ready" class="path-hint">
           {{ t('backstage.inochiInstallTip', { req: inochiEnv.requirementsPath || 'backend/Inochi2D/requirements.txt' }) }}
+          <div class="inochi-dl-links">
+            <a href="https://huggingface.co/layerdifforg/seethroughv0.0.2_layerdiff3d" target="_blank" rel="noopener noreferrer">LayerDiff3D (HuggingFace)</a>
+            <span>·</span>
+            <a href="https://huggingface.co/24yearsold/seethroughv0.0.1_marigold" target="_blank" rel="noopener noreferrer">Marigold Depth (HuggingFace)</a>
+          </div>
         </div>
         <div class="path-note">{{ t('backstage.modelsRestart') }}</div>
       </div>

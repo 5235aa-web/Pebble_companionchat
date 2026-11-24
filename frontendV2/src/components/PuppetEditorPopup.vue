@@ -506,10 +506,22 @@ async function onDeleteOutfit(oid: string): Promise<void> {
             </li>
             <li v-if="!inochi.env.seethroughPath">See-through: backend/Inochi2D/see-through</li>
             <li v-if="!inochi.env.layerdiffPath">
-              LayerDiff3D -> {{ inochi.env.expectedLayerdiffDir }}
+              <a
+                class="puppet-hf-link"
+                href="https://huggingface.co/layerdifforg/seethroughv0.0.2_layerdiff3d"
+                target="_blank"
+                rel="noopener noreferrer"
+              >LayerDiff3D</a>
+              → {{ inochi.env.expectedLayerdiffDir }}
             </li>
             <li v-if="!inochi.env.marigoldPath">
-              Marigold -> {{ inochi.env.expectedMarigoldDir }}
+              <a
+                class="puppet-hf-link"
+                href="https://huggingface.co/24yearsold/seethroughv0.0.1_marigold"
+                target="_blank"
+                rel="noopener noreferrer"
+              >Marigold</a>
+              → {{ inochi.env.expectedMarigoldDir }}
             </li>
           </ul>
         </div>

@@ -330,6 +330,20 @@
   word-break: break-all;
 }
 
+.puppet-hf-link,
+.inochi-dl-links a {
+  color: var(--accent);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.inochi-dl-links {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 4px;
+}
+
 .puppet-pack-box {
   margin-top: 16px;
   padding-top: 14px;

@@ -189,7 +189,17 @@ pip install torch torchvision --index-url https://download.pytorch.org/whl/cu126
 pip install -r backend/Inochi2D/requirements.txt
 ```
 
-Download the two `See-through` model folders (`seethroughv0.0.2_layerdiff3d` and `seethroughv0.0.1_marigold`) into your `Models root` directory. Both source runs and packaged desktop builds share `~/.pebblecompanion/inochi2d-venv` automatically, and you can also point **Backstage → Paths → `Live2D Python`** to any existing `venv` or `conda` environment.
+Download the two `See-through` model repositories into your `Models root` directory (`seethroughv0.0.2_layerdiff3d` and `seethroughv0.0.1_marigold`):
+
+- **LayerDiff3D**: <https://huggingface.co/layerdifforg/seethroughv0.0.2_layerdiff3d> → `<modelsRoot>/seethroughv0.0.2_layerdiff3d`
+- **Marigold Depth**: <https://huggingface.co/24yearsold/seethroughv0.0.1_marigold> → `<modelsRoot>/seethroughv0.0.1_marigold`
+
+```bash
+# Optional quick download via huggingface_hub inside your inochi2d-venv
+python -c "from huggingface_hub import snapshot_download; snapshot_download('layerdifforg/seethroughv0.0.2_layerdiff3d', local_dir='<modelsRoot>/seethroughv0.0.2_layerdiff3d'); snapshot_download('24yearsold/seethroughv0.0.1_marigold', local_dir='<modelsRoot>/seethroughv0.0.1_marigold')"
+```
+
+Both source runs and packaged desktop builds share `~/.pebblecompanion/inochi2d-venv` automatically, and you can also point **Backstage → Paths → `Live2D Python`** to any existing `venv` or `conda` environment.
 
 ### 2. Run in Development
 

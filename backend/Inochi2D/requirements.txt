@@ -26,9 +26,9 @@
 #      (On macOS/Linux, ensure Xcode Command Line Tools / build-essential is installed if pycocotools needs building.
 #       In Windows packaged builds, this file is also copied to %USERPROFILE%\.pebblecompanion\inochi2d-requirements.txt.)
 #
-#   4) Download the two HuggingFace model directories into your configured modelsRoot:
+#   4) Download the two HuggingFace model repositories into your configured modelsRoot:
 #      - seethroughv0.0.2_layerdiff3d   (https://huggingface.co/layerdifforg/seethroughv0.0.2_layerdiff3d)
-#      - seethroughv0.0.1_marigol       (or seethroughv0.0.1_marigold)
+#      - seethroughv0.0.1_marigold      (https://huggingface.co/24yearsold/seethroughv0.0.1_marigold ; also accepts folder name seethroughv0.0.1_marigol)
 
 # --- Diffusion & Vision Core ---
 diffusers>=0.32.0,<0.38.0
