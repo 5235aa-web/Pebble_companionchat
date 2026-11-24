@@ -161,8 +161,10 @@ npm install
 
 > Skip this step if you do not plan to use local Live2D portrait decomposition; the rest of the application does not require PyTorch.
 
+**Windows:**
+
 ```bat
-:: 1) Create & activate an isolated virtual environment under your global data directory (Python 3.11 / 3.12 recommended)
+:: 1) Create & activate an isolated virtual environment (Python 3.11 / 3.12 recommended)
 python -m venv "%USERPROFILE%\.pebblecompanion\inochi2d-venv"
 "%USERPROFILE%\.pebblecompanion\inochi2d-venv\Scripts\activate.bat"
 
@@ -171,6 +173,20 @@ pip install torch torchvision --index-url https://download.pytorch.org/whl/cu126
 
 :: 3) Install headless Live2D inference & post-processing dependencies
 pip install -r backend\Inochi2D\requirements.txt
+```
+
+**macOS / Linux (Experimental — untested):**
+
+```bash
+# 1) Create & activate the isolated virtual environment
+python3 -m venv ~/.pebblecompanion/inochi2d-venv
+source ~/.pebblecompanion/inochi2d-venv/bin/activate
+
+# 2) Install PyTorch for your platform (CUDA 12.x on Linux; use --index-url .../whl/rocm6.3 for Linux ROCm, or plain install for macOS MPS / CPU)
+pip install torch torchvision --index-url https://download.pytorch.org/whl/cu126
+
+# 3) Install headless Live2D inference & post-processing dependencies
+pip install -r backend/Inochi2D/requirements.txt
 ```
 
 Download the two `See-through` model folders (`seethroughv0.0.2_layerdiff3d` and `seethroughv0.0.1_marigold`) into your `Models root` directory. Both source runs and packaged desktop builds share `~/.pebblecompanion/inochi2d-venv` automatically, and you can also point **Backstage → Paths → `Live2D Python`** to any existing `venv` or `conda` environment.
