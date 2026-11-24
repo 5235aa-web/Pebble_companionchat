@@ -80,5 +80,49 @@ class PruneTest(unittest.TestCase):
         self.assertEqual(backup.prune(), 0)
 
 
+class ConfigSnapshotTest(unittest.TestCase):
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp(prefix='pebble-cfgbak-'))
+        self._cfg = backup.CONFIG_DIR
+        self._dir = backup.BACKUP_DIR
+        backup.CONFIG_DIR = self.tmp / 'config'
+        backup.BACKUP_DIR = self.tmp / 'backups'
+        backup.CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+
+    def tearDown(self):
+        backup.CONFIG_DIR = self._cfg
+        backup.BACKUP_DIR = self._dir
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def test_empty_config_dir_yields_no_snapshot(self):
+        self.assertIsNone(backup.snapshot_configs())
+
+    def test_snapshot_configs_copies_all_json_files(self):
+        (backup.CONFIG_DIR / 'app.json').write_text('{"a": 1}', encoding='utf-8')
+        (backup.CONFIG_DIR / 'stt.json').write_text('{"b": 2}', encoding='utf-8')
+        (backup.CONFIG_DIR / 'ignore.txt').write_text('nope', encoding='utf-8')
+
+        target = backup.snapshot_configs(stamp='20260101-120000')
+        self.assertIsNotNone(target)
+        self.assertTrue(target.is_dir())
+        self.assertEqual(
+            sorted(p.name for p in target.iterdir()),
+            ['app.json', 'stt.json'],
+        )
+        self.assertEqual((target / 'app.json').read_text(encoding='utf-8'), '{"a": 1}')
+
+    def test_prune_configs_keeps_newest(self):
+        (backup.CONFIG_DIR / 'app.json').write_text('{}', encoding='utf-8')
+        for i in range(5):
+            backup.snapshot_configs(stamp=f'2026010{i}-000000')
+        removed = backup.prune_configs(keep=2)
+        self.assertEqual(removed, 3)
+        remaining = sorted(p.name for p in backup.BACKUP_DIR.iterdir())
+        self.assertEqual(
+            remaining,
+            [f'{backup.CONFIG_PREFIX}20260103-000000', f'{backup.CONFIG_PREFIX}20260104-000000'],
+        )
+
+
 if __name__ == '__main__':
     unittest.main()

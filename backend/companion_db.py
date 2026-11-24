@@ -35,6 +35,7 @@ def _has_schema(conn: sqlite3.Connection) -> bool:
 def _get_conn() -> sqlite3.Connection:
     """获取数据库连接，首次使用时初始化表。"""
     global _schema_ready
+    paths.assert_safe_data_path(DB_PATH)
     conn = sqlite3.connect(str(DB_PATH))
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA journal_mode=WAL")

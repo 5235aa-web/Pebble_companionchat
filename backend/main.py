@@ -83,9 +83,10 @@ async def lifespan(_: FastAPI):
     starts.
     """
     try:
-        from .backup import snapshot
+        from .backup import snapshot, snapshot_configs
 
         snapshot()
+        snapshot_configs()
     except Exception:
         logger.warning("database snapshot skipped", exc_info=True)
     try:

@@ -21,6 +21,10 @@ sys.path.insert(0, str(ROOT))
 DATA_ROOT = tempfile.mkdtemp(prefix='pebble-test-')
 os.environ['PEBBLE_DATA_ROOT'] = DATA_ROOT
 
+from backend.paths import install_test_write_guard
+
+install_test_write_guard()
+
 
 def main() -> int:
     start = Path(__file__).resolve().parent

@@ -24,6 +24,7 @@ import os
 import shutil
 import sys
 import tempfile
+import threading
 from pathlib import Path
 from typing import Any, Dict, Optional
 
@@ -37,6 +38,13 @@ _PRODUCTION_ENTRIES = frozenset({
     "run_backend.py",
     "pebble-backend.exe",
 })
+_PRODUCTION_MODULES = frozenset({
+    "uvicorn",
+    "fastapi",
+})
+
+_AUDIT_HOOK_INSTALLED = False
+_AUDIT_GUARD_STATE = threading.local()
 
 
 def _is_frozen() -> bool:
@@ -54,6 +62,101 @@ def _is_real_data_root(candidate: Path) -> bool:
         return candidate.resolve() == _real_data_root().resolve()
     except OSError:
         return False
+
+
+def _is_under_real_data_root(candidate: Path) -> bool:
+    try:
+        real = _real_data_root().resolve()
+        resolved = candidate.expanduser().resolve()
+        return resolved == real or resolved.is_relative_to(real)
+    except OSError:
+        return False
+
+
+def assert_safe_data_path(target: Path) -> Path:
+    """Fail loudly if a test process attempts to target the real ~/.pebblecompanion."""
+    if _looks_like_test_run() and _is_under_real_data_root(target):
+        raise RuntimeError(
+            f"refusing test write inside the real data root: {target}"
+        )
+    return target
+
+
+def install_test_write_guard() -> bool:
+    """Install a permanent PEP 578 audit hook blocking writes/deletes into real ~/.pebblecompanion."""
+    global _AUDIT_HOOK_INSTALLED
+    if _AUDIT_HOOK_INSTALLED:
+        return False
+    if not _looks_like_test_run() and not os.environ.get("PEBBLE_DATA_ROOT", "").strip():
+        return False
+
+    real_prefix = os.path.normcase(os.path.realpath(str(_real_data_root())))
+    write_flags = (
+        getattr(os, "O_WRONLY", 1)
+        | getattr(os, "O_RDWR", 2)
+        | getattr(os, "O_CREAT", 0)
+        | getattr(os, "O_TRUNC", 0)
+        | getattr(os, "O_APPEND", 0)
+    )
+    write_events = ("os.remove", "os.unlink", "os.rmdir", "os.mkdir", "sqlite3.connect")
+    rename_events = ("os.rename", "os.replace")
+
+    def _is_real_path_str(raw: object) -> Optional[str]:
+        if isinstance(raw, bytes):
+            text = os.fsdecode(raw)
+        elif isinstance(raw, str):
+            text = raw
+        else:
+            return None
+        s = text.strip()
+        if not s or s == ":memory:" or s.startswith("file::memory:"):
+            return None
+        if s.startswith("file:"):
+            s = s[5:].split("?", 1)[0]
+            if os.name == "nt" and s.startswith("/") and len(s) > 2 and s[2] == ":":
+                s = s[1:]
+        resolved = os.path.normcase(os.path.realpath(os.path.abspath(s)))
+        if resolved == real_prefix or resolved.startswith(real_prefix + os.sep):
+            return resolved
+        return None
+
+    def _audit_guard(event: str, args: tuple) -> None:
+        if getattr(_AUDIT_GUARD_STATE, "active", False):
+            return
+        if not _looks_like_test_run():
+            return
+
+        if event == "open":
+            if len(args) < 3:
+                return
+            path_arg, mode_arg, flags_arg = args[0], args[1], args[2]
+            is_write = (isinstance(mode_arg, str) and any(c in mode_arg for c in "wax+")) or (
+                isinstance(flags_arg, int) and bool(flags_arg & write_flags)
+            )
+            if not is_write:
+                return
+            targets = (path_arg,)
+        elif event in write_events:
+            targets = (args[0],) if args else ()
+        elif event in rename_events:
+            targets = args[:2]
+        else:
+            return
+
+        _AUDIT_GUARD_STATE.active = True
+        try:
+            for item in targets:
+                hit = _is_real_path_str(item)
+                if hit is not None:
+                    raise PermissionError(
+                        f"Blocked test {event} against real user data root: {hit}"
+                    )
+        finally:
+            _AUDIT_GUARD_STATE.active = False
+
+    sys.addaudithook(_audit_guard)
+    _AUDIT_HOOK_INSTALLED = True
+    return True
 
 
 def _looks_like_test_run() -> bool:
@@ -90,8 +193,12 @@ def _looks_like_test_run() -> bool:
     if main is None:
         return False
     spec = getattr(main, "__spec__", None)
-    if spec is not None and str(getattr(spec, "name", "") or "").startswith("unittest"):
-        return True
+    if spec is not None:
+        spec_root = str(getattr(spec, "name", "") or "").split(".")[0].lower()
+        if spec_root == "unittest":
+            return True
+        if spec_root in _PRODUCTION_MODULES:
+            return False
 
     main_file = getattr(main, "__file__", None) or ""
     if main_file:
@@ -132,6 +239,9 @@ def _default_data_root() -> Path:
         return root
     return _real_data_root()
 
+
+if _looks_like_test_run():
+    install_test_write_guard()
 
 DATA_ROOT = _default_data_root()
 
@@ -196,6 +306,7 @@ def load_app_config() -> Dict[str, Any]:
 
 def save_app_config(config: Dict[str, Any]) -> None:
     """Atomically replace app.json so a crash cannot leave it half written."""
+    assert_safe_data_path(APP_CONFIG_PATH)
     ensure_dirs()
     tmp_path = APP_CONFIG_PATH.with_suffix(".json.tmp")
     with open(tmp_path, "w", encoding="utf-8") as handle:

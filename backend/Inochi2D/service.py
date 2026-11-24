@@ -14,7 +14,14 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 from .. import companion_db
-from ..paths import DATA_ROOT, UPLOAD_ROOT, inochi2d_dir, load_app_config, models_root
+from ..paths import (
+    DATA_ROOT,
+    UPLOAD_ROOT,
+    assert_safe_data_path,
+    inochi2d_dir,
+    load_app_config,
+    models_root,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -199,7 +206,6 @@ def _find_model_dir(names: List[str]) -> Optional[Path]:
         mroot / "live2d",
         pkg_dir / "models",
         DATA_ROOT / "models",
-        Path(r"E:\dearpebble\models") if os.name == "nt" else None,
     ):
         if base is not None and base not in bases:
             bases.append(base)
@@ -324,6 +330,7 @@ def load_puppet_config(companion_id: str) -> Dict[str, Any]:
 
 def save_puppet_config(companion_id: str, incoming: Dict[str, Any]) -> Dict[str, Any]:
     pdir = companion_puppet_dir(companion_id)
+    assert_safe_data_path(pdir)
     pdir.mkdir(parents=True, exist_ok=True)
     merged = load_puppet_config(companion_id)
     for k in DEFAULT_PUPPET_CONFIG:
@@ -342,6 +349,7 @@ def save_puppet_config(companion_id: str, incoming: Dict[str, Any]) -> Dict[str,
 
 def delete_puppet_outfit(companion_id: str, outfit_id: str) -> Dict[str, Any]:
     pdir = companion_puppet_dir(companion_id)
+    assert_safe_data_path(pdir)
     manifest_path = pdir / "puppet.json"
     if not manifest_path.is_file():
         raise FileNotFoundError("未找到 Live2D 模型配置")
@@ -436,6 +444,7 @@ async def start_build_job(
         return dict(existing)
 
     out_dir = companion_puppet_dir(companion_id)
+    assert_safe_data_path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
 
     # Copy source image only for base builds so adding an outfit does not overwrite source portrait

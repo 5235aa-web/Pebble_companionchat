@@ -23,6 +23,10 @@ if str(ROOT) not in sys.path:
 if not os.environ.get('PEBBLE_DATA_ROOT'):
     os.environ['PEBBLE_DATA_ROOT'] = tempfile.mkdtemp(prefix='pebble-test-')
 
+from backend.paths import install_test_write_guard
+
+install_test_write_guard()
+
 # A pid no real process can hold, used by the stand-ins below. Keeping it far
 # above the usual allocation range matters: OpenProcess on a live pid would put
 # someone else's process into our job object.
