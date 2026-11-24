@@ -1,2 +1,6 @@
 # Auto detect text files and perform LF normalization
 * text=auto
+
+# Exclude vendored upstream see-through code and notebooks from GitHub language stats
+backend/Inochi2D/see-through/** linguist-vendored
+*.ipynb linguist-detectable=false
