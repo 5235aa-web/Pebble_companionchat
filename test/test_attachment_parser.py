@@ -287,6 +287,29 @@ class VideoAttachmentTest(unittest.TestCase):
         self.assertIn('连续播放的动态视频流', prompt_block)
         self.assertIn('00:00.2 ~ 00:35.0', prompt_block)
 
+    def test_gallery_media_filters_duplicate_filenames_after_first(self):
+        batches = [
+            (1, '2026-11-24 10:00:00', [
+                {'kind': 'video', 'url': '/uploads/attachments/v1.mp4', 'name': 'BlackStockings.mp4', 'size': 200},
+                {'kind': 'image', 'url': '/uploads/attachments/p1.png', 'name': 'image.png', 'size': 100, 'width': 100, 'height': 100},
+            ]),
+            (2, '2026-11-24 10:01:00', [
+                {'kind': 'video', 'url': '/uploads/attachments/v2.mp4', 'name': 'blackstockings.mp4', 'size': 200},
+                {'kind': 'image', 'url': '/uploads/attachments/p2.png', 'name': 'image.png', 'size': 150, 'width': 200, 'height': 120},
+                {'kind': 'image', 'url': '/uploads/attachments/p3.png', 'name': 'image.png', 'size': 100, 'width': 100, 'height': 100},
+                {'kind': 'image', 'url': '/uploads/attachments/cat.jpg', 'name': 'cat.jpg', 'size': 50, 'width': 50, 'height': 50},
+            ]),
+        ]
+        entries = ap.collect_gallery_media(batches)
+        urls = [e['url'] for e in entries]
+        # Newest-first message order; duplicate BlackStockings.mp4 and identical clipboard image.png dropped.
+        self.assertEqual(urls, [
+            '/uploads/attachments/p2.png',
+            '/uploads/attachments/cat.jpg',
+            '/uploads/attachments/v1.mp4',
+            '/uploads/attachments/p1.png',
+        ])
+
 
 if __name__ == '__main__':
     unittest.main()

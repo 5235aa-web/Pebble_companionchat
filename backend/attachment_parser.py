@@ -184,6 +184,87 @@ def delete_image(url: str) -> bool:
         return False
 
 
+_GENERIC_GALLERY_NAMES = {
+    "image",
+    "image.png",
+    "image.jpg",
+    "image.jpeg",
+    "image.webp",
+    "image.gif",
+    "clipboard.png",
+    "pasted_image.png",
+    "video",
+}
+
+
+def collect_gallery_media(message_batches: Any) -> List[Dict]:
+    """Build newest-first gallery entries while filtering duplicate filenames per session.
+
+    ``message_batches`` must yield ``(message_id, created_at, attachments)`` in
+    chronological (ascending) order so the first send enters the gallery and
+    later re-sends with the same filename are omitted. Generic clipboard names
+    (e.g. ``image.png``) additionally require matching byte size and pixel
+    dimensions so distinct pasted screenshots are preserved.
+    """
+    seen_urls: set = set()
+    seen_keys: set = set()
+    per_message: List[List[Dict]] = []
+
+    for message_id, created_at, attachments in message_batches:
+        batch_entries: List[Dict] = []
+        for att in attachments or []:
+            if not isinstance(att, dict):
+                continue
+            kind = att.get("kind")
+            if kind not in ("image", "video"):
+                continue
+            url = str(att.get("url") or "")
+            if not url or url in seen_urls:
+                continue
+
+            name = str(att.get("name") or ("video" if kind == "video" else "image"))
+            norm_name = name.strip().casefold()
+            size = int(att.get("size") or 0)
+            width = int(att.get("width") or 0)
+            height = int(att.get("height") or 0)
+            if norm_name in _GENERIC_GALLERY_NAMES:
+                dedup_key: Tuple[Any, ...] = (kind, norm_name, size, width, height)
+            else:
+                dedup_key = (kind, norm_name)
+
+            if dedup_key in seen_keys:
+                continue
+
+            seen_urls.add(url)
+            seen_keys.add(dedup_key)
+
+            entry: Dict = {
+                "kind": kind,
+                "url": url,
+                "name": name,
+                "mime": att.get("mime") or "",
+                "size": size,
+                "width": width,
+                "height": height,
+                "message_id": int(message_id),
+                "created_at": created_at,
+            }
+            if kind == "video":
+                entry["poster_url"] = att.get("poster_url") or ""
+                entry["duration"] = att.get("duration") or 0
+                entry["frames"] = att.get("frames") or []
+                entry["transcript"] = att.get("transcript") or ""
+            batch_entries.append(entry)
+
+        if batch_entries:
+            per_message.append(batch_entries)
+
+    result: List[Dict] = []
+    for batch in reversed(per_message):
+        result.extend(batch)
+    return result
+
+
 def delete_video_assets(attachment: Dict) -> int:
     """Delete derived poster and keyframe files owned by a video attachment."""
     urls: List[str] = []

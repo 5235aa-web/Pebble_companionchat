@@ -562,52 +562,29 @@ def clear_messages(session_id: int) -> int:
 
 
 def get_session_image_attachments(session_id: int) -> List[Dict]:
-    """Every image or video this room's messages reference, newest first, deduped by url.
+    """Every unique image or video this room's messages reference, newest first.
 
     Compaction never deletes rows, so the album keeps listing media from
     messages a summary already covers. Without that the files would linger on
-    disk with nothing pointing at them.
+    disk with nothing pointing at them. Duplicate sends sharing the same
+    filename within the room are filtered out after the first occurrence.
     """
+    from ..attachment_parser import collect_gallery_media
+
     conn = _conn()
     try:
         rows = conn.execute(
             "SELECT * FROM group_messages WHERE session_id = ? AND attachments != '[]' "
-            "ORDER BY id DESC",
+            "ORDER BY id ASC",
             (session_id,),
         ).fetchall()
     finally:
         conn.close()
-    seen = set()
-    out: List[Dict] = []
-    for row in rows:
-        for att in _message_row(row)["attachments"]:
-            if not isinstance(att, dict):
-                continue
-            kind = att.get("kind")
-            if kind not in ("image", "video"):
-                continue
-            url = str(att.get("url") or "")
-            if not url or url in seen:
-                continue
-            seen.add(url)
-            entry: Dict = {
-                "kind": kind,
-                "url": url,
-                "name": att.get("name") or ("video" if kind == "video" else "image"),
-                "mime": att.get("mime") or "",
-                "size": att.get("size") or 0,
-                "width": att.get("width") or 0,
-                "height": att.get("height") or 0,
-                "message_id": int(row["id"]),
-                "created_at": row["created_at"],
-            }
-            if kind == "video":
-                entry["poster_url"] = att.get("poster_url") or ""
-                entry["duration"] = att.get("duration") or 0
-                entry["frames"] = att.get("frames") or []
-                entry["transcript"] = att.get("transcript") or ""
-            out.append(entry)
-    return out
+    batches = [
+        (row["id"], row["created_at"], _message_row(row)["attachments"])
+        for row in rows
+    ]
+    return collect_gallery_media(batches)
 
 
 def get_session_attachments_by_url(session_id: int, url: str) -> List[Dict]:

@@ -1181,22 +1181,24 @@ def get_branch_image_attachments(companion_id: str, branch_id: str = "main") -> 
     已压缩的消息也在范围内：压缩只折叠上下文，媒体文件仍然留在磁盘上，
     记录面板若把它们排除掉，这些文件就成了无法删除的孤儿。
 
-    按 url 去重：引用同一份文件再发一次会给新消息写入同样的 url。
+    按发送先后顺序去重：同一分支内首次出现的同名媒体进入画廊，
+    后续再次发送的同名文件不再重复收录（通用剪贴板名称 image.png 等则校验尺寸与大小）。
     """
+    from .attachment_parser import collect_gallery_media
+
     conn = _get_conn()
     try:
         rows = conn.execute(
             """SELECT id, metadata, created_at FROM companion_messages
                WHERE companion_id = ? AND branch_id = ?
                  AND (metadata LIKE ? OR metadata LIKE ?)
-               ORDER BY id DESC""",
+               ORDER BY id ASC""",
             (companion_id, branch_id, '%"image"%', '%"video"%')
         ).fetchall()
     finally:
         conn.close()
 
-    seen = set()
-    result: List[Dict] = []
+    batches = []
     for row in rows:
         raw = row["metadata"]
         if not raw:
@@ -1205,34 +1207,8 @@ def get_branch_image_attachments(companion_id: str, branch_id: str = "main") -> 
             meta = json.loads(raw)
         except (TypeError, ValueError):
             continue
-        for att in meta.get("attachments") or []:
-            if not isinstance(att, dict):
-                continue
-            kind = att.get("kind")
-            if kind not in ("image", "video"):
-                continue
-            url = att.get("url") or ""
-            if not url or url in seen:
-                continue
-            seen.add(url)
-            entry: Dict = {
-                "kind": kind,
-                "url": url,
-                "name": att.get("name") or ("video" if kind == "video" else "image"),
-                "mime": att.get("mime") or "",
-                "size": att.get("size") or 0,
-                "width": att.get("width") or 0,
-                "height": att.get("height") or 0,
-                "message_id": row["id"],
-                "created_at": row["created_at"],
-            }
-            if kind == "video":
-                entry["poster_url"] = att.get("poster_url") or ""
-                entry["duration"] = att.get("duration") or 0
-                entry["frames"] = att.get("frames") or []
-                entry["transcript"] = att.get("transcript") or ""
-            result.append(entry)
-    return result
+        batches.append((row["id"], row["created_at"], meta.get("attachments") or []))
+    return collect_gallery_media(batches)
 
 
 def get_attachments_by_url(url: str) -> List[Dict]:
