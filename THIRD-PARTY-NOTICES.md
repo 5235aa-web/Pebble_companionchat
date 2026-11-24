@@ -5,10 +5,11 @@ The components listed below ship inside this repository and stay under their own
 licenses. The Apache License grants no rights to them, and this project's copyright
 does not cover them.
 
-Python and npm dependencies installed from `requirements.txt` and
-`frontendV2/package-lock.json` are not redistributed from here; they are fetched at
-build time and carry their own licenses. Model weights are never committed either:
-they are downloaded separately and are subject to the terms of their publishers.
+Python and npm dependencies installed from `requirements.txt`,
+`backend/Inochi2D/requirements.txt`, and `frontendV2/package-lock.json` are not
+redistributed from here; they are fetched at build time and carry their own
+licenses. Model weights are never committed either: they are downloaded
+separately and are subject to the terms of their publishers.
 
 ---
 
@@ -49,6 +50,27 @@ the MSVC runtime DLLs it links against, and `model_specs/`.
 License: Apache License 2.0. Copyright 2026 ShugoAI LLC. The license text ships with
 the runtime as `backend/audio-cpp/LICENSE`; `backend/audio-cpp/NOTES.md` documents
 how the directory is used.
+
+## 5. See-through (Optional Live2D Layer Decomposition)
+
+Files: the `backend/Inochi2D/see-through/` directory (and the `Inochi2D/see-through/`
+headless inference subset bundled into desktop builds via `pebble-backend.spec`).
+
+License: Apache License 2.0. Upstream project: `https://github.com/shitagaki-lab/see-through`
+(Jian Lin, Chengze Li, Haoyun Qin, Kwun Wang Chan, Yanghua Jin, Hanyuan Liu,
+Stephen Chun Wang Choy, and Xueting Liu, *See-through: Single-image Layer Decomposition
+for Anime Characters*, SIGGRAPH 2026). The full license text ships at
+`backend/Inochi2D/see-through/LICENSE`.
+
+Included upstream modules inside `backend/Inochi2D/see-through/common/modules/` retain
+their original copyright and license headers, including `marigold/` (Copyright 2023-2025
+Marigold Team, ETH Zürich, Apache License 2.0), `layerdiffuse/` (`layerdiff3d.py`
+Copyright 2025 The HuggingFace Team, Apache License 2.0), and `sam/` (Copyright Meta
+Platforms, Inc. and affiliates; `tiny_vit_sam.py` Copyright 2022 Microsoft).
+
+Note: `seethroughv0.0.2_layerdiff3d` and `seethroughv0.0.1_marigold` model weights and
+optional PyTorch/diffusers packages from `backend/Inochi2D/requirements.txt` are not
+bundled or redistributed by this repository.
 
 ---
 
