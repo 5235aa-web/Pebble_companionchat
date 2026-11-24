@@ -185,7 +185,16 @@ Run the root batch script to start both the backend and frontend dev servers in 
 companion.bat
 ```
 
-#### Option B: Manual Startup
+#### Option B: macOS / Linux Launcher (Web UI)
+
+Run the root shell script to start both the backend (`8002`) and frontend dev server (`5176`) in one terminal (press `Ctrl+C` to stop both; use `./frontendv2.sh` to start the frontend alone):
+
+```bash
+chmod +x companion.sh frontendv2.sh
+./companion.sh
+```
+
+#### Option C: Manual Startup
 
 ```bash
 # Terminal 1: Start the FastAPI backend (http://localhost:8002)

@@ -21,6 +21,7 @@ from .paths import (
     LLM_CONFIG_PATH,
     UPLOAD_ROOT,
     audio_cpp_dir,
+    audio_cpp_exe_name,
     ffmpeg_path,
     invalidate_ffmpeg_cache,
     is_ffmpeg_usable,
@@ -410,7 +411,8 @@ async def get_app_config():
         "ffmpegFound": is_ffmpeg_usable(force_refresh=True),
         "videoAutoStt": bool(config.get("videoAutoStt", False)),
         "audioCppDir": str(audio_dir),
-        "audioCppFound": (audio_dir / "audiocpp_server.exe").exists(),
+        "audioCppFound": (audio_dir / audio_cpp_exe_name()).exists(),
+        "exeExt": ".exe" if os.name == "nt" else "",
         "dataRoot": str(DATA_ROOT),
     }
 
@@ -436,19 +438,20 @@ async def set_app_config(payload: AppConfigPayload):
     if payload.llamaRoot is not None:
         lval = payload.llamaRoot.strip()
         if lval:
+            llama_exe = llama_server_exe_name()
             target = Path(lval).expanduser()
             if not target.exists():
                 raise HTTPException(status_code=400, detail=f"Runtime path does not exist: {target}")
             if target.is_file():
-                if target.name.lower() != "llama-server.exe":
-                    raise HTTPException(status_code=400, detail=f"Expected llama-server.exe, got: {target.name}")
+                if target.name.lower() != llama_exe.lower():
+                    raise HTTPException(status_code=400, detail=f"Expected {llama_exe}, got: {target.name}")
                 target = target.parent
-            elif not (target / "llama-server.exe").exists():
+            elif not (target / llama_exe).exists():
                 # Allow parent dir containing llama/ or llama-* subdir
                 from .paths import _find_llama_in
                 hit = _find_llama_in(target)
                 if hit is None:
-                    raise HTTPException(status_code=400, detail=f"llama-server.exe not found in: {target}")
+                    raise HTTPException(status_code=400, detail=f"{llama_exe} not found in: {target}")
                 target = hit
             updated["llamaRoot"] = str(target)
         else:

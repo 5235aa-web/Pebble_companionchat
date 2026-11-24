@@ -37,6 +37,7 @@ from .paths import (
     ENGINE_STATE_DIR,
     VOICE_DIR as SHARED_VOICE_DIR,
     audio_cpp_dir,
+    audio_cpp_exe_name,
     model_path,
     resolve_user_path,
 )
@@ -46,7 +47,7 @@ logger = logging.getLogger('ming3tts')
 
 BASE_DIR = Path(__file__).resolve().parent
 AUDIOCPP_DIR = audio_cpp_dir()
-SERVER_EXE = AUDIOCPP_DIR / 'audiocpp_server.exe'
+SERVER_EXE = AUDIOCPP_DIR / audio_cpp_exe_name()
 CONFIG_FILE = ENGINE_STATE_DIR / 'server_ming3tts.json'
 VOICE_DIR = SHARED_VOICE_DIR
 SERVER_LOG = ENGINE_STATE_DIR / 'server_ming3tts_runtime.log'

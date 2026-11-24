@@ -26,12 +26,12 @@ import httpx
 
 from . import audio_cpp_job
 from .audio_specs import clean_options, get_spec
-from .paths import ENGINE_STATE_DIR, audio_cpp_dir, resolve_user_path
+from .paths import ENGINE_STATE_DIR, audio_cpp_dir, audio_cpp_exe_name, resolve_user_path
 
 logger = logging.getLogger("audiocpp_stt")
 
 AUDIOCPP_DIR = audio_cpp_dir()
-SERVER_EXE = AUDIOCPP_DIR / "audiocpp_server.exe"
+SERVER_EXE = AUDIOCPP_DIR / audio_cpp_exe_name()
 CONFIG_FILE = ENGINE_STATE_DIR / "custom_stt_server.json"
 SERVER_LOG = ENGINE_STATE_DIR / "custom_stt_runtime.log"
 

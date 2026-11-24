@@ -16,6 +16,7 @@ export interface AppConfig {
   videoAutoStt?: boolean
   audioCppDir?: string
   audioCppFound?: boolean
+  exeExt?: string
   dataRoot: string
 }
 

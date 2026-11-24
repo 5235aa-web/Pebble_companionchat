@@ -246,16 +246,25 @@ def bundle_root() -> Optional[Path]:
     return Path(__file__).resolve().parent.parent
 
 
+def audio_cpp_exe_name() -> str:
+    """Platform executable filename for audio.cpp server."""
+    return "audiocpp_server.exe" if os.name == "nt" else "audiocpp_server"
+
+
 def audio_cpp_dir() -> Path:
-    """Locate the audio.cpp runtime (audiocpp_server.exe + model_specs + voice).
+    """Locate the audio.cpp runtime (audiocpp_server + model_specs + voice).
 
     Frozen builds put it at <_MEIPASS>/audio-cpp. In source it lives inside
     backend/, one level below bundle_root(), so the bundled location has to be
     probed first and the sibling directory used as the fallback.
     """
+    exe_name = audio_cpp_exe_name()
     bundled = Path(bundle_root()) / "audio-cpp"
-    if (bundled / "audiocpp_server.exe").exists():
+    if (bundled / exe_name).exists():
         return bundled
+    custom = DATA_ROOT / "audio-cpp"
+    if (custom / exe_name).exists():
+        return custom
     return Path(__file__).resolve().parent / "audio-cpp"
 
 

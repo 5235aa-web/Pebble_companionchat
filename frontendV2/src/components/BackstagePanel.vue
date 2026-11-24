@@ -494,6 +494,7 @@ const ffmpegFound = ref(false)
 const videoAutoStt = ref(false)
 const audioCppDir = ref('')
 const audioCppFound = ref(false)
+const hostExeExt = ref('.exe')
 const modelsRootError = ref('')
 const modelsSaved = ref(false)
 
@@ -559,6 +560,7 @@ async function loadPaths(refreshInochi = false) {
     invalidateAttachmentCaps()
     audioCppDir.value = cfg.audioCppDir || ''
     audioCppFound.value = Boolean(cfg.audioCppFound)
+    hostExeExt.value = cfg.exeExt ?? '.exe'
   } catch (err) {
     modelsRootError.value = err instanceof Error ? err.message : String(err)
   }
@@ -2626,7 +2628,8 @@ function commitModel() {
                 @click="openPathPicker({
                   title: t('backstage.llamaRoot'),
                   initialPath: configuredLlamaRoot || llamaRoot,
-                  ext: '.exe',
+                  ext: hostExeExt,
+                  allowDir: true,
                   onSelect: (p) => { configuredLlamaRoot = p },
                 })"
               >{{ t('backstage.browse') }}</button>
@@ -2663,7 +2666,7 @@ function commitModel() {
               <input
                 class="num-in path"
                 :value="configuredFfmpegPath"
-                :placeholder="ffmpegPath || 'ffmpeg.exe'"
+                :placeholder="ffmpegPath || `ffmpeg${hostExeExt}`"
                 @input="configuredFfmpegPath = ($event.target as HTMLInputElement).value"
               />
               <button
@@ -2672,7 +2675,7 @@ function commitModel() {
                 @click="openPathPicker({
                   title: t('backstage.ffmpegPath'),
                   initialPath: configuredFfmpegPath || ffmpegPath,
-                  ext: '.exe',
+                  ext: hostExeExt,
                   allowDir: true,
                   onSelect: (p) => { configuredFfmpegPath = p },
                 })"
