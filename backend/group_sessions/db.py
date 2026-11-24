@@ -562,9 +562,9 @@ def clear_messages(session_id: int) -> int:
 
 
 def get_session_image_attachments(session_id: int) -> List[Dict]:
-    """Every image this room's messages reference, newest first, deduped by url.
+    """Every image or video this room's messages reference, newest first, deduped by url.
 
-    Compaction never deletes rows, so the album keeps listing images from
+    Compaction never deletes rows, so the album keeps listing media from
     messages a summary already covers. Without that the files would linger on
     disk with nothing pointing at them.
     """
@@ -581,23 +581,60 @@ def get_session_image_attachments(session_id: int) -> List[Dict]:
     out: List[Dict] = []
     for row in rows:
         for att in _message_row(row)["attachments"]:
-            if not isinstance(att, dict) or att.get("kind") != "image":
+            if not isinstance(att, dict):
+                continue
+            kind = att.get("kind")
+            if kind not in ("image", "video"):
                 continue
             url = str(att.get("url") or "")
             if not url or url in seen:
                 continue
             seen.add(url)
-            out.append({
+            entry: Dict = {
+                "kind": kind,
                 "url": url,
-                "name": att.get("name") or "image",
+                "name": att.get("name") or ("video" if kind == "video" else "image"),
                 "mime": att.get("mime") or "",
                 "size": att.get("size") or 0,
                 "width": att.get("width") or 0,
                 "height": att.get("height") or 0,
                 "message_id": int(row["id"]),
                 "created_at": row["created_at"],
-            })
+            }
+            if kind == "video":
+                entry["poster_url"] = att.get("poster_url") or ""
+                entry["duration"] = att.get("duration") or 0
+                entry["frames"] = att.get("frames") or []
+                entry["transcript"] = att.get("transcript") or ""
+            out.append(entry)
     return out
+
+
+def get_session_attachments_by_url(session_id: int, url: str) -> List[Dict]:
+    """Return attachment descriptors matching *url* inside this room."""
+    if not url:
+        return []
+    conn = _conn()
+    try:
+        rows = conn.execute(
+            "SELECT attachments FROM group_messages "
+            "WHERE session_id = ? AND attachments != '[]'",
+            (session_id,),
+        ).fetchall()
+    finally:
+        conn.close()
+    found: List[Dict] = []
+    for row in rows:
+        try:
+            items = json.loads(row["attachments"] or "[]")
+        except (TypeError, ValueError):
+            continue
+        if not isinstance(items, list):
+            continue
+        for item in items:
+            if isinstance(item, dict) and str(item.get("url") or "") == url:
+                found.append(item)
+    return found
 
 
 def remove_session_image(session_id: int, url: str) -> int:

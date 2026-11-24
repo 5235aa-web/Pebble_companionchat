@@ -39,6 +39,7 @@ import {
 } from '@/api/llm'
 import { useI18n } from '@/i18n'
 import { getAppConfig, setAppConfig } from '@/api/app'
+import { invalidateAttachmentCaps } from '@/api/gallery'
 import { getInochiStatus, type InochiEnvStatus } from '@/api/inochi2d'
 import type { SttEngineInfo } from '@/api/stt'
 import PathPickerModal from './PathPickerModal.vue'
@@ -487,6 +488,10 @@ const llamaRoot = ref('')
 const llamaFound = ref(false)
 const configuredInochiPython = ref('')
 const inochiEnv = ref<InochiEnvStatus | null>(null)
+const configuredFfmpegPath = ref('')
+const ffmpegPath = ref('')
+const ffmpegFound = ref(false)
+const videoAutoStt = ref(false)
 const audioCppDir = ref('')
 const audioCppFound = ref(false)
 const modelsRootError = ref('')
@@ -547,6 +552,11 @@ async function loadPaths(refreshInochi = false) {
     llamaFound.value = cfg.llamaFound
     configuredInochiPython.value = cfg.configuredInochiPython || ''
     inochiEnv.value = iEnv
+    configuredFfmpegPath.value = cfg.configuredFfmpegPath || ''
+    ffmpegPath.value = cfg.ffmpegPath || ''
+    ffmpegFound.value = Boolean(cfg.ffmpegFound)
+    videoAutoStt.value = Boolean(cfg.videoAutoStt)
+    invalidateAttachmentCaps()
     audioCppDir.value = cfg.audioCppDir || ''
     audioCppFound.value = Boolean(cfg.audioCppFound)
   } catch (err) {
@@ -561,7 +571,9 @@ async function applyModelsRoot() {
       modelsRoot: modelsRoot.value,
       llamaRoot: configuredLlamaRoot.value,
       inochiPythonPath: configuredInochiPython.value,
+      ffmpegPath: configuredFfmpegPath.value,
     })
+    invalidateAttachmentCaps()
     await loadPaths(true)
     if (llm.isLocal) void llm.refreshLocal()
     modelsSaved.value = true
@@ -958,6 +970,18 @@ function sttStateLabel(e: SttEngineInfo | null | undefined): string {
 
 const sttStopNote = ref('')
 let sttStopTimer = 0
+
+async function onToggleVideoAutoStt(enabled: boolean) {
+  const prev = videoAutoStt.value
+  videoAutoStt.value = enabled
+  try {
+    await setAppConfig({ videoAutoStt: enabled })
+    invalidateAttachmentCaps()
+  } catch (err) {
+    videoAutoStt.value = prev
+    modelsRootError.value = err instanceof Error ? err.message : String(err)
+  }
+}
 
 /**
  * Result line for the ASR stop button. Freeing VRAM behind a process the panel
@@ -2549,6 +2573,15 @@ function commitModel() {
           <span v-if="sttStopNote" class="unload-note">{{ sttStopNote }}</span>
         </div>
 
+        <div class="faders" style="margin-top: 14px">
+          <UiLever
+            :model-value="videoAutoStt"
+            :label="t('backstage.videoAutoStt')"
+            @update:model-value="onToggleVideoAutoStt"
+          />
+          <div class="path-hint">{{ t('backstage.videoAutoSttHint') }}</div>
+        </div>
+
         <div class="stt-note">{{ t('backstage.sttNote') }}</div>
       </div>
 
@@ -2623,6 +2656,30 @@ function commitModel() {
             </div>
           </label>
           <div class="path-hint">{{ t('backstage.inochiPythonHint') }}</div>
+
+          <label class="num">
+            <span class="num-name">{{ t('backstage.ffmpegPath') }}</span>
+            <div class="path-pick-wrap">
+              <input
+                class="num-in path"
+                :value="configuredFfmpegPath"
+                :placeholder="ffmpegPath || 'ffmpeg.exe'"
+                @input="configuredFfmpegPath = ($event.target as HTMLInputElement).value"
+              />
+              <button
+                type="button"
+                class="mini-btn"
+                @click="openPathPicker({
+                  title: t('backstage.ffmpegPath'),
+                  initialPath: configuredFfmpegPath || ffmpegPath,
+                  ext: '.exe',
+                  allowDir: true,
+                  onSelect: (p) => { configuredFfmpegPath = p },
+                })"
+              >{{ t('backstage.browse') }}</button>
+            </div>
+          </label>
+          <div class="path-hint">{{ t('backstage.ffmpegHint') }}</div>
         </div>
         <div class="path-row">
           <button class="mini-btn primary" @click="applyModelsRoot">{{ t('backstage.apply') }}</button>
@@ -2643,6 +2700,12 @@ function commitModel() {
             <span class="num-name">{{ t('backstage.audioCppStatus') }}</span>
             <span class="path-v" :class="{ warn: !audioCppFound }">
               {{ audioCppFound ? t('backstage.audioCppReady') : t('backstage.audioCppMissing') }} · {{ audioCppDir }}
+            </span>
+          </label>
+          <label class="num">
+            <span class="num-name">{{ t('backstage.ffmpegPath') }}</span>
+            <span class="path-v" :class="{ warn: !ffmpegFound }">
+              {{ ffmpegFound ? `${t('backstage.ffmpegReady')} · ${ffmpegPath}` : t('backstage.ffmpegMissing') }}
             </span>
           </label>
           <label v-if="inochiEnv" class="num">

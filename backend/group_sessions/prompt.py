@@ -24,7 +24,7 @@ import logging
 import re
 from typing import Any, Dict, List, Optional, Union
 
-from ..attachment_parser import resolve_image_path
+from ..attachment_parser import format_video_for_prompt, resolve_image_path
 from ..global_prompts import load_global_prompts
 from ..memory_engine import resolve_user_name
 from ..placeholders import substitute
@@ -228,37 +228,59 @@ def build_system_prompt(
 
 
 def _image_parts(attachments: List[Dict]) -> List[Dict[str, Any]]:
-    """Convert stored image attachments into OpenAI-compatible `image_url` parts."""
+    """Convert stored image and video-keyframe attachments into OpenAI-compatible `image_url` parts."""
     parts: List[Dict[str, Any]] = []
     for item in attachments:
-        if not isinstance(item, dict) or item.get("kind") != "image":
+        if not isinstance(item, dict):
             continue
-        url = str(item.get("url") or "")
-        path = resolve_image_path(url)
-        if not path:
-            logger.warning("Group image attachment missing on disk: %s", url)
+        kind = item.get("kind")
+        if kind == "image":
+            urls = [(str(item.get("url") or ""), str(item.get("mime") or "image/png"))]
+        elif kind == "video":
+            urls = [
+                (str(f.get("url") or ""), "image/jpeg")
+                for f in (item.get("frames") or [])
+                if isinstance(f, dict) and f.get("url")
+            ]
+        else:
             continue
-        try:
-            encoded = base64.b64encode(path.read_bytes()).decode("ascii")
-        except OSError as exc:
-            logger.warning("Failed to read group image attachment %s: %s", path, exc)
-            continue
-        mime = str(item.get("mime") or "image/png")
-        parts.append({
-            "type": "image_url",
-            "image_url": {"url": f"data:{mime};base64,{encoded}"},
-        })
+        for url, mime in urls:
+            path = resolve_image_path(url)
+            if not path:
+                logger.warning("Group media attachment missing on disk: %s", url)
+                continue
+            try:
+                encoded = base64.b64encode(path.read_bytes()).decode("ascii")
+            except OSError as exc:
+                logger.warning("Failed to read group media attachment %s: %s", path, exc)
+                continue
+            parts.append({
+                "type": "image_url",
+                "image_url": {"url": f"data:{mime};base64,{encoded}"},
+            })
     return parts
+
+
+def _video_text_notes(attachments: List[Dict]) -> str:
+    notes = [
+        format_video_for_prompt(item)
+        for item in attachments
+        if isinstance(item, dict) and item.get("kind") == "video"
+    ]
+    return "\n\n".join(notes)
 
 
 def _with_recent_images(
     text_line: str,
     attachments: List[Dict],
+    include_images: bool = True,
 ) -> Union[str, List[Dict[str, Any]]]:
-    image_parts = _image_parts(attachments)
+    video_notes = _video_text_notes(attachments)
+    combined_text = f"{text_line}\n\n{video_notes}".strip() if video_notes else text_line
+    image_parts = _image_parts(attachments) if include_images else []
     if not image_parts:
-        return text_line
-    return [{"type": "text", "text": text_line}, *image_parts]
+        return combined_text
+    return [{"type": "text", "text": combined_text}, *image_parts]
 
 
 def build_messages(
@@ -295,10 +317,11 @@ def build_messages(
         if str(msg.get("kind") or "") == "narration":
             continue
         if (
-            include_images
-            and str(msg.get("speaker_id") or "") == "user"
+            str(msg.get("speaker_id") or "") == "user"
             and any(
-                isinstance(a, dict) and a.get("kind") == "image"
+                isinstance(a, dict) and (
+                    (include_images and a.get("kind") == "image") or a.get("kind") == "video"
+                )
                 for a in (msg.get("attachments") or [])
             )
         ):
@@ -355,7 +378,11 @@ def build_messages(
             clean = _strip_mentions(content, members) if content else ""
             text_line = f"{user_name}: {clean}" if clean else f"{user_name}:"
             msg_content: Union[str, List[Dict[str, Any]]] = (
-                _with_recent_images(text_line, msg.get("attachments") or [])
+                _with_recent_images(
+                    text_line,
+                    msg.get("attachments") or [],
+                    include_images=include_images,
+                )
                 if is_image_msg
                 else text_line
             )

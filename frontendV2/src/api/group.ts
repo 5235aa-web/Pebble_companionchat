@@ -35,11 +35,15 @@ export interface GroupAttachment {
   kind: string
   name?: string
   url?: string
+  poster_url?: string
   path?: string
   mime?: string
   size?: number
   width?: number
   height?: number
+  duration?: number
+  frames?: Array<{ time: number; url: string }>
+  transcript?: string
   content?: string
 }
 

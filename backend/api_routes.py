@@ -31,7 +31,7 @@ from .companion_db import (
     set_message_importance, get_important_messages,
     get_summary_messages, get_latest_summary, get_compaction_version,
     # 图片记录面板：分支图片聚合与引用清除
-    get_branch_image_attachments, remove_attachment_reference,
+    get_branch_image_attachments, get_attachments_by_url, remove_attachment_reference,
 )
 from .companion import Companion
 from .script_db import get_session_by_branch
@@ -70,12 +70,17 @@ from .memory_db import (
     update_memory,
 )
 from .attachment_parser import (
+    MAX_VIDEO_BYTES,
     build_attachment,
+    classify as classify_attachment,
     AttachmentError,
+    FfmpegFallbackError,
     delete_image,
+    delete_video_assets,
     format_documents_for_prompt,
     resolve_image_path,
     supported_extensions,
+    transcribe_stored_video,
 )
 from .world_book_db import (    create_world_book, get_world_book, get_all_world_books, update_world_book, delete_world_book,
     add_entry, update_entry, delete_entry, get_entries, get_entry,
@@ -171,26 +176,99 @@ async def _stream_upload_to_tempfile(
 
 
 @router.post("/attachments/parse")
-async def parse_attachment_endpoint(file: UploadFile = File(...)):
+async def parse_attachment_endpoint(
+    file: UploadFile = File(...),
+    frames_json: Optional[str] = Form(None),
+    frames_file: Optional[UploadFile] = File(None),
+    duration: Optional[float] = Form(None),
+    width: Optional[int] = Form(None),
+    height: Optional[int] = Form(None),
+    transcript: Optional[str] = Form(None),
+    enable_stt: bool = Form(False),
+    audio_wav: Optional[UploadFile] = File(None),
+):
     """
     解析上传的附件。
 
     图片保存到 uploads/attachments 并返回静态 URL 与像素尺寸；
+    视频保存到 uploads/attachments，优先由本机 FFmpeg 抽帧（不可用时接收前端抽帧），
+    并仅在 enable_stt=True 时按需提取音轨与 STT 转录；
     Office / PDF / 纯文本在本地解析成正文返回，由聊天请求内联进用户消息。
     """
     filename = file.filename or "attachment"
+    max_bytes = MAX_VIDEO_BYTES if classify_attachment(filename) == "video" else MAX_UPLOAD_BYTES
     # One user can drop a batch of files; the semaphore keeps a large selection
     # from holding more than MAX_ATTACHMENT_FILES bodies in memory at once.
     async with _attachment_semaphore():
-        data = await _read_upload(file)
+        data = await _read_upload(file, max_bytes=max_bytes)
+        effective_frames_json = frames_json or ""
+        if not effective_frames_json.strip() and frames_file is not None:
+            raw_frames = await _read_upload(frames_file, max_bytes=MAX_UPLOAD_BYTES)
+            effective_frames_json = raw_frames.decode("utf-8", errors="replace")
+        wav_bytes: Optional[bytes] = None
+        if enable_stt and audio_wav is not None:
+            wav_bytes = await _read_upload(audio_wav, max_bytes=MAX_UPLOAD_BYTES)
+
+        def _stt_transcribe(raw_wav: bytes) -> str:
+            engine = _get_stt_engine()
+            if engine is None:
+                return ""
+            return engine.transcribe_bytes(raw_wav, 16000) or ""
 
         try:
-            return build_attachment(filename, data)
+            return await asyncio.to_thread(
+                build_attachment,
+                filename,
+                data,
+                frames_json=effective_frames_json,
+                duration=duration or 0.0,
+                width=width or 0,
+                height=height or 0,
+                wav_bytes=wav_bytes,
+                transcript=transcript or "",
+                enable_stt=enable_stt,
+                stt_fn=_stt_transcribe,
+            )
+        except FfmpegFallbackError as e:
+            raise HTTPException(status_code=422, detail=str(e))
         except AttachmentError as e:
             raise HTTPException(status_code=400, detail=str(e))
         except Exception as e:
             logger.error(f"Attachment parse failed for {filename}: {e}", exc_info=True)
             raise HTTPException(status_code=500, detail=f"附件解析失败: {e}")
+
+
+@router.post("/attachments/video/transcribe")
+async def transcribe_video_attachment_endpoint(
+    url: str = Form(...),
+    audio_wav: Optional[UploadFile] = File(None),
+):
+    """按需为已上传的视频附件运行一次 STT 语音转录。"""
+    wav_bytes: Optional[bytes] = None
+    if audio_wav is not None:
+        wav_bytes = await _read_upload(audio_wav, max_bytes=MAX_UPLOAD_BYTES)
+
+    def _stt_transcribe(raw_wav: bytes) -> str:
+        engine = _get_stt_engine()
+        if engine is None:
+            raise AttachmentError("当前没有可用的语音识别（STT）引擎")
+        return engine.transcribe_bytes(raw_wav, 16000) or ""
+
+    try:
+        text = await asyncio.to_thread(
+            transcribe_stored_video,
+            url,
+            wav_bytes=wav_bytes,
+            stt_fn=_stt_transcribe,
+        )
+        return {"transcript": text}
+    except FfmpegFallbackError as e:
+        raise HTTPException(status_code=422, detail=str(e))
+    except AttachmentError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        logger.error("On-demand video transcription failed for %s: %s", url, e, exc_info=True)
+        raise HTTPException(status_code=500, detail=f"视频语音识别失败: {e}")
 
 
 @router.get("/attachments/supported")
@@ -223,7 +301,11 @@ async def delete_branch_image_endpoint(
     if not get_companion(companion_id):
         raise HTTPException(status_code=404, detail="Companion not found")
 
+    matched = get_attachments_by_url(url)
     file_deleted = delete_image(url)
+    for att in matched:
+        if att.get("kind") == "video":
+            delete_video_assets(att)
     cleared = remove_attachment_reference(url)
 
     if not file_deleted and cleared == 0:

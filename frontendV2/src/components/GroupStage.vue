@@ -6,7 +6,8 @@ import { llmConfig } from '@/stores/chat'
 import { useFileUrls } from '@/composables/useFileUrl'
 import { useI18n } from '@/i18n'
 import ChatAttachmentPicker from './ChatAttachmentPicker.vue'
-import type { PickedAttachment } from '@/api/gallery'
+import InlineVideoCard from './InlineVideoCard.vue'
+import { attachmentToPayload, type PickedAttachment } from '@/api/gallery'
 import { isCharxCard, type BeatLine } from '@/data/chat'
 import {
   addGroupMember,
@@ -260,6 +261,10 @@ const summaryOpen = ref(false)
 /** Pictures a stored line carries. They never reach the model. */
 function imagesOf(m: GroupMessage): GroupAttachment[] {
   return (m.attachments ?? []).filter((a) => a.kind === 'image' && !!a.url)
+}
+
+function videosOf(m: GroupMessage): GroupAttachment[] {
+  return (m.attachments ?? []).filter((a) => a.kind === 'video' && !!a.url)
 }
 
 const threadShots = useFileUrls(
@@ -978,16 +983,7 @@ function runTurn(opts: {
   const narrating = Boolean(opts.narrating)
   const picked = narrating ? [] : (opts.picked ?? [])
   const text = opts.text
-  const attachments = picked.map((c) => ({
-    kind: c.info.kind,
-    name: c.info.name,
-    url: c.info.url,
-    path: c.info.path,
-    mime: c.info.mime_type,
-    size: c.info.size,
-    width: c.info.width,
-    height: c.info.height,
-  }))
+  const attachments = picked.map((c) => attachmentToPayload(c.info))
 
   const hasContent = Boolean(text || attachments.length)
   const optimistic: GroupMessage | null = hasContent
@@ -1104,6 +1100,7 @@ function send(): void {
   // dialogue while the picker is still open.
   if (slashStage.value) return
   const narrating = narrationMode.value
+  if (picker.value?.uploading) return
   // A stage direction carries text only: the backend stores no attachments for
   // one, so a picture picked while the mode is on stays in the tray.
   const picked = narrating ? [] : chips.value
@@ -1132,6 +1129,23 @@ function send(): void {
     restoreDraftOnError: rawDraft,
     allowRelay: true,
   })
+}
+
+function onComposerDrop(e: DragEvent): void {
+  const files = Array.from(e.dataTransfer?.files ?? [])
+  if (!files.length) return
+  e.preventDefault()
+  void picker.value?.addFiles(files)
+}
+
+function onComposerPaste(e: ClipboardEvent): void {
+  const files = Array.from(e.clipboardData?.items ?? [])
+    .filter((it) => it.kind === 'file')
+    .map((it) => it.getAsFile())
+    .filter((f): f is File => Boolean(f))
+  if (!files.length) return
+  e.preventDefault()
+  void picker.value?.addFiles(files)
 }
 
 function promptSpeaker(companionId: string): void {
@@ -1682,6 +1696,21 @@ onMounted(async () => {
                 <img :src="shotUrl(String(a.url))" :alt="a.name || 'image'" />
               </button>
             </div>
+            <div v-if="videosOf(m).length" class="inline-video-list">
+              <InlineVideoCard
+                v-for="v in videosOf(m)"
+                :key="String(v.url)"
+                compact
+                :video="{
+                  name: v.name,
+                  url: String(v.url),
+                  posterUrl: v.poster_url,
+                  duration: v.duration,
+                  sizeBytes: v.size,
+                }"
+                :gallery-target="String(v.url)"
+              />
+            </div>
           </article>
 
           <article v-if="live" class="gc-beat gc-live" data-role="ai">
@@ -1705,7 +1734,11 @@ onMounted(async () => {
       </div>
     </div>
 
-    <footer class="gc-composer">
+    <footer
+      class="gc-composer"
+      @dragover.prevent
+      @drop="onComposerDrop"
+    >
       <ChatAttachmentPicker ref="picker" v-model="chips" image-only />
       <div class="gc-composer-inner">
         <div v-if="userNoteOpen" class="gc-note">
@@ -1838,6 +1871,7 @@ onMounted(async () => {
           "
           @input="onDraftInput"
           @keydown="onKeydown"
+          @paste="onComposerPaste"
         ></textarea>
 
         <button
@@ -1898,7 +1932,7 @@ onMounted(async () => {
           type="button"
           class="gc-cbtn"
           :data-tip="t('composer.attach')"
-          aria-label="Attach a picture"
+          aria-label="Attach media"
           @click="picker?.pick()"
         >
           <svg viewBox="0 0 24 24">
@@ -1912,6 +1946,7 @@ onMounted(async () => {
           type="button"
           class="gc-cbtn gc-send"
           :class="{ busy: busy || relayRemaining > 0 }"
+          :disabled="!busy && relayRemaining === 0 && Boolean(picker?.uploading)"
           :data-tip="busy || relayRemaining > 0 ? t('group.stop') : t('composer.send')"
           :aria-label="busy || relayRemaining > 0 ? t('group.stop') : t('composer.send')"
           @click="send"

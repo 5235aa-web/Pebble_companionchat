@@ -21,6 +21,9 @@ from .paths import (
     LLM_CONFIG_PATH,
     UPLOAD_ROOT,
     audio_cpp_dir,
+    ffmpeg_path,
+    invalidate_ffmpeg_cache,
+    is_ffmpeg_usable,
     load_app_config,
     llama_dir,
     llama_server_exe_name,
@@ -380,6 +383,8 @@ class AppConfigPayload(BaseModel):
     modelsRoot: Optional[str] = None
     llamaRoot: Optional[str] = None
     inochiPythonPath: Optional[str] = None
+    ffmpegPath: Optional[str] = None
+    videoAutoStt: Optional[bool] = None
 
 
 @app.get("/app/config")
@@ -390,6 +395,7 @@ async def get_app_config():
     llama = llama_dir()
     audio_dir = audio_cpp_dir()
     inochi_py = _find_python()
+    ff = ffmpeg_path()
     return {
         "modelsRoot": config.get("modelsRoot") or "",
         "resolvedModelsRoot": str(root),
@@ -399,6 +405,10 @@ async def get_app_config():
         "llamaFound": (llama / llama_server_exe_name()).exists(),
         "configuredInochiPython": config.get("inochiPythonPath") or "",
         "inochiPython": str(inochi_py) if inochi_py else "",
+        "configuredFfmpegPath": config.get("ffmpegPath") or "",
+        "ffmpegPath": str(ff) if ff else "",
+        "ffmpegFound": is_ffmpeg_usable(force_refresh=True),
+        "videoAutoStt": bool(config.get("videoAutoStt", False)),
         "audioCppDir": str(audio_dir),
         "audioCppFound": (audio_dir / "audiocpp_server.exe").exists(),
         "dataRoot": str(DATA_ROOT),
@@ -472,7 +482,33 @@ async def set_app_config(payload: AppConfigPayload):
         else:
             updated["inochiPythonPath"] = ""
 
+    if payload.ffmpegPath is not None:
+        fval = payload.ffmpegPath.strip()
+        if fval:
+            from .paths import _resolve_ffmpeg_candidate, ffmpeg_exe_name
+            target = Path(fval).expanduser()
+            if not target.exists():
+                raise HTTPException(status_code=400, detail=f"FFmpeg path does not exist: {target}")
+            resolved_ff = _resolve_ffmpeg_candidate(target)
+            if resolved_ff is None:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"{ffmpeg_exe_name()} not found in: {target}",
+                )
+            if "ffmpeg" not in resolved_ff.stem.lower():
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Expected {ffmpeg_exe_name()}, got: {resolved_ff.name}",
+                )
+            updated["ffmpegPath"] = str(resolved_ff)
+        else:
+            updated["ffmpegPath"] = ""
+
+    if payload.videoAutoStt is not None:
+        updated["videoAutoStt"] = bool(payload.videoAutoStt)
+
     save_app_config(updated)
+    invalidate_ffmpeg_cache()
     from .Inochi2D.service import invalidate_env_cache
     invalidate_env_cache()
     return {
@@ -480,6 +516,8 @@ async def set_app_config(payload: AppConfigPayload):
         "modelsRoot": updated.get("modelsRoot", ""),
         "llamaRoot": updated.get("llamaRoot", ""),
         "inochiPythonPath": updated.get("inochiPythonPath", ""),
+        "ffmpegPath": updated.get("ffmpegPath", ""),
+        "videoAutoStt": bool(updated.get("videoAutoStt", False)),
     }
 
 

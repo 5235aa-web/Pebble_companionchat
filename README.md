@@ -80,6 +80,7 @@ Whether running local GGUF weights, calling cloud LLM APIs, holding live voice c
 
 ### 8. Picture Studio & Multimodal Attachments
 - **File & Document Parsing**: Attach images, PDFs (`pypdf`), Word documents (`python-docx`), spreadsheets (`openpyxl`), and plain-text/code files directly in chat.
+- **Video Attachments**: Send video clips (`.mp4`, `.mov`, `.mkv`, `.webm`, etc.) in single and group chats. Prefers local FFmpeg (auto-detected or user-configured in Backstage Paths, with browser `<canvas>` fallback) to extract a dense chronological frame stream (up to 180 frames at 2–4 fps) injected for the active turn only, with optional opt-in speech recognition (off by default, toggleable globally or per chip) and click-to-mount throttled playback in chat and the media gallery.
 - **Scene Illustration & Gallery**: Generate scene pictures manually or via story triggers with prompt rewriting, daily quotas, cooldowns, and a unified gallery across single and group rooms.
 
 ### 9. Customizable Aesthetic

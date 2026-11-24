@@ -8,8 +8,14 @@ import { useCallStore } from '@/stores/call'
 import { useI18n } from '@/i18n'
 import { clearBranchMessages } from '@/api/companion'
 import { fileUrl } from '@/api/client'
-import { parseAttachment, type AttachmentInfo } from '@/api/gallery'
+import { attachmentToPayload, type PickedAttachment } from '@/api/gallery'
 import { blobToWav } from '@/utils/audio'
+import {
+  allocateChipId,
+  revokeOwnedChipUrls,
+  useAttachmentQueue,
+} from '@/composables/useAttachmentQueue'
+import AttachmentChipStrip from './AttachmentChipStrip.vue'
 
 const chat = useChatStore()
 const ui = useUiStore()
@@ -30,19 +36,10 @@ const inScript = computed(
 
 const input = ref<HTMLTextAreaElement | null>(null)
 
-interface Chip {
-  id: number
-  name: string
-  ext: string
-  src: string
-  kind: 'photo' | 'paper'
-  info: AttachmentInfo
-}
-const chips = ref<Chip[]>([])
-let chipId = 1
+const chips = ref<PickedAttachment[]>([])
+const { uploading, addFiles, removeChip, clearChips, toggleVideoStt } = useAttachmentQueue(chips)
 
 const attachInput = ref<HTMLInputElement | null>(null)
-const uploading = ref(false)
 const dragOver = ref(false)
 let dragDepth = 0
 
@@ -66,24 +63,17 @@ function doSend() {
     chat.stop()
     return
   }
+  if (uploading.value) return
   const el = input.value
   if (!el) return
   const val = el.value
   if (!val.trim() && !chips.value.length) return
   chat.send(
     val,
-    chips.value.map((c) => ({
-      kind: c.info.kind,
-      name: c.info.name,
-      url: c.info.url,
-      path: c.info.path,
-      mime: c.info.mime_type,
-      content: c.info.content,
-    })),
+    chips.value.map((c) => attachmentToPayload(c.info)),
   )
   el.value = ''
-  revokeChipUrls(chips.value)
-  chips.value = []
+  clearChips()
   autoGrow()
 }
 
@@ -94,74 +84,26 @@ function onKeydown(e: KeyboardEvent) {
   }
 }
 
-const MAX_ATTACH_FILES = 10
-const MAX_ATTACH_BYTES = 50 * 1024 * 1024
-
-function revokeChipUrls(list: Chip[]) {
-  for (const c of list) {
-    if (c.src.startsWith('blob:')) URL.revokeObjectURL(c.src)
-  }
-}
-
-function removeChip(id: number) {
-  const removed = chips.value.filter((c) => c.id === id)
-  revokeChipUrls(removed)
-  chips.value = chips.value.filter((c) => c.id !== id)
-}
-
 function pickAttach() {
   attachInput.value?.click()
-}
-
-async function addAttachFiles(files: File[]) {
-  if (!files.length || uploading.value) return
-  if (chips.value.length + files.length > MAX_ATTACH_FILES) {
-    ui.askConfirm({
-      title: t('composer.attach'),
-      text: t('composer.attachLimit', { n: MAX_ATTACH_FILES }),
-      onConfirm: () => {},
-    })
-    return
-  }
-  const tooLarge = files.find((f) => f.size > MAX_ATTACH_BYTES)
-  if (tooLarge) {
-    ui.askConfirm({
-      title: t('composer.attach'),
-      text: t('composer.attachTooLarge', { name: tooLarge.name }),
-      onConfirm: () => {},
-    })
-    return
-  }
-  uploading.value = true
-  try {
-    for (const file of files) {
-      const info = await parseAttachment(file)
-      const isImage = file.type.startsWith('image/') || info.kind === 'image'
-      chips.value.push({
-        id: chipId++,
-        name: file.name,
-        ext: (file.name.split('.').pop() || '').toUpperCase().slice(0, 4),
-        src: isImage ? URL.createObjectURL(file) : '',
-        kind: isImage ? 'photo' : 'paper',
-        info,
-      })
-    }
-  } catch (err) {
-    ui.askConfirm({
-      title: t('composer.attach'),
-      text: err instanceof Error ? err.message : String(err),
-      onConfirm: () => {},
-    })
-  } finally {
-    uploading.value = false
-  }
 }
 
 async function onAttachPicked(e: Event) {
   const el = e.target as HTMLInputElement
   const files = Array.from(el.files ?? [])
   el.value = ''
-  await addAttachFiles(files)
+  await addFiles(files)
+}
+
+function onPaste(e: ClipboardEvent) {
+  const items = Array.from(e.clipboardData?.items ?? [])
+  const files = items
+    .filter((it) => it.kind === 'file')
+    .map((it) => it.getAsFile())
+    .filter((f): f is File => Boolean(f))
+  if (!files.length) return
+  e.preventDefault()
+  void addFiles(files)
 }
 
 function hasDroppedFiles(e: DragEvent): boolean {
@@ -211,7 +153,7 @@ function onDrop(e: DragEvent) {
   if (!hasDroppedFiles(e)) return
   e.preventDefault()
   const files = extractDroppedFiles(e.dataTransfer)
-  if (files.length) void addAttachFiles(files)
+  if (files.length) void addFiles(files)
 }
 
 function preventWindowFileDrag(e: DragEvent) {
@@ -225,28 +167,45 @@ function resetDragState(e?: DragEvent) {
   dragOver.value = false
 }
 
-/** An image quoted from the gallery arrives already stored: no re-upload. */
+/** An image or video quoted from the gallery arrives already stored: no re-upload. */
 watch(
   () => ui.quotedImage,
   async (q) => {
     if (!q) return
     ui.quotedImage = null
     if (chips.value.some((c) => c.info.url === q.url)) return
-    // The stored image has to come over the socket too: HTTP image loads fail
-    // in the shell, and a broken thumbnail reads as a failed quote.
+    const isVideo = q.kind === 'video'
+    const thumbPath = isVideo ? q.poster_url || '' : q.url
     let src = ''
-    try {
-      src = await fileUrl(q.url)
-    } catch {
-      src = ''
+    if (thumbPath) {
+      try {
+        src = await fileUrl(thumbPath, 256)
+      } catch {
+        src = ''
+      }
     }
     chips.value.push({
-      id: chipId++,
-      kind: 'photo',
+      id: allocateChipId(),
+      kind: isVideo ? 'video' : 'photo',
       name: q.name,
-      ext: 'IMG',
+      ext: isVideo ? (q.name.split('.').pop() || 'VID').toUpperCase().slice(0, 4) : 'IMG',
       src,
-      info: { kind: 'image', name: q.name, url: q.url, mime_type: '', size: 0 },
+      ownBlobUrl: false,
+      sttEnabled: isVideo ? Boolean(q.transcript?.trim()) : undefined,
+      cachedTranscript: isVideo ? q.transcript || '' : undefined,
+      info: {
+        kind: isVideo ? 'video' : 'image',
+        name: q.name,
+        url: q.url,
+        poster_url: q.poster_url,
+        duration: q.duration,
+        mime: q.mime,
+        size: q.size,
+        width: q.width,
+        height: q.height,
+        frames: q.frames,
+        transcript: q.transcript,
+      },
     })
   },
 )
@@ -334,7 +293,7 @@ onUnmounted(() => {
   window.removeEventListener('dragover', preventWindowFileDrag)
   window.removeEventListener('drop', resetDragState)
   window.removeEventListener('dragend', resetDragState)
-  revokeChipUrls(chips.value)
+  revokeOwnedChipUrls(chips.value)
   clearInterval(recTimer)
   recStream?.getTracks().forEach((tr) => tr.stop())
 })
@@ -382,28 +341,7 @@ function toggleNarration() {
       <svg viewBox="0 0 24 24"><path d="M12 5v14M6 13l6 6 6-6" /></svg>
     </button>
     <div class="attach-strip">
-      <div v-if="chips.length" class="chips">
-        <template v-for="c in chips" :key="c.id">
-          <div v-if="c.kind === 'photo'" class="chip">
-            <div class="chip-photo">
-              <img :src="c.src" alt="" />
-              <span class="cap">{{ c.name }}</span>
-                          </div>
-            <button class="chip-x" aria-label="remove attachment" @click="removeChip(c.id)">
-              <svg viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18" /></svg>
-            </button>
-          </div>
-          <div v-else class="chip">
-            <div class="chip-paper">
-              <span class="ext">{{ c.ext }}</span>
-              <span class="nm">{{ c.name }}</span>
-            </div>
-            <button class="chip-x" aria-label="remove attachment" @click="removeChip(c.id)">
-              <svg viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18" /></svg>
-            </button>
-          </div>
-        </template>
-      </div>
+      <AttachmentChipStrip :chips="chips" @remove="removeChip" @toggle-stt="toggleVideoStt" />
     </div>
 
     <div class="composer-inner">
@@ -414,7 +352,7 @@ function toggleNarration() {
         </svg>
       </button>
       <input ref="attachInput" type="file" multiple hidden @change="onAttachPicked" />
-      <button class="c-btn" :data-tip="t('composer.attach')" :disabled="uploading" @click="pickAttach">
+      <button class="c-btn" :data-tip="t('composer.attach')" @click="pickAttach">
         <svg viewBox="0 0 24 24">
           <rect x="3" y="5" width="18" height="14" rx="1" />
           <circle cx="8.5" cy="10" r="1.6" />
@@ -459,6 +397,7 @@ function toggleNarration() {
         :placeholder="placeholder"
         @input="autoGrow"
         @keydown="onKeydown"
+        @paste="onPaste"
       ></textarea>
 
       <div class="rec">
@@ -484,7 +423,13 @@ function toggleNarration() {
         <svg viewBox="0 0 24 24"><path d="M10 8.5H6v4.5h4v-2c0-1 .3-1.8 1.4-2.5" /><path d="M19 8.5h-4v4.5h4v-2c0-1 .3-1.8 1.4-2.5" /></svg>
       </button>
 
-      <button class="send" :class="{ busy: chat.busy }" :data-tip="chat.busy ? t('composer.stop') : t('composer.send')" @click="doSend">
+      <button
+        class="send"
+        :class="{ busy: chat.busy }"
+        :disabled="!chat.busy && uploading"
+        :data-tip="chat.busy ? t('composer.stop') : t('composer.send')"
+        @click="doSend"
+      >
         <svg v-if="!chat.busy" viewBox="0 0 24 24"><path d="M5 12h14M13 6l6 6-6 6" /></svg>
         <svg v-else viewBox="0 0 24 24"><rect x="7" y="7" width="10" height="10" rx="1" /></svg>
       </button>

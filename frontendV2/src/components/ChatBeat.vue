@@ -26,7 +26,13 @@ const chat = useChatStore()
 const ui = useUiStore()
 const tts = useTtsStore()
 
-const attachMap = useFileUrls(() => (props.beat.attachments || []).map((a) => a.src), 1024)
+const imageAttachments = computed(() =>
+  (props.beat.attachments || []).filter((a) => a.kind !== 'video'),
+)
+const videoAttachments = computed(() =>
+  (props.beat.attachments || []).filter((a) => a.kind === 'video'),
+)
+const attachMap = useFileUrls(() => imageAttachments.value.map((a) => a.src), 1024)
 const session = useSessionStore()
 const call = useCallStore()
 const cardAudio = useCardAudioStore()
@@ -431,15 +437,29 @@ function copyLine() {
       </div>
 
       <div v-else>
-        <div v-if="beat.attachments && beat.attachments.length" class="attach-row">
+        <div v-if="imageAttachments.length" class="attach-row">
           <div
-            v-for="a in beat.attachments"
+            v-for="a in imageAttachments"
             :key="a.src"
             class="attach-thumb"
             @click="openImage(a.src)"
           >
             <img :src="attachMap[a.src]" :alt="a.alt" />
           </div>
+        </div>
+        <div v-if="videoAttachments.length" class="inline-video-list">
+          <InlineVideoCard
+            v-for="v in videoAttachments"
+            :key="v.src"
+            :video="{
+              name: v.alt,
+              url: v.src,
+              posterUrl: v.posterUrl,
+              duration: v.duration,
+              sizeBytes: v.size,
+            }"
+            :gallery-target="v.src"
+          />
         </div>
         <div v-if="inlineMedia.images.length" class="attach-row">
           <div

@@ -14,7 +14,7 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
 from . import db, embeddings, memory, prompt, turn
-from ..attachment_parser import delete_image
+from ..attachment_parser import delete_image, delete_video_assets
 from ..token_counter import estimate_tokens_messages
 
 logger = logging.getLogger(__name__)
@@ -282,7 +282,11 @@ async def delete_session_image(session_id: int, url: str = Query(..., min_length
     pointing at a file, which the user can simply delete again.
     """
     _require(session_id)
+    matched = db.get_session_attachments_by_url(session_id, url)
     file_deleted = delete_image(url)
+    for att in matched:
+        if att.get("kind") == "video":
+            delete_video_assets(att)
     cleared = db.remove_session_image(session_id, url)
     if not file_deleted and cleared == 0:
         raise HTTPException(status_code=404, detail="Image not found")

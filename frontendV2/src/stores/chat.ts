@@ -85,11 +85,33 @@ function pickGenerations(meta: Record<string, unknown> | undefined): GenerationM
 }
 
 function mapBeatAttachments(
-  list: Array<{ kind?: unknown; url?: unknown; name?: unknown }> | undefined,
+  list:
+    | Array<{
+        kind?: unknown
+        url?: unknown
+        name?: unknown
+        poster_url?: unknown
+        duration?: unknown
+        mime?: unknown
+        size?: unknown
+        width?: unknown
+        height?: unknown
+      }>
+    | undefined,
 ): BeatAttachment[] | undefined {
   const mapped = list
-    ?.filter((a) => a && a.kind === 'image' && typeof a.url === 'string' && a.url)
-    .map((a) => ({ src: String(a.url), alt: String(a.name ?? 'image') }))
+    ?.filter((a) => a && (a.kind === 'image' || a.kind === 'video') && typeof a.url === 'string' && a.url)
+    .map<BeatAttachment>((a) => ({
+      kind: a.kind === 'video' ? 'video' : 'image',
+      src: String(a.url),
+      alt: String(a.name ?? (a.kind === 'video' ? 'video' : 'image')),
+      posterUrl: typeof a.poster_url === 'string' && a.poster_url ? a.poster_url : undefined,
+      duration: typeof a.duration === 'number' ? a.duration : undefined,
+      mime: typeof a.mime === 'string' ? a.mime : undefined,
+      size: typeof a.size === 'number' ? a.size : undefined,
+      width: typeof a.width === 'number' ? a.width : undefined,
+      height: typeof a.height === 'number' ? a.height : undefined,
+    }))
   return mapped?.length ? mapped : undefined
 }
 

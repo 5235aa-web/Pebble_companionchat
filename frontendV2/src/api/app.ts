@@ -10,6 +10,10 @@ export interface AppConfig {
   llamaFound: boolean
   configuredInochiPython?: string
   inochiPython?: string
+  configuredFfmpegPath?: string
+  ffmpegPath?: string
+  ffmpegFound?: boolean
+  videoAutoStt?: boolean
   audioCppDir?: string
   audioCppFound?: boolean
   dataRoot: string
@@ -35,7 +39,16 @@ export const setAppConfig = (payload: {
   modelsRoot?: string
   llamaRoot?: string
   inochiPythonPath?: string
-}): Promise<{ status: string; modelsRoot: string; llamaRoot: string; inochiPythonPath?: string }> =>
+  ffmpegPath?: string
+  videoAutoStt?: boolean
+}): Promise<{
+  status: string
+  modelsRoot: string
+  llamaRoot: string
+  inochiPythonPath?: string
+  ffmpegPath?: string
+  videoAutoStt?: boolean
+}> =>
   post('/app/config', payload)
 
 export const setModelsRoot = (modelsRoot: string): Promise<{ status: string; modelsRoot: string }> =>

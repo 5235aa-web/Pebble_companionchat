@@ -27,8 +27,15 @@ export interface GenerationMeta {
 }
 
 export interface BeatAttachment {
+  kind?: 'image' | 'video'
   src: string
   alt: string
+  posterUrl?: string
+  duration?: number
+  mime?: string
+  size?: number
+  width?: number
+  height?: number
 }
 
 export interface Beat {

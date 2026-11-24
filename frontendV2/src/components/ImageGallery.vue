@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onUnmounted, ref, watch } from 'vue'
+import { computed, nextTick, onUnmounted, ref, watch } from 'vue'
 import { useUiStore } from '@/stores/ui'
 import { useSessionStore } from '@/stores/session'
 import { useI18n } from '@/i18n'
@@ -11,6 +11,7 @@ import { useChatStore } from '@/stores/chat'
 import { usePictureStore } from '@/stores/pictures'
 import type { LabelKey } from '@/i18n'
 import { formatDateTime } from '@/utils/time'
+import { formatVideoDuration } from '@/utils/video'
 
 const ui = useUiStore()
 const session = useSessionStore()
@@ -38,20 +39,89 @@ const items = computed<Array<BranchImage | GroupImage>>(() =>
 )
 const index = ref(0)
 const fileError = ref('')
-const urlMap = useFileUrls(() => items.value.map((i) => i.url), 0)
 
-const fileCurrent = computed(() => {
-  const it = items.value[index.value]
-  return it ? urlMap.value[it.url] || '' : ''
-})
+function isVideoItem(it: Partial<BranchImage> | null | undefined): boolean {
+  return Boolean(it && it.kind === 'video')
+}
+
+function thumbPathOf(it: Partial<BranchImage> | null | undefined): string {
+  if (!it) return ''
+  return isVideoItem(it) ? it.poster_url || '' : it.url || ''
+}
+
+// Only fetch image URLs and lightweight video poster URLs here; full video
+// blobs are fetched lazily only when the user explicitly clicks Play.
+const urlMap = useFileUrls(
+  () => items.value.map((i) => thumbPathOf(i)).filter(Boolean),
+  0,
+)
+
 const fileItem = computed(() => items.value[index.value] ?? null)
-const fileName = computed(() => fileItem.value?.name ?? 'image')
+const fileIsVideo = computed(() => isVideoItem(fileItem.value))
+const fileCurrent = computed(() => {
+  const path = thumbPathOf(fileItem.value)
+  return path ? urlMap.value[path] || '' : ''
+})
+const fileName = computed(() => fileItem.value?.name ?? (fileIsVideo.value ? 'video' : 'image'))
 const fileMeta = computed(() => {
   const it = fileItem.value
   if (!it) return ''
-  const kb = Math.round((it.size || 0) / 1024)
-  return `${it.width || 0} x ${it.height || 0} · ${kb} KB`
+  const bytes = it.size || 0
+  const sizeStr =
+    bytes >= 1024 * 1024 ? `${(bytes / (1024 * 1024)).toFixed(1)} MB` : `${Math.round(bytes / 1024)} KB`
+  const dur = isVideoItem(it) ? formatVideoDuration((it as BranchImage).duration) : ''
+  const dims = `${it.width || 0} x ${it.height || 0}`
+  return [dur, dims, sizeStr].filter(Boolean).join(' · ')
 })
+
+/* ---- throttled gallery video playback ---- */
+const GALLERY_VIDEO_KEY = 'gallery-video'
+const videoEl = ref<HTMLVideoElement | null>(null)
+const videoSrc = ref('')
+const videoLoading = ref(false)
+const videoPlaying = computed(
+  () => Boolean(videoSrc.value) && ui.activeVideoId === GALLERY_VIDEO_KEY,
+)
+
+function unloadGalleryVideo() {
+  if (videoEl.value) {
+    try {
+      videoEl.value.pause()
+      videoEl.value.removeAttribute('src')
+      videoEl.value.load()
+    } catch {
+      /* ignore */
+    }
+  }
+  videoSrc.value = ''
+}
+
+function stopGalleryVideo() {
+  if (ui.activeVideoId === GALLERY_VIDEO_KEY) {
+    ui.setActiveVideo(null)
+  }
+  unloadGalleryVideo()
+}
+
+async function playGalleryVideo() {
+  const it = fileItem.value
+  if (!it || !isVideoItem(it) || videoLoading.value) return
+  ui.setActiveVideo(GALLERY_VIDEO_KEY)
+  videoLoading.value = true
+  fileError.value = ''
+  try {
+    const resolved = await fileUrl(it.url, 0)
+    if (ui.activeVideoId !== GALLERY_VIDEO_KEY) return
+    videoSrc.value = resolved
+    await nextTick()
+    void videoEl.value?.play().catch(() => undefined)
+  } catch (e) {
+    if (ui.activeVideoId === GALLERY_VIDEO_KEY) ui.setActiveVideo(null)
+    fileError.value = e instanceof Error ? e.message : String(e)
+  } finally {
+    videoLoading.value = false
+  }
+}
 
 /** Locale lookup for a free-form source tag, with the raw tag as fallback. */
 function sourceLabel(source: string): string {
@@ -116,9 +186,21 @@ async function removeFile() {
 
 /** Hand the current attachment back to the composer as a pending attachment. */
 function quoteFile() {
-  const item = items.value[index.value]
+  const item = items.value[index.value] as BranchImage | undefined
   if (!item) return
-  ui.quotedImage = { url: item.url, name: item.name }
+  ui.quotedImage = {
+    url: item.url,
+    name: item.name,
+    kind: isVideoItem(item) ? 'video' : 'image',
+    poster_url: item.poster_url,
+    duration: item.duration,
+    mime: item.mime,
+    size: item.size,
+    width: item.width,
+    height: item.height,
+    frames: item.frames,
+    transcript: item.transcript,
+  }
   ui.closePanel('gallery')
 }
 
@@ -331,9 +413,24 @@ watch(lightboxOpen, (open) => {
 
 onUnmounted(() => {
   window.removeEventListener('keydown', onKeyDown)
+  stopGalleryVideo()
+})
+
+watch(
+  () => ui.activeVideoId,
+  (id) => {
+    if (id !== GALLERY_VIDEO_KEY && videoSrc.value) {
+      unloadGalleryVideo()
+    }
+  },
+)
+
+watch(index, () => {
+  stopGalleryVideo()
 })
 
 watch(tab, () => {
+  stopGalleryVideo()
   // Each album has its own length; an index kept from the previous one would
   // point past the end and show an empty stage.
   index.value = 0
@@ -353,6 +450,7 @@ watch(
   async (open) => {
     if (!open) {
       closeLightbox()
+      stopGalleryVideo()
       return
     }
     await Promise.all([loadFiles(), loadGroup(), pictures.ensureLoaded()])
@@ -493,8 +591,46 @@ watch(
 
         <template v-else>
           <div class="album-stage">
+            <template v-if="fileIsVideo">
+              <div v-if="videoPlaying" class="album-video-wrap">
+                <video
+                  ref="videoEl"
+                  class="album-video-player"
+                  :src="videoSrc"
+                  controls
+                  playsinline
+                  preload="metadata"
+                ></video>
+                <button
+                  type="button"
+                  class="album-video-stop"
+                  :title="t('card.assetStopVideo')"
+                  :aria-label="t('card.assetStopVideo')"
+                  @click="stopGalleryVideo"
+                >
+                  <svg viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18" /></svg>
+                </button>
+              </div>
+              <button
+                v-else
+                type="button"
+                class="album-video-trigger"
+                :disabled="videoLoading"
+                @click="playGalleryVideo"
+              >
+                <img v-if="fileCurrent" class="album-video-poster" :src="fileCurrent" :alt="fileName" />
+                <span class="album-video-overlay">
+                  <span class="album-video-play" aria-hidden="true">
+                    <svg viewBox="0 0 24 24"><path d="M8 5.5v13l11-6.5z" /></svg>
+                  </span>
+                  <span class="album-video-label">{{
+                    videoLoading ? t('picture.loading') : t('card.assetPlayVideo')
+                  }}</span>
+                </span>
+              </button>
+            </template>
             <img
-              v-if="fileCurrent"
+              v-else-if="fileCurrent"
               :src="fileCurrent"
               :alt="fileName"
               @click="openLightbox(fileCurrent, fileName)"
@@ -533,7 +669,9 @@ watch(
               :class="{ on: i === index }"
               @click="index = i"
             >
-              <img :src="urlMap[it.url]" :alt="it.name" />
+              <img v-if="thumbPathOf(it) && urlMap[thumbPathOf(it)]" :src="urlMap[thumbPathOf(it)]" :alt="it.name" />
+              <span v-else class="album-cell-blank">{{ isVideoItem(it) ? 'VID' : '' }}</span>
+              <span v-if="isVideoItem(it)" class="album-cell-video" aria-hidden="true">▶</span>
             </button>
           </div>
 

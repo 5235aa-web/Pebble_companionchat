@@ -1176,20 +1176,21 @@ def search_messages(companion_id: str, branch_id: str, query: str, limit: int = 
 
 def get_branch_image_attachments(companion_id: str, branch_id: str = "main") -> List[Dict]:
     """
-    汇总该分支引用过的图片附件，按消息从新到旧排列。
+    汇总该分支引用过的图片与视频附件，按消息从新到旧排列。
 
-    已压缩的消息也在范围内：压缩只折叠上下文，图片文件仍然留在磁盘上，
+    已压缩的消息也在范围内：压缩只折叠上下文，媒体文件仍然留在磁盘上，
     记录面板若把它们排除掉，这些文件就成了无法删除的孤儿。
 
-    按 url 去重：引用同一张图再发一次会给新消息写入同样的 url。
+    按 url 去重：引用同一份文件再发一次会给新消息写入同样的 url。
     """
     conn = _get_conn()
     try:
         rows = conn.execute(
             """SELECT id, metadata, created_at FROM companion_messages
-               WHERE companion_id = ? AND branch_id = ? AND metadata LIKE ?
+               WHERE companion_id = ? AND branch_id = ?
+                 AND (metadata LIKE ? OR metadata LIKE ?)
                ORDER BY id DESC""",
-            (companion_id, branch_id, '%"image"%')
+            (companion_id, branch_id, '%"image"%', '%"video"%')
         ).fetchall()
     finally:
         conn.close()
@@ -1205,23 +1206,60 @@ def get_branch_image_attachments(companion_id: str, branch_id: str = "main") -> 
         except (TypeError, ValueError):
             continue
         for att in meta.get("attachments") or []:
-            if not isinstance(att, dict) or att.get("kind") != "image":
+            if not isinstance(att, dict):
+                continue
+            kind = att.get("kind")
+            if kind not in ("image", "video"):
                 continue
             url = att.get("url") or ""
             if not url or url in seen:
                 continue
             seen.add(url)
-            result.append({
+            entry: Dict = {
+                "kind": kind,
                 "url": url,
-                "name": att.get("name") or "image",
+                "name": att.get("name") or ("video" if kind == "video" else "image"),
                 "mime": att.get("mime") or "",
                 "size": att.get("size") or 0,
                 "width": att.get("width") or 0,
                 "height": att.get("height") or 0,
                 "message_id": row["id"],
                 "created_at": row["created_at"],
-            })
+            }
+            if kind == "video":
+                entry["poster_url"] = att.get("poster_url") or ""
+                entry["duration"] = att.get("duration") or 0
+                entry["frames"] = att.get("frames") or []
+                entry["transcript"] = att.get("transcript") or ""
+            result.append(entry)
     return result
+
+
+def get_attachments_by_url(url: str) -> List[Dict]:
+    """Return all attachment dicts matching *url* across companion messages."""
+    if not url:
+        return []
+    conn = _get_conn()
+    try:
+        rows = conn.execute(
+            "SELECT metadata FROM companion_messages WHERE metadata LIKE ?",
+            (f"%{url}%",),
+        ).fetchall()
+    finally:
+        conn.close()
+    found: List[Dict] = []
+    for row in rows:
+        raw = row["metadata"]
+        if not raw:
+            continue
+        try:
+            meta = json.loads(raw)
+        except (TypeError, ValueError):
+            continue
+        for att in meta.get("attachments") or []:
+            if isinstance(att, dict) and att.get("url") == url:
+                found.append(att)
+    return found
 
 
 def remove_attachment_reference(url: str) -> int:

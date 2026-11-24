@@ -18,7 +18,11 @@ from .compaction import is_summary_message, SUMMARY_MARKER_START
 from .memory_engine import build_memory_block, schedule_extraction, resolve_user_name
 from .placeholders import substitute
 from .global_prompts import load_global_prompts
-from .attachment_parser import format_documents_for_prompt, resolve_image_path
+from .attachment_parser import (
+    format_documents_for_prompt,
+    format_video_for_prompt,
+    resolve_image_path,
+)
 from .token_engine import clear_recorded_usage, count_text as count_text_tokens
 from .script_db import (
     get_session as get_script_session,
@@ -37,11 +41,22 @@ logger = logging.getLogger("companion")
 # a local llama.cpp can serve a model that hears and one that does not from the
 # same endpoint.
 _AUDIO_REJECTED: set = set()
+_IMAGE_REJECTED: set = set()
 
 # How a provider words the refusal. DeepSeek answers "unknown variant
 # `input_audio`, expected one of `text`, `image_url`, `file`"; others say
 # "unsupported content type" or "invalid content".
 _AUDIO_REJECTION_HINTS = ("input_audio", "audio_url", "input audio")
+_IMAGE_REJECTION_HINTS = (
+    "image_url",
+    "image input",
+    "does not support image",
+    "vision is not",
+    "multimodal",
+    "expected a string",
+    "content must be a string",
+    "invalid content type",
+)
 
 # TEMPORARY GUARD - remove once local audio is usable.
 #
@@ -84,6 +99,51 @@ def _strip_audio_parts(messages: List[Dict]) -> List[Dict]:
             if not kept:
                 kept = [{"type": "text", "text": "[语音消息]"}]
             m = {**m, "content": kept}
+        out.append(m)
+    return out
+
+
+def _has_image_parts(messages: List[Dict]) -> bool:
+    for m in messages:
+        content = m.get("content")
+        if isinstance(content, list) and any(
+            isinstance(p, dict) and p.get("type") == "image_url" for p in content
+        ):
+            return True
+    return False
+
+
+def _is_image_rejection(chunk: Optional[Dict]) -> bool:
+    """True when the provider refused the request because of image_url parts."""
+    if not isinstance(chunk, dict) or chunk.get("type") != "error":
+        return False
+    text = str(chunk.get("message") or "").lower()
+    if not text:
+        return False
+    if any(hint in text for hint in _IMAGE_REJECTION_HINTS):
+        return True
+    return "image" in text and any(
+        w in text for w in ("unknown variant", "unsupported", "invalid", "not support")
+    )
+
+
+def _strip_image_parts(messages: List[Dict]) -> List[Dict]:
+    """Drop image_url parts, flattening pure-text parts back to a string."""
+    out: List[Dict] = []
+    for m in messages:
+        content = m.get("content")
+        if isinstance(content, list):
+            kept = [
+                p for p in content
+                if not (isinstance(p, dict) and p.get("type") == "image_url")
+            ]
+            if all(isinstance(p, dict) and p.get("type") == "text" for p in kept):
+                text = "\n\n".join(str(p.get("text") or "") for p in kept if p.get("text")).strip()
+                m = {**m, "content": text or "[附件]"}
+            elif kept:
+                m = {**m, "content": kept}
+            else:
+                m = {**m, "content": "[图片附件]"}
         out.append(m)
     return out
 
@@ -721,13 +781,15 @@ class Companion:
         if text:
             blocks.append(text)
 
-        notes = [
-            f"[图片附件: {a.get('name') or 'image'}]"
-            if a.get("kind") == "image"
-            else f"[文档附件: {a.get('name') or 'document'}]"
-            for a in attachments
-            if a.get("kind") in ("image", "document")
-        ]
+        notes = []
+        for a in attachments:
+            kind = a.get("kind")
+            if kind == "image":
+                notes.append(f"[图片附件: {a.get('name') or 'image'}]")
+            elif kind == "video":
+                notes.append(f"[视频附件: {a.get('name') or 'video'}]")
+            elif kind == "document":
+                notes.append(f"[文档附件: {a.get('name') or 'document'}]")
         if notes:
             blocks.append("\n".join(notes))
 
@@ -813,6 +875,65 @@ class Companion:
             return messages
 
         messages[target]["content"] = parts
+        return messages
+
+    def _inject_videos_into_messages(
+        self,
+        messages: List[Dict],
+        attachments: Optional[List[Dict]],
+    ) -> List[Dict]:
+        """
+        Attach video summary/transcript text and sampled keyframe image_url parts
+        to the last user message for the live request only.
+        """
+        import base64
+
+        videos = [a for a in (attachments or []) if isinstance(a, dict) and a.get("kind") == "video"]
+        if not videos:
+            return messages
+
+        target = -1
+        for i in range(len(messages) - 1, -1, -1):
+            if messages[i].get("role") == "user":
+                target = i
+                break
+        if target < 0:
+            return messages
+
+        video_text = "\n\n".join(format_video_for_prompt(v) for v in videos)
+        existing = messages[target].get("content")
+        if isinstance(existing, list):
+            parts = list(existing)
+            if video_text:
+                parts.append({"type": "text", "text": video_text})
+        else:
+            combined = f"{existing}\n\n{video_text}" if existing else video_text
+            parts = [{"type": "text", "text": combined}]
+
+        frame_count = 0
+        for v in videos:
+            for frame in v.get("frames") or []:
+                if not isinstance(frame, dict) or not frame.get("url"):
+                    continue
+                path = resolve_image_path(str(frame["url"]))
+                if not path:
+                    continue
+                try:
+                    encoded = base64.b64encode(path.read_bytes()).decode("ascii")
+                except OSError as e:
+                    logger.warning("Failed to read video frame %s: %s", path, e)
+                    continue
+                mime = "image/webp" if path.suffix.lower() == ".webp" else "image/jpeg"
+                parts.append({
+                    "type": "image_url",
+                    "image_url": {"url": f"data:{mime};base64,{encoded}"},
+                })
+                frame_count += 1
+
+        if frame_count == 0 and not isinstance(existing, list):
+            messages[target]["content"] = parts[0]["text"]
+        else:
+            messages[target]["content"] = parts
         return messages
     
     async def generate_response_stream(
@@ -903,9 +1024,10 @@ class Companion:
         if attachments:
             messages = self._inject_documents_into_messages(messages, attachments)
 
-        # 3.6 图片附件以 OpenAI 兼容的 image_url parts 注入当前轮用户消息
+        # 3.6 图片与视频附件以 OpenAI 兼容 parts 注入当前轮用户消息
         if attachments:
             messages = self._inject_images_into_messages(messages, attachments)
+            messages = self._inject_videos_into_messages(messages, attachments)
             logger.info(f"Attachments folded into the user message: {len(attachments)}")
         
         # 4. 获取LLM配置
@@ -947,6 +1069,17 @@ class Companion:
         elif audio_file_path:
             logger.info("Audio skipped for %s/%s: refused earlier", *audio_key)
 
+        # 4.6 图片/视频帧能力探测与降级：若当前模型明确不支持 image_url，
+        # 自动退回纯文本（保留视频时长与语音转录等文字信息）。
+        has_images = _has_image_parts(messages)
+        no_image_messages = _strip_image_parts(messages) if has_images else messages
+        image_sent = False
+        if has_images and audio_key in _IMAGE_REJECTED:
+            logger.info("Image parts skipped for %s/%s: refused earlier", *audio_key)
+            messages = no_image_messages
+        elif has_images:
+            image_sent = True
+
         # 5. 调用独立LLM流式接口
         full_content = ""
         chunk_count = 0
@@ -966,6 +1099,17 @@ class Companion:
             )
             _AUDIO_REJECTED.add(audio_key)
             messages = text_messages
+            no_image_messages = _strip_image_parts(messages) if _has_image_parts(messages) else messages
+            started = time.perf_counter()
+            stream = call_llm_stream(messages=messages, **call_kwargs)
+            pending = await _first_or_none(stream)
+
+        if image_sent and _is_image_rejection(pending):
+            logger.info(
+                "%s/%s rejected image_url, retrying with text-only context", *audio_key
+            )
+            _IMAGE_REJECTED.add(audio_key)
+            messages = no_image_messages
             started = time.perf_counter()
             stream = call_llm_stream(messages=messages, **call_kwargs)
             pending = await _first_or_none(stream)

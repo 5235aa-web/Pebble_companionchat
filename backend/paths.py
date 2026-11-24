@@ -281,6 +281,122 @@ def llama_server_exe_name() -> str:
     return "llama-server.exe" if os.name == "nt" else "llama-server"
 
 
+def ffmpeg_exe_name() -> str:
+    """Platform executable filename for ffmpeg."""
+    return "ffmpeg.exe" if os.name == "nt" else "ffmpeg"
+
+
+def _resolve_ffmpeg_candidate(candidate: Path) -> Optional[Path]:
+    """Return an existing ffmpeg executable from a file or directory path."""
+    exe_name = ffmpeg_exe_name()
+    if candidate.is_file():
+        return candidate
+    if candidate.is_dir():
+        for sub in (candidate / exe_name, candidate / "bin" / exe_name):
+            if sub.is_file():
+                return sub
+    return None
+
+
+_FFMPEG_USABLE_CACHE: Optional[tuple] = None
+
+
+def invalidate_ffmpeg_cache() -> None:
+    """Clear the cached FFmpeg usability probe result."""
+    global _FFMPEG_USABLE_CACHE
+    _FFMPEG_USABLE_CACHE = None
+
+
+def is_ffmpeg_usable(force_refresh: bool = False) -> bool:
+    """Return True when a resolved ffmpeg executable runs `ffmpeg -version` cleanly."""
+    global _FFMPEG_USABLE_CACHE
+    ff = ffmpeg_path()
+    if ff is None or not ff.is_file():
+        _FFMPEG_USABLE_CACHE = None
+        return False
+
+    key = str(ff)
+    if not force_refresh and _FFMPEG_USABLE_CACHE is not None and _FFMPEG_USABLE_CACHE[0] == key:
+        return bool(_FFMPEG_USABLE_CACHE[1])
+
+    import subprocess
+
+    kwargs: Dict[str, Any] = {}
+    if os.name == "nt":
+        kwargs["creationflags"] = getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000)
+    ok = False
+    try:
+        proc = subprocess.run(
+            [key, "-version"],
+            capture_output=True,
+            timeout=3,
+            **kwargs,
+        )
+        ok = proc.returncode == 0
+    except Exception:
+        ok = False
+
+    _FFMPEG_USABLE_CACHE = (key, ok)
+    return ok
+
+
+def ffmpeg_path() -> Optional[Path]:
+    """Locate the ffmpeg executable, or None when unavailable.
+
+    Precedence:
+    1. ``PEBBLE_FFMPEG_PATH`` environment variable
+    2. ``ffmpegPath`` in ``<DATA_ROOT>/config/app.json`` (set from the UI)
+    3. Bundled/app bin directories (``<DATA_ROOT>/bin``, ``<bundle_root>/bin``)
+    4. System ``PATH`` and common Windows package-manager install locations
+    """
+    env = os.getenv("PEBBLE_FFMPEG_PATH", "").strip()
+    if env:
+        hit = _resolve_ffmpeg_candidate(Path(env).expanduser())
+        if hit:
+            return hit
+
+    configured = str(load_app_config().get("ffmpegPath") or "").strip()
+    if configured:
+        hit = _resolve_ffmpeg_candidate(Path(configured).expanduser())
+        if hit:
+            return hit
+
+    exe_name = ffmpeg_exe_name()
+    for candidate in (
+        DATA_ROOT / "bin" / exe_name,
+        bundle_root() / "bin" / exe_name,
+        bundle_root() / exe_name,
+    ):
+        if candidate.is_file():
+            return candidate
+
+    which = shutil.which("ffmpeg")
+    if which:
+        p = Path(which)
+        if p.is_file():
+            return p
+
+    if os.name == "nt":
+        local_app = Path(os.getenv("LOCALAPPDATA", "") or Path.home() / "AppData" / "Local")
+        program_data = Path(os.getenv("ProgramData", r"C:\ProgramData"))
+        win_candidates = [
+            local_app / "Microsoft" / "WinGet" / "Links" / exe_name,
+            Path.home() / "scoop" / "shims" / exe_name,
+            program_data / "chocolatey" / "bin" / exe_name,
+            Path(r"C:\ffmpeg\bin") / exe_name,
+        ]
+        for cand in win_candidates:
+            if cand.is_file():
+                return cand
+        winget_pkgs = local_app / "Microsoft" / "WinGet" / "Packages"
+        if winget_pkgs.is_dir():
+            for hit in sorted(winget_pkgs.glob(f"*FFmpeg*/**/{exe_name}")):
+                if hit.is_file():
+                    return hit
+
+    return None
+
+
 def _find_llama_in(base: Path) -> Optional[Path]:
     """Return a llama.cpp runtime sitting directly inside *base*, if any."""
     if not base or not base.exists():

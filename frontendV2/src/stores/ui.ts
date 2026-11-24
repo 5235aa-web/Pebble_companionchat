@@ -125,8 +125,25 @@ export const useUiStore = defineStore('ui', () => {
    * the editor leaves no trace in the cast list.
    */
   const newCastDraft = ref(false)
-  /** Image handed from the gallery to the composer as a pending attachment. */
-  const quotedImage = ref<{ url: string; name: string } | null>(null)
+  /** Image or video handed from the gallery to the composer as a pending attachment. */
+  const quotedImage = ref<{
+    url: string
+    name: string
+    kind?: 'image' | 'video'
+    poster_url?: string
+    duration?: number
+    mime?: string
+    size?: number
+    width?: number
+    height?: number
+    frames?: Array<{ time: number; url: string }>
+    transcript?: string
+  } | null>(null)
+  /** Global active video playback id so at most one `<video>` element renders at once. */
+  const activeVideoId = ref<string | null>(null)
+  function setActiveVideo(id: string | null): void {
+    activeVideoId.value = id
+  }
 
   const dialogTitle = ref('')
   const dialogText = ref('')
@@ -339,6 +356,8 @@ export const useUiStore = defineStore('ui', () => {
     dropActive,
     galleryTarget,
     quotedImage,
+    activeVideoId,
+    setActiveVideo,
     newCastDraft,
     startNewCast,
     clearNewCast,

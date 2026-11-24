@@ -75,9 +75,16 @@ export interface AttachmentRef {
   kind: string
   name?: string
   url?: string
+  poster_url?: string
   path?: string
   content?: string
   mime?: string
+  size?: number
+  width?: number
+  height?: number
+  duration?: number
+  frames?: Array<{ time: number; url: string }>
+  transcript?: string
 }
 
 export interface StreamHandlers {
