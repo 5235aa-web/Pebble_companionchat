@@ -247,14 +247,49 @@ class BranchHudDbTest(unittest.TestCase):
 
         # Default disabled: no thought field instruction in prompt.
         prompt_off = companion.Companion("c_thought").build_system_prompt(include_card_hud=True)
-        self.assertNotIn("Keep 'thought' rare", prompt_off)
+        self.assertNotIn("thought:", prompt_off)
 
-        # Enabled via card_ui: prompt guides rare/selective usage only.
+        # Enabled via card_ui: prompt guides rare/selective usage strictly inside <<<STATE>>>.
         companion_db.update_companion("c_thought", {"card_ui": {"hud_thought_enabled": True}})
         comp = companion.Companion("c_thought")
         prompt_on = comp.build_system_prompt(include_card_hud=True)
-        self.assertIn("Keep 'thought' rare", prompt_on)
+        self.assertIn("inside <<<STATE>>> sparingly", prompt_on)
         self.assertIn("never on every reply", prompt_on)
+
+        # End-to-end stream_reply check: thought is stripped from visible reply & DB message, delivered only in card_hud.
+        async def fake_stream(**kwargs):
+            for part in [
+                {"type": "content", "content": "She looked away softly."},
+                {"type": "content", "content": "\n<<<STATE>>>\nmood: shy\nthought: 真希望时间停在这一刻。\n<<<END>>>"},
+            ]:
+                yield part
+
+        async def run_stream():
+            evs = []
+            with mock.patch.object(companion, "call_llm_stream", side_effect=fake_stream):
+                async for ev in comp.generate_response_stream(
+                    "Sit closer.",
+                    branch_id="main",
+                    llm_config={
+                        "provider_type": "openai",
+                        "api_key": "k",
+                        "base_url": "http://localhost:1234/v1",
+                        "model": "test-model",
+                    },
+                ):
+                    evs.append(ev)
+            return evs
+
+        stream_evs = asyncio.run(run_stream())
+        visible_text = "".join(e["content"] for e in stream_evs if e["type"] == "content").strip()
+        self.assertEqual(visible_text, "She looked away softly.")
+        self.assertNotIn("thought", visible_text)
+        self.assertNotIn("真希望时间停在这一刻", visible_text)
+        saved_msgs = companion_db.get_messages("c_thought", "main")
+        self.assertEqual(saved_msgs[-1]["content"].strip(), "She looked away softly.")
+        hud_evs = [e for e in stream_evs if e["type"] == "card_hud"]
+        self.assertEqual(len(hud_evs), 1)
+        self.assertEqual(hud_evs[0]["hud"]["thought"], "真希望时间停在这一刻。")
 
         # Turn 1 (intimate moment): thought appears cleanly.
         f1 = card_hud.CardHudStreamFilter()

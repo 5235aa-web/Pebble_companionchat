@@ -789,18 +789,58 @@ function cancelEdit() {
   transition: width 0.5s var(--ease), background 0.9s ease;
 }
 .chud-pill-thought {
-  display: inline-flex;
-  align-items: center;
-  color: rgb(var(--chud-mood-rgb));
+  position: relative;
+  display: inline-grid;
+  place-items: center;
+  width: 17px;
+  height: 17px;
+  border-radius: 50%;
+  color: var(--accent);
   flex: none;
-  opacity: 0.85;
+}
+.chud-pill-thought::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  border-radius: 50%;
+  background: radial-gradient(circle, rgb(var(--accent-rgb) / 0.36), transparent 72%);
+  pointer-events: none;
+  animation: chudThoughtHalo 2.6s ease-out infinite;
 }
 .chud-pill-thought svg {
+  position: relative;
+  z-index: 1;
   width: 11px;
   height: 11px;
   stroke: currentColor;
-  fill: none;
-  stroke-width: 1.7;
+  fill: rgb(var(--accent-rgb) / 0.16);
+  stroke-width: 1.75;
+  filter: drop-shadow(0 0 4px rgb(var(--accent-rgb) / 0.58));
+  animation: chudThoughtBeat 2.6s ease-in-out infinite;
+}
+@keyframes chudThoughtBeat {
+  0%, 100% { transform: scale(1); opacity: 0.88; }
+  30% { transform: scale(1.16); opacity: 1; }
+  52% { transform: scale(1.03); opacity: 0.94; }
+  70% { transform: scale(1.1); opacity: 1; }
+}
+@keyframes chudThoughtHalo {
+  0% {
+    transform: scale(0.85);
+    opacity: 0.85;
+    box-shadow: 0 0 2px 0 rgb(var(--accent-rgb) / 0.62);
+  }
+  75%, 100% {
+    transform: scale(1.75);
+    opacity: 0;
+    box-shadow: 0 0 10px 4px rgb(var(--accent-rgb) / 0);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .chud-pill-thought::before,
+  .chud-pill-thought svg {
+    animation: none;
+  }
 }
 .chud-chev {
   width: 12px;

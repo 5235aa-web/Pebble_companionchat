@@ -225,6 +225,7 @@ export const useChatStore = defineStore('chat', () => {
       session.branchVariables,
       `${session.activeCompanionId}:${session.activeBranch}`,
       session.assetNames,
+      session.branchHud,
     )
   }
 
@@ -305,6 +306,12 @@ export const useChatStore = defineStore('chat', () => {
         sc && sc.branch_id === bid ? script.summaries : [],
         withNames,
       )
+      const lastAi = [...beats.value].reverse().find((b) => b.role === 'ai')
+      const lastAiRaw =
+        typeof lastAi?.raw === 'string'
+          ? lastAi.raw
+          : lastAi?.lines.map((l) => l.text).join('\n') || ''
+      useCardHudStore().syncFromAssistantReply(lastAiRaw)
     } catch (e) {
       error.value = e instanceof Error ? e.message : String(e)
       beats.value = []
@@ -420,6 +427,15 @@ export const useChatStore = defineStore('chat', () => {
           // is never stored, so it gets no footer either.
           if (chunk.generation && typeof chunk.message_id === 'number' && chunk.message_id > 0) {
             target.generations = [chunk.generation]
+          }
+          const finalBody =
+            typeof chunk.final_content === 'string'
+              ? chunk.final_content
+              : typeof target.raw === 'string'
+                ? target.raw
+                : ''
+          if (finalBody) {
+            useCardHudStore().syncFromAssistantReply(finalBody)
           }
           pending.value = false
         } else if (chunk.type === 'script_state') {

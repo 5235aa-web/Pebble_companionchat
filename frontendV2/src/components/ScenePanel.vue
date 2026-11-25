@@ -239,7 +239,7 @@ watch(
 // Also watches `slides.length` with `immediate: true` so switching views or
 // async asset/picture loading never drops an active override.
 watch(
-  () => [cardHud.stageExpressionRelPath, slides.value.length] as const,
+  () => [cardHud.stageExpressionRelPath, cardHud.stageExpressionSeq, slides.value.length] as const,
   ([relPath], prev) => {
     if (!slides.value.length) return
     if (relPath) {

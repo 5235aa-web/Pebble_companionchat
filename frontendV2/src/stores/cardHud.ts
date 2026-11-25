@@ -10,17 +10,39 @@ import { useSessionStore } from './session'
 import { useCardAudioStore } from './cardAudio'
 
 const MOOD_SYNONYMS: string[][] = [
-  ['happy', 'joy', 'smile', 'cheerful', 'delighted', 'excited', '开心', '高兴', '微笑', '愉快'],
+  ['happy', 'joy', 'smile', 'cheerful', 'delighted', 'excited', 'contented', 'glad', '开心', '高兴', '微笑', '愉快'],
   ['sad', 'sorrow', 'cry', 'tears', 'melancholy', 'depressed', '悲伤', '难过', '哭', '忧郁'],
   ['angry', 'mad', 'furious', 'annoyed', 'irritated', '生气', '愤怒', '恼火'],
   ['shy', 'blush', 'embarrassed', 'flustered', 'bashful', '害羞', '脸红', '羞涩'],
-  ['surprised', 'shock', 'amazed', 'startled', '惊讶', '震惊', '吃惊'],
-  ['love', 'affection', 'warm', 'fond', 'heart', '喜欢', '温柔', '心动', '爱'],
+  ['surprised', 'shock', 'amazed', 'startled', 'curious', '惊讶', '震惊', '吃惊', '好奇'],
+  ['love', 'affection', 'warm', 'fond', 'heart', 'lovestruck', 'aroused', 'tender', '喜欢', '温柔', '心动', '爱'],
   ['scared', 'fear', 'nervous', 'anxious', 'worried', '害怕', '紧张', '担心'],
-  ['calm', 'neutral', 'normal', 'serene', 'relaxed', '平静', '冷静', '放松', '平常'],
-  ['smug', 'teasing', 'playful', 'wink', '得意', '调侃', '俏皮', '坏笑'],
-  ['sleepy', 'tired', 'drowsy', 'yawn', '困', '疲惫', '慵懒'],
+  ['calm', 'neutral', 'normal', 'serene', 'relaxed', 'relieved', 'thinking', '平静', '冷静', '放松', '平常'],
+  ['smug', 'teasing', 'playful', 'wink', 'proud', '得意', '调侃', '俏皮', '坏笑'],
+  ['sleepy', 'tired', 'drowsy', 'yawn', 'bored', 'exhausted', '困', '疲惫', '慵懒'],
 ]
+
+function firstNonEmpty(...vals: unknown[]): string {
+  for (const v of vals) {
+    const s = String(v ?? '').trim()
+    if (s) return s
+  }
+  return ''
+}
+
+const INLINE_REPLY_IMG_RE =
+  /<img\s*=\s*(?:"([^"]+)"|'([^']+)')|<img\b[^>]*\bsrc\s*=\s*(?:"([^"]+)"|'([^']+)')|\{\{\s*(?:img|image|asset|raw)\s*::\s*([^}]+?)\s*\}\}/gi
+
+function extractLastInlineImageRef(replyText: string): string {
+  if (!replyText) return ''
+  let lastRef = ''
+  for (const m of replyText.matchAll(INLINE_REPLY_IMG_RE)) {
+    const cand = (m[1] ?? m[2] ?? m[3] ?? m[4] ?? m[5] ?? '').trim()
+    if (!cand || /^(?:https?:|data:|blob:|pebble-asset:)/i.test(cand)) continue
+    lastRef = cand
+  }
+  return lastRef
+}
 
 function expandTerms(raw: string): string[] {
   const cleaned = raw.trim().toLowerCase()
@@ -109,7 +131,10 @@ export const useCardHudStore = defineStore('cardHud', () => {
   /** Background scene backdrop override (empty = soft blurred portrait glow). */
   const stageSceneRelPath = ref('')
   const activeSceneLabel = ref('')
+  const stageExpressionSeq = ref(0)
   const stageOverrideRelPath = computed(() => stageExpressionRelPath.value)
+  let explicitExpressionLocked = false
+  let lastAssistantReplyText = ''
 
   const moodText = computed(() => String(hud.value.mood ?? '').trim())
   const moodRgb = computed(() => resolveMoodRgb(moodText.value))
@@ -250,42 +275,87 @@ export const useCardHudStore = defineStore('cardHud', () => {
     hudData: Record<string, unknown>,
     mediaCue: Record<string, unknown> = {},
   ) {
-    // 1) Foreground expression portrait layer
-    const exprCueRaw = mediaCue.expression ?? hudData.expression ?? hudData.mood ?? ''
-    const exprCue = String(exprCueRaw).trim()
-    if (exprCue) {
-      const low = exprCue.toLowerCase()
-      if (low === 'none' || low === 'default') {
-        clearExpressionOverride()
-      } else {
-        const matched = matchImageAsset(exprCue, 'expression')
+    // 1) Foreground expression portrait layer (avoid empty "" blocking fallback to mood)
+    const cueExprRaw = String(mediaCue.expression ?? '').trim()
+    const cueExprLow = cueExprRaw.toLowerCase()
+    if (cueExprLow === 'none' || cueExprLow === 'default') {
+      explicitExpressionLocked = true
+      clearExpressionOverride()
+      stageExpressionSeq.value += 1
+    } else {
+      const explicitExpr = firstNonEmpty(mediaCue.expression, hudData.expression)
+      if (explicitExpr) {
+        const matched = matchImageAsset(explicitExpr, 'expression')
         if (matched) {
+          explicitExpressionLocked = true
           stageExpressionRelPath.value = matched.rel_path
-          activeExpressionLabel.value = matched.name || exprCue
+          activeExpressionLabel.value = matched.name || explicitExpr
+          stageExpressionSeq.value += 1
+        } else {
+          explicitExpressionLocked = false
+        }
+      } else {
+        explicitExpressionLocked = false
+      }
+
+      if (!explicitExpressionLocked) {
+        const moodCue = String(hudData.mood ?? '').trim()
+        if (moodCue) {
+          const matchedMood = matchImageAsset(moodCue, 'expression')
+          if (matchedMood) {
+            stageExpressionRelPath.value = matchedMood.rel_path
+            activeExpressionLabel.value = matchedMood.name || moodCue
+            stageExpressionSeq.value += 1
+          }
+        } else if (!explicitExpr) {
+          clearExpressionOverride()
         }
       }
-    } else if (!String(hudData.expression ?? '').trim() && !String(hudData.mood ?? '').trim()) {
-      clearExpressionOverride()
     }
 
     // 2) Background scene layer ("人在景中")
-    const sceneCueRaw =
-      mediaCue.scene ?? hudData.scene ?? (hasExplicitBackgroundAssets() ? hudData.location ?? '' : '')
-    const sceneCue = String(sceneCueRaw).trim()
-    if (sceneCue) {
-      const low = sceneCue.toLowerCase()
-      if (low === 'none' || low === 'default' || low === 'off') {
-        clearSceneOverride()
-      } else {
+    const cueSceneRaw = String(mediaCue.scene ?? '').trim()
+    const cueSceneLow = cueSceneRaw.toLowerCase()
+    if (cueSceneLow === 'none' || cueSceneLow === 'default' || cueSceneLow === 'off') {
+      clearSceneOverride()
+    } else {
+      const sceneCue = firstNonEmpty(
+        mediaCue.scene,
+        hudData.scene,
+        hasExplicitBackgroundAssets() ? hudData.location : '',
+      )
+      if (sceneCue) {
         const matchedBg = matchImageAsset(sceneCue, 'scene')
         if (matchedBg) {
           stageSceneRelPath.value = matchedBg.rel_path
           activeSceneLabel.value = matchedBg.name || sceneCue
         }
+      } else {
+        clearSceneOverride()
       }
-    } else if (!String(hudData.scene ?? '').trim()) {
-      clearSceneOverride()
     }
+  }
+
+  function syncFromAssistantReply(replyText: string) {
+    lastAssistantReplyText = replyText || ''
+    if (!replyText || explicitExpressionLocked || !session.imageAssets.length) return
+    const ref = extractLastInlineImageRef(replyText)
+    if (!ref) return
+    const exact = session.findAssetByRef(ref)
+    const asset =
+      exact && exact.mime_type.startsWith('image/')
+        ? exact
+        : matchImageAsset(ref, 'expression')
+    if (!asset) return
+    const aType = (asset.asset_type || '').toLowerCase()
+    if (aType === 'background') {
+      stageSceneRelPath.value = asset.rel_path
+      activeSceneLabel.value = asset.name || ref
+      return
+    }
+    stageExpressionRelPath.value = asset.rel_path
+    activeExpressionLabel.value = asset.name || ref
+    stageExpressionSeq.value += 1
   }
 
   async function load(cid = session.activeCompanionId, bid = session.activeBranch) {
@@ -295,6 +365,7 @@ export const useCardHudStore = defineStore('cardHud', () => {
       enabled.value = null
       effectiveEnabled.value = false
       hasAssets.value = false
+      lastAssistantReplyText = ''
       clearStageOverride()
       return
     }
@@ -308,6 +379,9 @@ export const useCardHudStore = defineStore('cardHud', () => {
       effectiveEnabled.value = Boolean(res.effective_enabled)
       hasAssets.value = Boolean(res.has_assets)
       syncVisualLayersFromHud(hud.value)
+      if (!explicitExpressionLocked && lastAssistantReplyText) {
+        syncFromAssistantReply(lastAssistantReplyText)
+      }
     } catch {
       // Non-fatal: keep HUD clean if branch endpoint unavailable.
     } finally {
@@ -454,11 +528,15 @@ export const useCardHudStore = defineStore('cardHud', () => {
 
   watch(
     () => [session.activeCompanionId, session.activeBranch, session.imageAssets.length] as const,
-    ([cid, bid]) => {
+    ([cid, bid], prev) => {
+      if (prev && (prev[0] !== cid || prev[1] !== bid)) {
+        lastAssistantReplyText = ''
+      }
       if (cid && bid) void load(cid, bid)
       else {
         hud.value = {}
         session.branchHud = {}
+        lastAssistantReplyText = ''
         clearStageOverride()
       }
     },
@@ -494,9 +572,11 @@ export const useCardHudStore = defineStore('cardHud', () => {
     activeExpressionLabel,
     stageSceneRelPath,
     activeSceneLabel,
+    stageExpressionSeq,
     stageOverrideRelPath,
     load,
     applyStreamUpdate,
+    syncFromAssistantReply,
     saveHudFields,
     removeHudField,
     setManualExpression,

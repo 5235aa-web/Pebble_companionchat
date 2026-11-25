@@ -301,7 +301,8 @@ def build_card_hud_prompt(
     lines.append(HUD_STATE_END)
     if thought_enabled:
         lines.append(
-            "Keep 'thought' rare—only surface it when the exchange truly feels emotionally charged, intimate, or pivotal, never on every reply."
+            "Only include the 'thought:' line inside <<<STATE>>> sparingly when the moment truly feels "
+            "emotionally charged, intimate, or pivotal—never on every reply, and never put 'thought:' in the reply text itself."
         )
     lines.append(
         "Keep updating any custom state fields listed under 'Current state' when they change."
