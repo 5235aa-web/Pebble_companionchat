@@ -1,3 +1,4 @@
+import datetime
 import json
 import logging
 import os
@@ -12,6 +13,15 @@ from .companion_db import (
     delete_message, delete_messages_after,
 )
 from .card_hud import CardHudStreamFilter, build_card_hud_prompt, merge_card_hud
+from .card_presentation import (
+    apply_regex_scripts,
+    build_scene_rules_prompt,
+    extract_input_regex,
+    extract_output_regex,
+    extract_prompt_regex,
+    normalize_asset_tag_refs,
+    normalize_scene_rules_list,
+)
 from .llm_client import call_llm_stream, load_default_llm_config, resolve_provider_model_config
 from .world_book_engine import get_active_world_book_content
 from .compaction import is_summary_message, SUMMARY_MARKER_START
@@ -350,6 +360,44 @@ class Companion:
         self.post_history_instructions = data.get('post_history_instructions', '')
         self.creator_notes = data.get('creator_notes', '')
         self.depth_prompt = data.get('depth_prompt', {})
+        self.raw_card_data = data.get('raw_card_data', '')
+        self.card_ui = data.get('card_ui', {}) if isinstance(data.get('card_ui'), dict) else {}
+
+    def _scene_rules(self) -> List[Dict]:
+        card_ui = getattr(self, "card_ui", {}) or {}
+        return normalize_scene_rules_list(card_ui.get("scene_rules"))
+
+    def _asset_names(self) -> List[str]:
+        return [
+            str(a.get("name") or "").strip()
+            for a in get_companion_assets(self.id)
+            if str(a.get("name") or "").strip()
+        ]
+
+    def _finalize_assistant_output(self, text: str, branch_id: str = "main") -> str:
+        """Apply card ``editoutput`` regex rules and high-confidence asset typo fixes."""
+        if not text:
+            return text
+        asset_names = self._asset_names()
+        output_rules = extract_output_regex(
+            getattr(self, "raw_card_data", ""),
+            getattr(self, "card_ui", {}),
+        )
+        cleaned = text
+        if output_rules:
+            vars_map = get_branch_variables(self.id, branch_id).get("variables", {})
+            cleaned = apply_regex_scripts(
+                cleaned,
+                output_rules,
+                char_name=self.name or "your character",
+                user_name=resolve_user_name(self.user_info),
+                variables=vars_map,
+                seed=f"{self.id}:{branch_id}",
+                asset_names=asset_names,
+            )
+        if asset_names:
+            cleaned = normalize_asset_tag_refs(cleaned, asset_names)
+        return cleaned
     
     def _depth_prompt_entry(self) -> Optional[Dict]:
         """
@@ -387,6 +435,7 @@ class Companion:
         self,
         branch_id: str = "main",
         variables: Optional[Dict[str, str]] = None,
+        history: Optional[List[Dict]] = None,
     ):
         """Return a function that resolves CBS macros & branch variables for this card.
 
@@ -401,14 +450,75 @@ class Companion:
             if variables is not None
             else get_branch_variables(self.id, branch_id).get("variables", {})
         )
+        asset_names = self._asset_names()
+        hist = history or []
+        last_message_id = max(0, len(hist) - 1)
+        last_message = str(hist[-1].get("content") or "") if hist else ""
+        last_char_message = ""
+        last_user_message = ""
+        for item in reversed(hist):
+            role = item.get("role")
+            if not last_char_message and role == "assistant":
+                last_char_message = str(item.get("content") or "")
+            if not last_user_message and role == "user":
+                last_user_message = str(item.get("content") or "")
+            if last_char_message and last_user_message:
+                break
         seed = f"{self.id}:{branch_id}"
+        idle_minutes, idle_duration = self._compute_idle_metrics(hist)
         return lambda value: substitute(
             value,
             char_name,
             user_name,
             variables=vars_map,
             seed=seed,
+            asset_names=asset_names,
+            chat_index=last_message_id,
+            last_message_id=last_message_id,
+            last_message=last_message,
+            last_char_message=last_char_message,
+            last_user_message=last_user_message,
+            idle_duration=idle_duration,
+            idle_minutes=idle_minutes,
         )
+
+    @staticmethod
+    def _compute_idle_metrics(hist: List[Dict]) -> Tuple[int, str]:
+        """Compute elapsed minutes and human-readable duration since the prior turn."""
+        if not hist:
+            return 0, "0m"
+        target_msg = hist[-2] if (len(hist) >= 2 and hist[-1].get("role") == "user") else hist[-1]
+        raw_ts = str(target_msg.get("created_at") or "").strip()
+        if not raw_ts:
+            return 0, "0m"
+        parsed: Optional[datetime.datetime] = None
+        for candidate in (raw_ts.replace("Z", "+00:00"),):
+            try:
+                parsed = datetime.datetime.fromisoformat(candidate)
+                break
+            except ValueError:
+                pass
+        if parsed is None:
+            for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%dT%H:%M:%S"):
+                try:
+                    parsed = datetime.datetime.strptime(raw_ts[:19], fmt)
+                    break
+                except ValueError:
+                    continue
+        if parsed is None:
+            return 0, "0m"
+        if parsed.tzinfo is None:
+            # SQLite CURRENT_TIMESTAMP defaults to UTC.
+            parsed = parsed.replace(tzinfo=datetime.timezone.utc)
+        now_utc = datetime.datetime.now(datetime.timezone.utc)
+        mins = max(0, int((now_utc - parsed).total_seconds() // 60))
+        if mins < 60:
+            return mins, f"{mins}m"
+        hours, rem = divmod(mins, 60)
+        if hours < 24:
+            return mins, f"{hours}h {rem}m" if rem else f"{hours}h"
+        days, rem_h = divmod(hours, 24)
+        return mins, f"{days}d {rem_h}h" if rem_h else f"{days}d"
 
     def build_system_prompt(
         self,
@@ -434,7 +544,7 @@ class Companion:
         # Cards write {{char}}, {{user}}, and CBS conditionals/variables instead
         # of static values. Resolve them here rather than at import so edits and
         # variable toggles take effect on the next turn.
-        sub = self._macro_context(branch_id)
+        sub = self._macro_context(branch_id, history=history)
 
         if self.name:
             parts.append(f"[Character]\nYou are {self.name}.")
@@ -493,6 +603,10 @@ class Companion:
         ]
         if system_parts:
             parts.append("[System Instruction]\n" + "\n\n".join(system_parts))
+
+        scene_sys = build_scene_rules_prompt(self._scene_rules(), "system", sub)
+        if scene_sys:
+            parts.append("[Scene Rules]\n" + scene_sys)
 
         # Narrator protocol. Only teach the protocol when this branch actually
         # contains a narration so the model is not primed to invent one.
@@ -567,7 +681,20 @@ class Companion:
                 history, branch_id, memory_out, include_card_hud=include_card_hud
             ),
         }]
-        sub = self._macro_context(branch_id)
+        sub = self._macro_context(branch_id, history=history)
+        asset_names = self._asset_names()
+        prompt_rules = extract_prompt_regex(
+            getattr(self, "raw_card_data", ""),
+            getattr(self, "card_ui", {}),
+        )
+        vars_map = (
+            get_branch_variables(self.id, branch_id).get("variables", {})
+            if prompt_rules
+            else {}
+        )
+        char_name = self.name or "your character"
+        user_name = resolve_user_name(self.user_info)
+        seed = f"{self.id}:{branch_id}"
         
         # A summary covers the earliest part of the conversation, so it belongs
         # right after the system prompt. Compaction appends the summary row, and
@@ -575,9 +702,24 @@ class Companion:
         # history. Only the newest summary is sent: older ones get merged into
         # it during compaction, so replaying them would duplicate content.
         summaries: List[Dict] = []
-        for msg in history:
+        hist_len = len(history)
+        for idx, msg in enumerate(history):
             msg_type = msg.get("message_type", "chat")
             content = msg["content"]
+            if msg.get("role") == "assistant" and asset_names and msg_type == "chat":
+                content = normalize_asset_tag_refs(content, asset_names)
+            if prompt_rules and msg_type == "chat" and content:
+                content = apply_regex_scripts(
+                    content,
+                    prompt_rules,
+                    char_name=char_name,
+                    user_name=user_name,
+                    variables=vars_map,
+                    seed=seed,
+                    asset_names=asset_names,
+                    placement=1 if msg.get("role") == "user" else 2,
+                    depth=max(0, hist_len - 1 - idx),
+                )
             
             if msg_type == "compaction_summary" or SUMMARY_MARKER_START in content:
                 summaries.append({"role": "system", "content": content})
@@ -613,6 +755,7 @@ class Companion:
             for text in (
                 sub(self.post_history_instructions),
                 sub(load_global_prompts()["postHistory"]),
+                build_scene_rules_prompt(self._scene_rules(), "post_history", sub),
             )
             if text.strip()
         ]
@@ -961,8 +1104,25 @@ class Companion:
         logger.info(f"generate_response_stream called: id={self.id}, branch={branch_id}, msg_len={len(user_message)}, sender={sender}, audio={audio_file_path is not None}, temp={temperature}, top_p={top_p}")
 
         # 1. 保存用户消息到独立数据库（文档正文并入文本，图片信息记入 metadata）
-        stored_text = self._compose_user_text(user_message, attachments)
         is_narration = (sender or "user").strip().lower() == "narrator"
+        effective_user_message = user_message
+        if not is_narration and user_message:
+            input_rules = extract_input_regex(
+                getattr(self, "raw_card_data", ""),
+                getattr(self, "card_ui", {}),
+            )
+            if input_rules:
+                vars_map = get_branch_variables(self.id, branch_id).get("variables", {})
+                effective_user_message = apply_regex_scripts(
+                    user_message,
+                    input_rules,
+                    char_name=self.name or "your character",
+                    user_name=resolve_user_name(self.user_info),
+                    variables=vars_map,
+                    seed=f"{self.id}:{branch_id}",
+                    asset_names=self._asset_names(),
+                )
+        stored_text = self._compose_user_text(effective_user_message, attachments)
         # 语音消息的转录文本照常落库（AI 的上下文靠它），只额外标一个 voice，
         # 让前端把气泡渲染成「语音消息」而不是把转录文本摊开。
         user_meta: Dict = {}
@@ -1180,6 +1340,8 @@ class Companion:
                 yield {"type": "content", "content": tail}
 
         logger.info(f"LLM stream complete, received {chunk_count} chunks, content_len={len(full_content)}")
+        if full_content:
+            full_content = self._finalize_assistant_output(full_content, branch_id)
         generation = _generation_record(
             llm_config,
             (time.perf_counter() - started) * 1000,
@@ -1316,6 +1478,8 @@ class Companion:
                 yield {"type": "content", "content": tail}
         
         logger.info(f"Continue stream complete, content_len={len(full_content)}")
+        if full_content:
+            full_content = self._finalize_assistant_output(full_content, branch_id)
         record = _generation_record(
             llm_config,
             (time.perf_counter() - started) * 1000,
@@ -1327,7 +1491,7 @@ class Companion:
         # 7. 将续写内容追加到原消息（只追加新内容，不重复原文）
         generation = record
         if full_content:
-            appended_content = last_content + full_content
+            appended_content = self._finalize_assistant_output(last_content + full_content, branch_id)
             previous = (last_ai_msg.get("metadata") or {}).get("generation")
             swipe_index = int(last_ai_msg.get("swipe_id") or 0)
             previous_record = None
@@ -1438,6 +1602,8 @@ class Companion:
                 yield {"type": "content", "content": tail}
 
         logger.info(f"Regenerate stream complete, content_len={len(full_content)}")
+        if full_content:
+            full_content = self._finalize_assistant_output(full_content, branch_id)
         generation = _generation_record(
             llm_config,
             (time.perf_counter() - started) * 1000,
@@ -1545,6 +1711,8 @@ class Companion:
                 yield {"type": "content", "content": tail}
 
         logger.info(f"Reedit stream complete, content_len={len(full_content)}")
+        if full_content:
+            full_content = self._finalize_assistant_output(full_content, branch_id)
         generation = _generation_record(
             llm_config,
             (time.perf_counter() - started) * 1000,

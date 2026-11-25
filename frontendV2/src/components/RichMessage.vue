@@ -128,7 +128,7 @@ function ensureShadowRoot(): ShadowRoot | null {
 }
 
 function syncShadowStyles(root: ShadowRoot): void {
-  const cleanedCardCss = sanitizeCardCss(props.cardCss || '')
+  const cleanedCardCss = sanitizeCardCss(props.cardCss || '', props.assetUrls)
   const baseSheet = getBaseSheet()
   const supportsAdopted = Boolean(baseSheet && 'adoptedStyleSheets' in root)
 

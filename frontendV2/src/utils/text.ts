@@ -23,8 +23,9 @@ export function resolvePlaceholders(
   userName: string | null | undefined,
   variables?: Record<string, string>,
   seed?: string,
+  assetNames?: string[],
 ): string {
-  return evaluateCbs(text, { charName, userName, variables, seed })
+  return evaluateCbs(text, { charName, userName, variables, seed, assetNames })
 }
 
 /**

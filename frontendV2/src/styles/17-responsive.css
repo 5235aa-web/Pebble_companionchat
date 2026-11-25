@@ -24,7 +24,7 @@
   .axis{left:16px;top:28px;bottom:50px;}
   .node{left:-23px;}
   .composer{padding:0 16px 14px;}
-  .composer-inner,.composer-foot,.attach-strip{padding-left:36px;max-width:100%;}
+  .composer-inner,.composer-foot,.attach-strip,.scene-dock-wrap{padding-left:36px;max-width:100%;}
   .panel{width:100%;}
   .drawer{width:100%;}
 }

@@ -9,11 +9,17 @@ from __future__ import annotations
 
 import json
 import re
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Sequence, Tuple
+
+from .cbs import evaluate_cbs
 
 _STYLE_BLOCK_RE = re.compile(r"<style\b[^>]*>([\s\S]*?)</style>", re.IGNORECASE)
 _SLASH_REGEX_RE = re.compile(r"^/([\s\S]*)/([a-zA-Z]*)$")
 _SUPPORTED_JS_FLAGS = frozenset("gimsuyd")
+_REPLACE_TOKEN_RE = re.compile(r"\{\{\s*match\s*\}\}|\$(&|\d{1,2})", re.IGNORECASE)
+_IMG_TAG_SHORTHAND_REF_RE = re.compile(r"""(<img\s*=\s*)(?:"([^"]+)"|'([^']+)')""", re.IGNORECASE)
+_ASSET_MACRO_REF_RE = re.compile(r"(\{\{\s*(?:img|image|asset|raw)\s*::\s*)([^}]+?)(\s*\}\})", re.IGNORECASE)
+_NON_REF_PREFIX_RE = re.compile(r"^(?:https?:|data:|blob:|pebble-asset:)", re.IGNORECASE)
 
 
 def _safe_json_obj(raw: Any) -> Dict[str, Any]:
@@ -96,7 +102,7 @@ def normalize_display_regex_list(rules: Any) -> List[Dict[str, Any]]:
         else:
             clean_placement = [1, 2]
         trim_strings = [str(s) for s in (item.get("trim_strings") or []) if isinstance(s, str) and s]
-        out.append({
+        entry: Dict[str, Any] = {
             "id": str(item.get("id") or f"rule_{idx}"),
             "name": str(item.get("name") or f"Rule {idx + 1}"),
             "pattern": pattern,
@@ -105,40 +111,129 @@ def normalize_display_regex_list(rules: Any) -> List[Dict[str, Any]]:
             "placement": clean_placement or [1, 2],
             "trim_strings": trim_strings,
             "enabled": bool(item.get("enabled", True)),
-        })
+        }
+        for depth_key in ("min_depth", "max_depth"):
+            d_val = _coerce_optional_int(item.get(depth_key))
+            if d_val is not None:
+                entry[depth_key] = d_val
+        for meta_key in ("summary", "origin", "recipe_id"):
+            meta_val = item.get(meta_key)
+            if isinstance(meta_val, str) and meta_val.strip():
+                entry[meta_key] = meta_val.strip()
+        out.append(entry)
     return out
+
+
+def _coerce_optional_int(val: Any) -> Optional[int]:
+    if val is None or isinstance(val, bool) or val == "":
+        return None
+    try:
+        n = int(val)
+        return n if n >= 0 else None
+    except (ValueError, TypeError):
+        return None
+
+
+def normalize_scene_rules_list(rules: Any) -> List[Dict[str, Any]]:
+    """Normalize prompt-level immersive Scene Rules descriptors."""
+    if not isinstance(rules, list):
+        return []
+    out: List[Dict[str, Any]] = []
+    for idx, item in enumerate(rules):
+        if not isinstance(item, dict):
+            continue
+        prompt = str(item.get("prompt") or "")
+        if not prompt.strip():
+            continue
+        placement = str(item.get("placement") or "system").strip().lower()
+        if placement not in ("system", "post_history"):
+            placement = "system"
+        trigger_type = str(item.get("trigger_type") or "always").strip().lower()
+        if trigger_type not in ("always", "idle", "chat_turn", "time_window", "variable", "custom_cbs"):
+            trigger_type = "always"
+        entry: Dict[str, Any] = {
+            "id": str(item.get("id") or f"scene_{idx}"),
+            "name": str(item.get("name") or f"Scene Rule {idx + 1}"),
+            "summary": str(item.get("summary") or "").strip(),
+            "enabled": bool(item.get("enabled", True)),
+            "trigger_type": trigger_type,
+            "condition_cbs": str(item.get("condition_cbs") or "").strip(),
+            "prompt": prompt,
+            "placement": placement,
+        }
+        for meta_key in ("origin", "recipe_id"):
+            meta_val = item.get(meta_key)
+            if isinstance(meta_val, str) and meta_val.strip():
+                entry[meta_key] = meta_val.strip()
+        out.append(entry)
+    return out
+
+
+def build_scene_rules_prompt(
+    scene_rules: Sequence[Dict[str, Any]],
+    placement: str,
+    sub_fn,
+) -> str:
+    """Evaluate active *scene_rules* for *placement* ('system' or 'post_history')."""
+    if not scene_rules:
+        return ""
+    target = (placement or "system").strip().lower()
+    active_lines: List[str] = []
+    for rule in scene_rules:
+        if not isinstance(rule, dict) or rule.get("enabled") is False:
+            continue
+        rule_place = str(rule.get("placement") or "system").strip().lower()
+        if rule_place != target:
+            continue
+        cond = str(rule.get("condition_cbs") or "").strip()
+        if cond:
+            cond_eval = str(sub_fn(cond) or "").strip().lower()
+            if cond_eval in ("", "0", "false", "null", "undefined", "none", "nan"):
+                continue
+        body = str(sub_fn(str(rule.get("prompt") or "")) or "").strip()
+        if body:
+            active_lines.append(body)
+    return "\n\n".join(active_lines)
+
+
+def _extract_risu_scripts(raw_card: Dict[str, Any], script_type: str, id_prefix: str) -> List[Dict[str, Any]]:
+    """Extract normalized rules of *script_type* from ``extensions.risuai.customScripts``."""
+    _, risu = _card_extensions(raw_card)
+    rules: List[Dict[str, Any]] = []
+    custom_scripts = risu.get("customScripts")
+    if not isinstance(custom_scripts, list):
+        return rules
+
+    target_type = script_type.strip().lower()
+    for idx, item in enumerate(custom_scripts):
+        if not isinstance(item, dict):
+            continue
+        if str(item.get("type") or "").strip().lower() != target_type:
+            continue
+        raw_in = str(item.get("in") or "")
+        if not raw_in:
+            continue
+        flag = str(item.get("flag") or "g") if item.get("ableFlag", True) else "g"
+        pattern, flags = _split_regex_literal(raw_in, flag)
+        if not pattern:
+            continue
+        rules.append({
+            "id": f"{id_prefix}_{idx}",
+            "name": str(item.get("comment") or f"Risu {target_type} {idx + 1}"),
+            "pattern": pattern,
+            "flags": flags,
+            "replace": str(item.get("out") or ""),
+            "placement": [1, 2],
+            "trim_strings": [],
+            "enabled": True,
+        })
+    return rules
 
 
 def extract_display_regex(raw_card: Dict[str, Any]) -> List[Dict[str, Any]]:
     """Extract display-only regex scripts from RisuAI and SillyTavern cards."""
-    ext, risu = _card_extensions(raw_card)
-    rules: List[Dict[str, Any]] = []
-
-    # 1. RisuAI customScripts (type == 'editdisplay')
-    custom_scripts = risu.get("customScripts")
-    if isinstance(custom_scripts, list):
-        for idx, item in enumerate(custom_scripts):
-            if not isinstance(item, dict):
-                continue
-            if str(item.get("type") or "").strip().lower() != "editdisplay":
-                continue
-            raw_in = str(item.get("in") or "")
-            if not raw_in:
-                continue
-            flag = str(item.get("flag") or "g") if item.get("ableFlag", True) else "g"
-            pattern, flags = _split_regex_literal(raw_in, flag)
-            if not pattern:
-                continue
-            rules.append({
-                "id": f"risu_{idx}",
-                "name": str(item.get("comment") or f"Risu Display {idx + 1}"),
-                "pattern": pattern,
-                "flags": flags,
-                "replace": str(item.get("out") or ""),
-                "placement": [1, 2],
-                "trim_strings": [],
-                "enabled": True,
-            })
+    ext, _ = _card_extensions(raw_card)
+    rules = _extract_risu_scripts(raw_card, "editdisplay", "risu")
 
     # 2. SillyTavern extensions.regex_scripts
     st_scripts = ext.get("regex_scripts")
@@ -173,6 +268,268 @@ def extract_display_regex(raw_card: Dict[str, Any]) -> List[Dict[str, Any]]:
             })
 
     return rules
+
+
+def extract_output_regex(raw_card_data: Any, card_ui: Any = None) -> List[Dict[str, Any]]:
+    """Extract ``editoutput`` regex scripts, preferring user overrides in *card_ui*."""
+    overrides = _safe_json_obj(card_ui)
+    if "output_regex" in overrides and isinstance(overrides["output_regex"], list):
+        return normalize_display_regex_list(overrides["output_regex"])
+    raw_card = _safe_json_obj(raw_card_data)
+    return _extract_risu_scripts(raw_card, "editoutput", "risu_out")
+
+
+def extract_input_regex(raw_card_data: Any, card_ui: Any = None) -> List[Dict[str, Any]]:
+    """Extract ``editinput`` regex scripts, preferring user overrides in *card_ui*."""
+    overrides = _safe_json_obj(card_ui)
+    if "input_regex" in overrides and isinstance(overrides["input_regex"], list):
+        return normalize_display_regex_list(overrides["input_regex"])
+    raw_card = _safe_json_obj(raw_card_data)
+    return _extract_risu_scripts(raw_card, "editinput", "risu_in")
+
+
+def extract_prompt_regex(raw_card_data: Any, card_ui: Any = None) -> List[Dict[str, Any]]:
+    """Extract prompt-only context rewrite rules (ST ``promptOnly`` / RisuAI ``editprocess``)."""
+    overrides = _safe_json_obj(card_ui)
+    if "prompt_regex" in overrides and isinstance(overrides["prompt_regex"], list):
+        return normalize_display_regex_list(overrides["prompt_regex"])
+
+    raw_card = _safe_json_obj(raw_card_data)
+    ext, _ = _card_extensions(raw_card)
+    rules = _extract_risu_scripts(raw_card, "editprocess", "risu_proc")
+
+    st_scripts = ext.get("regex_scripts")
+    if isinstance(st_scripts, list):
+        for idx, item in enumerate(st_scripts):
+            if not isinstance(item, dict) or not item.get("promptOnly"):
+                continue
+            raw_find = str(item.get("findRegex") or "")
+            if not raw_find:
+                continue
+            pattern, flags = _split_regex_literal(raw_find, "g")
+            if not pattern:
+                continue
+            placement = item.get("placement")
+            clean_placement = (
+                [int(p) for p in placement if isinstance(p, (int, float)) or str(p).isdigit()]
+                if isinstance(placement, list)
+                else [1, 2]
+            )
+            trim_strings = [str(s) for s in (item.get("trimStrings") or []) if isinstance(s, str) and s]
+            entry: Dict[str, Any] = {
+                "id": str(item.get("id") or f"st_prompt_{idx}"),
+                "name": str(item.get("scriptName") or f"ST Prompt {idx + 1}"),
+                "pattern": pattern,
+                "flags": flags,
+                "replace": str(item.get("replaceString") or ""),
+                "placement": clean_placement or [1, 2],
+                "trim_strings": trim_strings,
+                "enabled": not bool(item.get("disabled", False)),
+            }
+            for st_key, norm_key in (("minDepth", "min_depth"), ("maxDepth", "max_depth")):
+                d_val = _coerce_optional_int(item.get(st_key))
+                if d_val is not None:
+                    entry[norm_key] = d_val
+            rules.append(entry)
+    return rules
+
+
+def _js_flags_to_python(flags: str) -> Tuple[int, bool]:
+    py_flags = 0
+    low = (flags or "g").lower()
+    if "i" in low:
+        py_flags |= re.IGNORECASE
+    if "m" in low:
+        py_flags |= re.MULTILINE
+    if "s" in low:
+        py_flags |= re.DOTALL
+    return py_flags, ("g" in low)
+
+
+def apply_regex_scripts(
+    text: str,
+    rules: Sequence[Dict[str, Any]],
+    *,
+    char_name: str = "",
+    user_name: str = "the user",
+    variables: Optional[Dict[str, str]] = None,
+    seed: str = "",
+    asset_names: Optional[Sequence[str]] = None,
+    placement: Optional[int] = None,
+    depth: Optional[int] = None,
+) -> str:
+    """Apply RisuAI/SillyTavern regex scripts safely to *text*."""
+    if not text or not rules:
+        return text
+
+    current = text
+    for rule in rules:
+        if not isinstance(rule, dict) or rule.get("enabled") is False:
+            continue
+        if placement is not None:
+            rule_place = rule.get("placement")
+            if isinstance(rule_place, list) and rule_place and placement not in rule_place:
+                continue
+        if depth is not None:
+            min_d = _coerce_optional_int(rule.get("min_depth"))
+            max_d = _coerce_optional_int(rule.get("max_depth"))
+            if min_d is not None and depth < min_d:
+                continue
+            if max_d is not None and depth > max_d:
+                continue
+        pattern = str(rule.get("pattern") or "")
+        if not pattern:
+            continue
+        py_flags, is_global = _js_flags_to_python(str(rule.get("flags") or "g"))
+        try:
+            compiled = re.compile(pattern, py_flags)
+        except re.error:
+            continue
+
+        trims = [str(s) for s in (rule.get("trim_strings") or []) if isinstance(s, str) and s]
+        replacement_raw = str(rule.get("replace") or "")
+
+        def _replace(match: re.Match) -> str:
+            matched = match.group(0) or ""
+            for t in trims:
+                matched = matched.replace(t, "")
+            groups = [g if g is not None else "" for g in match.groups()]
+
+            def _expand(tok: re.Match) -> str:
+                ref = tok.group(1)
+                if not ref or ref == "&":
+                    return matched
+                idx = int(ref)
+                if 1 <= idx <= len(groups):
+                    return groups[idx - 1]
+                return tok.group(0)
+
+            expanded = _REPLACE_TOKEN_RE.sub(_expand, replacement_raw)
+            if "{{" in expanded:
+                return evaluate_cbs(
+                    expanded,
+                    char_name=char_name,
+                    user_name=user_name,
+                    variables=variables,
+                    seed=seed,
+                    asset_names=asset_names,
+                )
+            return expanded
+
+        try:
+            current = compiled.sub(_replace, current, count=0 if is_global else 1)
+        except Exception:
+            continue
+    return current
+
+
+def _edit_distance(a: str, b: str) -> int:
+    if a == b:
+        return 0
+    if len(a) < len(b):
+        a, b = b, a
+    prev = list(range(len(b) + 1))
+    for i, ca in enumerate(a, start=1):
+        curr = [i]
+        for j, cb in enumerate(b, start=1):
+            cost = 0 if ca == cb else 1
+            curr.append(min(prev[j] + 1, curr[j - 1] + 1, prev[j - 1] + cost))
+        prev = curr
+    return prev[-1]
+
+
+def _common_prefix_len(a: str, b: str) -> int:
+    limit = min(len(a), len(b))
+    i = 0
+    while i < limit and a[i] == b[i]:
+        i += 1
+    return i
+
+
+def resolve_fuzzy_asset_name(ref: str, asset_names: Sequence[str]) -> Optional[str]:
+    """Return canonical asset name for an exact or high-confidence typo match."""
+    cleaned = (ref or "").strip()
+    if (
+        not cleaned
+        or len(cleaned) < 4
+        or "{{" in cleaned
+        or "<" in cleaned
+        or ">" in cleaned
+        or _NON_REF_PREFIX_RE.match(cleaned)
+    ):
+        return None
+
+    low_map: Dict[str, str] = {}
+    candidates: List[Tuple[str, str]] = []
+    for name in asset_names:
+        s = str(name or "").strip()
+        if not s:
+            continue
+        if s == cleaned:
+            return s
+        low = s.lower()
+        if low not in low_map:
+            low_map[low] = s
+            candidates.append((low, s))
+
+    q = cleaned.lower()
+    if q in low_map:
+        return low_map[q]
+
+    best_score = 0.0
+    best_prefix = -1
+    best_name: Optional[str] = None
+    tied = False
+
+    for c_low, c_orig in candidates:
+        if len(c_low) < 4:
+            continue
+        max_len = max(len(q), len(c_low))
+        max_dist = max(3, len(c_low) // 4)
+        if abs(len(q) - len(c_low)) > max_dist:
+            continue
+        dist = _edit_distance(q, c_low)
+        if dist > max_dist:
+            continue
+        sim = 1.0 - (dist / max_len)
+        if sim < 0.75:
+            continue
+        pref = _common_prefix_len(q, c_low)
+        if sim > best_score + 1e-9 or (abs(sim - best_score) <= 1e-9 and pref > best_prefix):
+            best_score = sim
+            best_prefix = pref
+            best_name = c_orig
+            tied = False
+        elif abs(sim - best_score) <= 1e-9 and pref == best_prefix:
+            tied = True
+
+    return None if tied else best_name
+
+
+def normalize_asset_tag_refs(text: str, asset_names: Sequence[str]) -> str:
+    """Fix high-confidence typos inside ``<img="...">`` and ``{{img/raw::...}}`` tags."""
+    if not text or not asset_names:
+        return text
+
+    def _fix_shorthand(match: re.Match) -> str:
+        prefix = match.group(1)
+        raw_ref = match.group(2) if match.group(2) is not None else match.group(3)
+        quote = '"' if match.group(2) is not None else "'"
+        fixed = resolve_fuzzy_asset_name(raw_ref, asset_names)
+        if not fixed or fixed == raw_ref:
+            return match.group(0)
+        return f"{prefix}{quote}{fixed}{quote}"
+
+    def _fix_macro(match: re.Match) -> str:
+        raw_ref = match.group(2)
+        fixed = resolve_fuzzy_asset_name(raw_ref, asset_names)
+        if not fixed or fixed == raw_ref:
+            return match.group(0)
+        return f"{match.group(1)}{fixed}{match.group(3)}"
+
+    out = _IMG_TAG_SHORTHAND_REF_RE.sub(_fix_shorthand, text)
+    out = _ASSET_MACRO_REF_RE.sub(_fix_macro, out)
+    return out
 
 
 def extract_background_css(raw_card: Dict[str, Any]) -> str:
@@ -273,9 +630,17 @@ def extract_card_presentation(raw_card_data: Any, card_ui: Any = None) -> Dict[s
         card_css = extract_background_css(raw_card)
 
     display_regex = _apply_auto_frame_bridges(display_regex, card_css)
+    output_regex = extract_output_regex(raw_card, overrides)
+    input_regex = extract_input_regex(raw_card, overrides)
+    prompt_regex = extract_prompt_regex(raw_card, overrides)
+    scene_rules = normalize_scene_rules_list(overrides.get("scene_rules"))
 
     return {
         "default_variables": default_vars,
         "display_regex": display_regex,
+        "output_regex": output_regex,
+        "input_regex": input_regex,
+        "prompt_regex": prompt_regex,
+        "scene_rules": scene_rules,
         "card_css": card_css,
     }

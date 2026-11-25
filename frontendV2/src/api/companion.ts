@@ -9,13 +9,17 @@ import {
   put,
   useSocket,
 } from './client'
-import type { DisplayRegexRule } from '@/utils/displayRegex'
+import type { DisplayRegexRule, ScenePromptRule } from '@/utils/displayRegex'
 
 const C = '/companions'
 
 export interface CardPresentation {
   default_variables: Record<string, string>
   display_regex: DisplayRegexRule[]
+  output_regex?: DisplayRegexRule[]
+  input_regex?: DisplayRegexRule[]
+  prompt_regex?: DisplayRegexRule[]
+  scene_rules?: ScenePromptRule[]
   card_css: string
 }
 
@@ -466,3 +470,70 @@ export const importCompanionRisum = async (
     data_b64: bytesToBase64(buf),
   })
 }
+
+export interface SceneRulesUpdatePayload {
+  display_regex?: DisplayRegexRule[]
+  output_regex?: DisplayRegexRule[]
+  input_regex?: DisplayRegexRule[]
+  prompt_regex?: DisplayRegexRule[]
+  scene_rules?: ScenePromptRule[]
+  card_css?: string
+}
+
+export interface SceneRulesUpdateResult {
+  status: string
+  card_ui: Record<string, unknown>
+  card_presentation?: CardPresentation
+}
+
+export const updateSceneRules = (
+  companionId: string,
+  payload: SceneRulesUpdatePayload,
+): Promise<SceneRulesUpdateResult> =>
+  put(`${C}/${encodeURIComponent(companionId)}/scene-rules`, payload)
+
+export interface SceneRuleCompileResult {
+  rule_kind: 'scene_prompt' | 'display' | 'output' | 'input' | 'prompt'
+  rule: ScenePromptRule | DisplayRegexRule
+  matched_sample: boolean | null
+  preview_before: string
+  preview_after: string
+  condition_active_now?: boolean
+  repaired?: boolean
+  note?: string
+}
+
+export const compileSceneRule = (
+  companionId: string,
+  payload: {
+    instruction: string
+    sample_text?: string
+    preferred_mode?: string
+    branch_id?: string
+  },
+): Promise<SceneRuleCompileResult> =>
+  post(`${C}/${encodeURIComponent(companionId)}/scene-rules/compile`, payload)
+
+export interface SceneRuleExplanation {
+  id: string
+  name: string
+  summary: string
+}
+
+export const explainSceneRules = (
+  companionId: string,
+  rules: Array<{
+    id: string
+    kind: string
+    name?: string
+    pattern?: string
+    replace?: string
+    condition_cbs?: string
+    prompt?: string
+  }>,
+  language = 'zh',
+): Promise<{ explanations: SceneRuleExplanation[] }> =>
+  post(`${C}/${encodeURIComponent(companionId)}/scene-rules/explain`, {
+    rules,
+    language,
+  })

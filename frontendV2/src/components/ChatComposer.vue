@@ -16,6 +16,7 @@ import {
   useAttachmentQueue,
 } from '@/composables/useAttachmentQueue'
 import AttachmentChipStrip from './AttachmentChipStrip.vue'
+import SceneRulesDock from './SceneRulesDock.vue'
 
 const chat = useChatStore()
 const ui = useUiStore()
@@ -33,6 +34,15 @@ const placeholder = computed(() =>
 const inScript = computed(
   () => Boolean(script.session && script.session.branch_id === session.activeBranch),
 )
+
+const activeSceneRuleCount = computed(() => {
+  const s = session.sceneRules.filter((r) => r.enabled !== false).length
+  const d = session.displayRegexRules.filter((r) => r.enabled !== false).length
+  const o = session.outputRegexRules.filter((r) => r.enabled !== false).length
+  const i = session.inputRegexRules.filter((r) => r.enabled !== false).length
+  const p = session.promptRegexRules.filter((r) => r.enabled !== false).length
+  return s + d + o + i + p
+})
 
 const input = ref<HTMLTextAreaElement | null>(null)
 
@@ -340,6 +350,7 @@ function toggleNarration() {
     >
       <svg viewBox="0 0 24 24"><path d="M12 5v14M6 13l6 6 6-6" /></svg>
     </button>
+    <SceneRulesDock />
     <div class="attach-strip">
       <AttachmentChipStrip :chips="chips" @remove="removeChip" @toggle-stt="toggleVideoStt" />
     </div>
@@ -421,6 +432,19 @@ function toggleNarration() {
         @click="toggleNarration"
       >
         <svg viewBox="0 0 24 24"><path d="M10 8.5H6v4.5h4v-2c0-1 .3-1.8 1.4-2.5" /><path d="M19 8.5h-4v4.5h4v-2c0-1 .3-1.8 1.4-2.5" /></svg>
+      </button>
+      <button
+        class="c-btn scene-dock-btn"
+        :class="{ active: ui.sceneDockOpen, 'has-rules': activeSceneRuleCount > 0 }"
+        :data-tip="t('composer.sceneRules')"
+        :aria-expanded="ui.sceneDockOpen"
+        @click="ui.toggleSceneDock()"
+      >
+        <svg viewBox="0 0 24 24">
+          <path d="M12 3l1.8 4.4L18.2 9.2l-4.4 1.8L12 15.4l-1.8-4.4L5.8 9.2l4.4-1.8L12 3z" />
+          <path d="M18.5 15.5l.8 1.9 1.9.8-1.9.8-.8 1.9-.8-1.9-1.9-.8 1.9-.8.8-1.9z" />
+        </svg>
+        <span v-if="activeSceneRuleCount > 0" class="scene-rule-dot"></span>
       </button>
 
       <button

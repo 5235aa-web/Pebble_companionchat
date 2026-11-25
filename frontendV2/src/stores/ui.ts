@@ -54,6 +54,13 @@ export const useUiStore = defineStore('ui', () => {
   const accent = ref<AccentName>((readStored(ACCENT_KEY) as AccentName) || 'amber')
   const fontStyle = ref<FontStyle>('wenkai')
   const panel = ref<PanelId>(null)
+  const sceneDockOpen = ref(false)
+  function toggleSceneDock(): void {
+    sceneDockOpen.value = !sceneDockOpen.value
+  }
+  function setSceneDockOpen(open: boolean): void {
+    sceneDockOpen.value = open
+  }
   const view = ref<AppView>(readStored(VIEW_KEY) === 'group' ? 'group' : 'single')
   const sceneMotion = ref<boolean>(readStored(SCENE_MOTION_KEY) !== '0')
   const sceneMotionLevel = ref<SceneMotionLevel>(
@@ -353,6 +360,9 @@ export const useUiStore = defineStore('ui', () => {
     focusMemory,
     fontStyle,
     panel,
+    sceneDockOpen,
+    toggleSceneDock,
+    setSceneDockOpen,
     dropActive,
     galleryTarget,
     quotedImage,

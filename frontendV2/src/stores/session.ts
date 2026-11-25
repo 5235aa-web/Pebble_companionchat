@@ -3,6 +3,8 @@ import { computed, ref } from 'vue'
 import type { Branch, CastMember } from '@/data/chat'
 import { getTokenStats } from '@/api/compaction'
 import { resolvePlaceholders, resolveUserName } from '@/utils/text'
+import { evaluateCbs } from '@/utils/cbs'
+import { applyDisplayRegex } from '@/utils/displayRegex'
 import {
   createBranch,
   deleteBranch,
@@ -15,10 +17,12 @@ import {
   listCompanions,
   updateBranchVariables,
   updateCompanion,
+  updateSceneRules,
   type CardPresentation,
   type Companion,
   type CompanionAsset,
   type CompanionBranch,
+  type SceneRulesUpdatePayload,
 } from '@/api/companion'
 
 export interface TokenQuery {
@@ -189,16 +193,36 @@ export const useSessionStore = defineStore('session', () => {
   const greetingIndex = ref(0)
   const emptyHints = ref<string[]>([])
 
-  /* ---- card presentation (Display Regex, Card CSS, CBS variables) ---- */
+  /* ---- card presentation (Display Regex, Scene Rules, Card CSS, CBS variables) ---- */
   const cardPresentation = ref<CardPresentation>({
     default_variables: {},
     display_regex: [],
+    output_regex: [],
+    input_regex: [],
+    prompt_regex: [],
+    scene_rules: [],
     card_css: '',
   })
   const defaultVariables = ref<Record<string, string>>({})
   const branchVariables = ref<Record<string, string>>({})
   const displayRegexRules = computed(() => cardPresentation.value.display_regex)
-  const cardCss = computed(() => cardPresentation.value.card_css)
+  const outputRegexRules = computed(() => cardPresentation.value.output_regex ?? [])
+  const inputRegexRules = computed(() => cardPresentation.value.input_regex ?? [])
+  const promptRegexRules = computed(() => cardPresentation.value.prompt_regex ?? [])
+  const sceneRules = computed(() => cardPresentation.value.scene_rules ?? [])
+  const cardCss = computed(() => {
+    const raw = cardPresentation.value.card_css || ''
+    if (!raw) return ''
+    const opts = {
+      charName: act.value,
+      userName: userName.value,
+      variables: branchVariables.value,
+      seed: `${activeCompanionId.value}:${activeBranch.value}`,
+      assetNames: assetNames.value,
+    }
+    const withCbs = evaluateCbs(raw, opts)
+    return applyDisplayRegex(withCbs, displayRegexRules.value, { ...opts, placement: 2 })
+  })
 
   const greetings = computed(() =>
     rawGreetings.value.map((raw) =>
@@ -208,6 +232,7 @@ export const useSessionStore = defineStore('session', () => {
         userName.value,
         branchVariables.value,
         `${activeCompanionId.value}:${activeBranch.value}`,
+        assetNames.value,
       ),
     ),
   )
@@ -232,6 +257,9 @@ export const useSessionStore = defineStore('session', () => {
   )
 
   const companionAssets = ref<CompanionAsset[]>([])
+  const assetNames = computed(() =>
+    companionAssets.value.map((a) => a.name).filter(Boolean),
+  )
   const imageAssets = computed(() =>
     companionAssets.value.filter((a) => (a.mime_type || '').startsWith('image/')),
   )
@@ -310,6 +338,10 @@ export const useSessionStore = defineStore('session', () => {
     cardPresentation.value = c.card_presentation ?? {
       default_variables: {},
       display_regex: [],
+      output_regex: [],
+      input_regex: [],
+      prompt_regex: [],
+      scene_rules: [],
       card_css: '',
     }
     defaultVariables.value = { ...(cardPresentation.value.default_variables ?? {}) }
@@ -368,6 +400,27 @@ export const useSessionStore = defineStore('session', () => {
     branchVariables.value = res.variables ?? {}
   }
 
+  async function saveSceneRules(payload: SceneRulesUpdatePayload) {
+    const cid = activeCompanionId.value
+    if (!cid) return null
+    const res = await updateSceneRules(cid, payload)
+    if (activeCompanionId.value !== cid) return res
+    if (res.card_presentation) {
+      cardPresentation.value = res.card_presentation
+    } else {
+      cardPresentation.value = {
+        ...cardPresentation.value,
+        ...(payload.display_regex !== undefined ? { display_regex: payload.display_regex } : {}),
+        ...(payload.output_regex !== undefined ? { output_regex: payload.output_regex } : {}),
+        ...(payload.input_regex !== undefined ? { input_regex: payload.input_regex } : {}),
+        ...(payload.prompt_regex !== undefined ? { prompt_regex: payload.prompt_regex } : {}),
+        ...(payload.scene_rules !== undefined ? { scene_rules: payload.scene_rules } : {}),
+        ...(payload.card_css !== undefined ? { card_css: payload.card_css } : {}),
+      }
+    }
+    return res
+  }
+
   async function loadCompanions() {
     loadingCast.value = true
     error.value = ''
@@ -421,7 +474,15 @@ export const useSessionStore = defineStore('session', () => {
     companionAssets.value = []
     branchVariables.value = {}
     defaultVariables.value = {}
-    cardPresentation.value = { default_variables: {}, display_regex: [], card_css: '' }
+    cardPresentation.value = {
+      default_variables: {},
+      display_regex: [],
+      output_regex: [],
+      input_regex: [],
+      prompt_regex: [],
+      scene_rules: [],
+      card_css: '',
+    }
     companions.value = companions.value.map((m) => ({ ...m, active: m.id === id }))
     error.value = ''
     try {
@@ -569,6 +630,7 @@ export const useSessionStore = defineStore('session', () => {
     emptyHints,
     loadCompanions,
     companionAssets,
+    assetNames,
     imageAssets,
     audioAssets,
     videoAssets,
@@ -582,10 +644,15 @@ export const useSessionStore = defineStore('session', () => {
     defaultVariables,
     branchVariables,
     displayRegexRules,
+    outputRegexRules,
+    inputRegexRules,
+    promptRegexRules,
+    sceneRules,
     cardCss,
     loadBranchVariables,
     saveBranchVariables,
     resetBranchVariablesLocal,
+    saveSceneRules,
     newBranch,
     renameBranchLocal,
     removeBranch,

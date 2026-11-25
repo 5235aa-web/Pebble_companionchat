@@ -3,12 +3,30 @@ import { evaluateCbs, type CbsOptions } from './cbs'
 export interface DisplayRegexRule {
   id?: string
   name?: string
+  summary?: string
+  origin?: string
+  recipe_id?: string
   pattern: string
   flags?: string
   replace: string
   placement?: number[]
+  min_depth?: number | null
+  max_depth?: number | null
   trim_strings?: string[]
   enabled?: boolean
+}
+
+export interface ScenePromptRule {
+  id: string
+  name: string
+  summary: string
+  enabled: boolean
+  trigger_type: 'always' | 'idle' | 'chat_turn' | 'time_window' | 'variable' | 'custom_cbs'
+  condition_cbs: string
+  prompt: string
+  placement: 'system' | 'post_history'
+  origin?: string
+  recipe_id?: string
 }
 
 export interface DisplayRegexContext extends CbsOptions {

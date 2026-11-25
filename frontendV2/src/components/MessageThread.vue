@@ -9,7 +9,12 @@ import { useUiStore } from '@/stores/ui'
 import { useCardAudioStore } from '@/stores/cardAudio'
 import { useFileUrls } from '@/composables/useFileUrl'
 import { applyDisplayRegex } from '@/utils/displayRegex'
-import { extractInlineMediaFromText, type InlineMediaTextResult } from '@/utils/inlineMedia'
+import {
+  extractInlineMediaFromText,
+  normalizeAssetTagRefs,
+  rewriteCssAssetUrls,
+  type InlineMediaTextResult,
+} from '@/utils/inlineMedia'
 import { useI18n } from '@/i18n'
 import { summaryText } from '@/data/chat'
 
@@ -33,7 +38,7 @@ const greetingVisible = computed(() => !chat.beats.length && !chat.loading)
 
 const greetingMedia = computed<InlineMediaTextResult>(() => {
   if (!greetingVisible.value) return EMPTY_GREETING_MEDIA
-  const raw = session.emptyLine
+  const raw = normalizeAssetTagRefs(session.emptyLine, session.assetNames)
   if (!raw) return EMPTY_GREETING_MEDIA
   const displayed = applyDisplayRegex(raw, session.displayRegexRules, {
     placement: 2,
@@ -41,14 +46,23 @@ const greetingMedia = computed<InlineMediaTextResult>(() => {
     userName: session.userName,
     variables: session.branchVariables,
     seed: `${session.activeCompanionId}:${session.activeBranch}`,
+    assetNames: session.assetNames,
   })
   return extractInlineMediaFromText(displayed, (refText) => session.findAssetByRef(refText))
 })
 
+const resolvedCardCssInfo = computed(() =>
+  rewriteCssAssetUrls(session.cardCss || '', (refText) => session.findAssetByRef(refText)),
+)
+
 const greetingImageMap = useFileUrls(
   () => {
     if (!greetingVisible.value) return []
-    return [...greetingMedia.value.images, ...greetingMedia.value.htmlImages]
+    return [
+      ...greetingMedia.value.images,
+      ...greetingMedia.value.htmlImages,
+      ...resolvedCardCssInfo.value.assets,
+    ]
       .map((a) => a.rel_path)
       .filter(Boolean)
   },
@@ -56,11 +70,12 @@ const greetingImageMap = useFileUrls(
 )
 
 const greetingAssetUrls = computed<Record<number, string>>(() => {
-  if (!greetingVisible.value || !greetingMedia.value.htmlImages.length) {
+  const allAssets = [...greetingMedia.value.htmlImages, ...resolvedCardCssInfo.value.assets]
+  if (!greetingVisible.value || !allAssets.length) {
     return EMPTY_ASSET_URLS
   }
   const out: Record<number, string> = {}
-  for (const a of greetingMedia.value.htmlImages) {
+  for (const a of allAssets) {
     const url = greetingImageMap.value[a.rel_path]
     if (url) out[a.id] = url
   }
@@ -250,7 +265,7 @@ onMounted(async () => {
           :content="greetingMedia.cleanedText"
           variant="greeting"
           :asset-urls="greetingAssetUrls"
-          :card-css="session.cardCss"
+          :card-css="resolvedCardCssInfo.css"
         />
         <p
           v-else-if="!greetingMedia.images.length && !greetingMedia.audios.length && !greetingMedia.videos.length"

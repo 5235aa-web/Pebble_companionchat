@@ -323,6 +323,7 @@ async function save() {
   error.value = ''
   try {
     const cleanRules = regexRules.value.filter((r) => r.pattern.trim().length > 0)
+    const prevPres = session.cardPresentation
     const currentCardUiSnapshot = JSON.stringify({
       display_regex: cleanRules,
       card_css: cardCssText.value,
@@ -353,6 +354,10 @@ async function save() {
       fields.card_ui = {
         display_regex: cleanRules,
         card_css: cardCssText.value,
+        ...(prevPres?.scene_rules ? { scene_rules: prevPres.scene_rules } : {}),
+        ...(prevPres?.output_regex ? { output_regex: prevPres.output_regex } : {}),
+        ...(prevPres?.input_regex ? { input_regex: prevPres.input_regex } : {}),
+        ...(prevPres?.prompt_regex ? { prompt_regex: prevPres.prompt_regex } : {}),
       }
     }
     // A draft only reaches the database here, so backing out of the editor

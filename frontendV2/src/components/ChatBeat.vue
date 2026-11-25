@@ -16,7 +16,11 @@ import { useLlmStore } from '@/stores/llm'
 import { parseLines } from '@/stores/chat'
 import { evaluateCbs } from '@/utils/cbs'
 import { applyDisplayRegex } from '@/utils/displayRegex'
-import { extractInlineMediaFromText } from '@/utils/inlineMedia'
+import {
+  extractInlineMediaFromText,
+  normalizeAssetTagRefs,
+  rewriteCssAssetUrls,
+} from '@/utils/inlineMedia'
 import { plainTextForSpeech } from '@/utils/richText'
 import RichMessage from './RichMessage.vue'
 import InlineVideoCard from './InlineVideoCard.vue'
@@ -97,23 +101,53 @@ watch(
 )
 
 const inlineMedia = computed(() => {
+  const beats = chat.beats
+  const lastIdx = Math.max(0, beats.length - 1)
+  const lastBeat = beats[lastIdx]
+  const beatText = (b?: Beat): string =>
+    b ? (typeof b.raw === 'string' ? b.raw : b.lines.map((l) => l.text).join('\n')) : ''
+  let lastAi = ''
+  let lastUser = ''
+  for (let i = beats.length - 1; i >= 0; i -= 1) {
+    if (!lastAi && beats[i].role === 'ai') lastAi = beatText(beats[i])
+    if (!lastUser && beats[i].role === 'you') lastUser = beatText(beats[i])
+    if (lastAi && lastUser) break
+  }
   const cbsOpts = {
     charName: session.act,
     userName: session.userName,
     variables: session.branchVariables,
     seed: `${session.activeCompanionId}:${session.activeBranch}`,
+    assetNames: session.assetNames,
+    chatIndex: props.index,
+    lastMessageId: lastIdx,
+    lastMessage: beatText(lastBeat),
+    lastCharMessage: lastAi,
+    lastUserMessage: lastUser,
   }
   const withVars = evaluateCbs(displaySource.value, cbsOpts)
-  const displayed = applyDisplayRegex(withVars, session.displayRegexRules, {
+  const normalized =
+    props.beat.role === 'ai' && !isStreaming.value
+      ? normalizeAssetTagRefs(withVars, session.assetNames)
+      : withVars
+  const displayed = applyDisplayRegex(normalized, session.displayRegexRules, {
     ...cbsOpts,
     placement: props.beat.role === 'you' ? 1 : 2,
   })
   return extractInlineMediaFromText(displayed, (ref) => session.findAssetByRef(ref))
 })
 
+const resolvedCardCssInfo = computed(() =>
+  rewriteCssAssetUrls(session.cardCss || '', (ref) => session.findAssetByRef(ref)),
+)
+
 const inlineImageMap = useFileUrls(
   () =>
-    [...inlineMedia.value.images, ...inlineMedia.value.htmlImages]
+    [
+      ...inlineMedia.value.images,
+      ...inlineMedia.value.htmlImages,
+      ...resolvedCardCssInfo.value.assets,
+    ]
       .map((a) => a.rel_path)
       .filter(Boolean),
   512,
@@ -121,7 +155,7 @@ const inlineImageMap = useFileUrls(
 
 const inlineAssetUrls = computed<Record<number, string>>(() => {
   const out: Record<number, string> = {}
-  for (const a of inlineMedia.value.htmlImages) {
+  for (const a of [...inlineMedia.value.htmlImages, ...resolvedCardCssInfo.value.assets]) {
     const url = inlineImageMap.value[a.rel_path]
     if (url) out[a.id] = url
   }
@@ -503,7 +537,7 @@ function copyLine() {
             :streaming="isStreaming"
             :role="beat.role"
             :asset-urls="inlineAssetUrls"
-            :card-css="session.cardCss"
+            :card-css="resolvedCardCssInfo.css"
           />
         </div>
       </div>

@@ -12,7 +12,7 @@ imported card is not modified on disk.
 """
 
 import re
-from typing import Dict, Optional
+from typing import Dict, Optional, Sequence
 
 from .cbs import evaluate_cbs
 
@@ -31,6 +31,14 @@ def substitute(
     variables: Optional[Dict[str, str]] = None,
     allow_mutation: bool = False,
     seed: str = "",
+    asset_names: Optional[Sequence[str]] = None,
+    chat_index: int = 0,
+    last_message_id: int = 0,
+    last_message: str = "",
+    last_char_message: str = "",
+    last_user_message: str = "",
+    idle_duration: str = "",
+    idle_minutes: int = 0,
 ) -> str:
     """Replace card macros, CBS conditionals, and variables for this branch.
 
@@ -44,6 +52,14 @@ def substitute(
         variables=variables,
         allow_mutation=allow_mutation,
         seed=seed,
+        asset_names=asset_names,
+        chat_index=chat_index,
+        last_message_id=last_message_id,
+        last_message=last_message,
+        last_char_message=last_char_message,
+        last_user_message=last_user_message,
+        idle_duration=idle_duration,
+        idle_minutes=idle_minutes,
     )
 
 

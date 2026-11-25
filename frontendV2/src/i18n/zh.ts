@@ -195,6 +195,7 @@ export const zh: Record<keyof typeof en, string> = {
   'memory.fromMessages': '跳到提取这条记忆的消息',
   'composer.continue': '续写',
   'composer.narration': '旁白模式',
+  'composer.sceneRules': '沉浸规则工坊（自然语言 / 文本宏）',
   'composer.send': '发送',
   'composer.stop': '停止',
   'composer.clear': '清空对话',

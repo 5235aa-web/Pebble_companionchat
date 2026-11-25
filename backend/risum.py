@@ -21,6 +21,9 @@ from .card_presentation import (
     extract_background_css,
     extract_card_presentation,
     extract_display_regex,
+    extract_input_regex,
+    extract_output_regex,
+    extract_prompt_regex,
     parse_default_variables,
 )
 from .charx import (
@@ -65,6 +68,9 @@ def extract_risum_payload(raw: bytes) -> Dict[str, Any]:
         }
     }
     display_regex = extract_display_regex(synthetic_card)
+    output_regex = extract_output_regex(synthetic_card)
+    input_regex = extract_input_regex(synthetic_card)
+    prompt_regex = extract_prompt_regex(synthetic_card)
     card_css = extract_background_css(synthetic_card)
     default_vars = parse_default_variables(synthetic_card)
 
@@ -90,10 +96,45 @@ def extract_risum_payload(raw: bytes) -> Dict[str, Any]:
     return {
         "name": str(module.get("name") or "Risu Module"),
         "display_regex": display_regex,
+        "output_regex": output_regex,
+        "input_regex": input_regex,
+        "prompt_regex": prompt_regex,
         "card_css": card_css,
         "default_variables": default_vars,
         "assets": asset_entries,
     }
+
+
+def _merge_rule_bucket(
+    existing_raw: Any,
+    incoming_raw: Any,
+) -> Tuple[List[Dict[str, Any]], int]:
+    """Append non-duplicate regex rules keyed by ``(pattern, flags, replace)``."""
+    merged = list(existing_raw or [])
+    seen: Set[Tuple[str, str, str]] = {
+        (
+            str(r.get("pattern") or ""),
+            str(r.get("flags") or "g"),
+            str(r.get("replace") or ""),
+        )
+        for r in merged
+        if isinstance(r, dict)
+    }
+    added = 0
+    for rule in incoming_raw or []:
+        if not isinstance(rule, dict):
+            continue
+        sig = (
+            str(rule.get("pattern") or ""),
+            str(rule.get("flags") or "g"),
+            str(rule.get("replace") or ""),
+        )
+        if sig in seen:
+            continue
+        seen.add(sig)
+        merged.append(rule)
+        added += 1
+    return merged, added
 
 
 def merge_risum_into_companion(companion_id: str, raw: bytes) -> Dict[str, Any]:
@@ -106,20 +147,19 @@ def merge_risum_into_companion(companion_id: str, raw: bytes) -> Dict[str, Any]:
     current_ui = dict(companion.get("card_ui") or {})
     current_pres = extract_card_presentation(companion.get("raw_card_data", ""), current_ui)
 
-    # Merge Display Regex rules without duplicating identical (pattern, flags, replace).
-    existing_rules = list(current_pres.get("display_regex") or [])
-    seen_rules: Set[Tuple[str, str, str]] = {
-        (str(r.get("pattern") or ""), str(r.get("flags") or "g"), str(r.get("replace") or ""))
-        for r in existing_rules
-    }
-    added_regex = 0
-    for rule in parsed["display_regex"]:
-        sig = (rule["pattern"], rule["flags"], rule["replace"])
-        if sig in seen_rules:
-            continue
-        seen_rules.add(sig)
-        existing_rules.append(rule)
-        added_regex += 1
+    existing_display, added_disp = _merge_rule_bucket(
+        current_pres.get("display_regex"), parsed.get("display_regex")
+    )
+    existing_output, added_out = _merge_rule_bucket(
+        current_pres.get("output_regex"), parsed.get("output_regex")
+    )
+    existing_input, added_in = _merge_rule_bucket(
+        current_pres.get("input_regex"), parsed.get("input_regex")
+    )
+    existing_prompt, added_prompt = _merge_rule_bucket(
+        current_pres.get("prompt_regex"), parsed.get("prompt_regex")
+    )
+    added_regex = added_disp + added_out + added_in + added_prompt
 
     # Merge CSS if non-empty and not already contained.
     current_css = str(current_pres.get("card_css") or "").strip()
@@ -135,7 +175,13 @@ def merge_risum_into_companion(companion_id: str, raw: bytes) -> Dict[str, Any]:
         merged_defaults.setdefault(k, v)
 
     next_ui = dict(current_ui)
-    next_ui["display_regex"] = existing_rules
+    next_ui["display_regex"] = existing_display
+    if existing_output or "output_regex" in current_ui:
+        next_ui["output_regex"] = existing_output
+    if existing_input or "input_regex" in current_ui:
+        next_ui["input_regex"] = existing_input
+    if existing_prompt or "prompt_regex" in current_ui:
+        next_ui["prompt_regex"] = existing_prompt
     next_ui["card_css"] = current_css
     if merged_defaults:
         next_ui["default_variables"] = merged_defaults

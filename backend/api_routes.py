@@ -761,6 +761,124 @@ async def import_risum_base64_for_companion(
         raise HTTPException(status_code=500, detail=f"Import .risum failed: {str(e)}")
 
 
+# ==================== Scene Rules Studio ====================
+
+class SceneRulesUpdateRequest(BaseModel):
+    display_regex: Optional[List[Dict[str, Any]]] = None
+    output_regex: Optional[List[Dict[str, Any]]] = None
+    input_regex: Optional[List[Dict[str, Any]]] = None
+    prompt_regex: Optional[List[Dict[str, Any]]] = None
+    scene_rules: Optional[List[Dict[str, Any]]] = None
+    card_css: Optional[str] = None
+
+
+class SceneRuleCompileRequest(BaseModel):
+    instruction: str
+    sample_text: str = ""
+    preferred_mode: str = "auto"
+    branch_id: str = "main"
+    llm_config: Optional[Dict[str, Any]] = None
+
+
+class SceneRuleExplainRequest(BaseModel):
+    rules: List[Dict[str, Any]]
+    language: str = "zh"
+    llm_config: Optional[Dict[str, Any]] = None
+
+
+@router.put("/{companion_id}/scene-rules")
+async def update_scene_rules(companion_id: str, request: SceneRulesUpdateRequest):
+    """Merge Scene Rules & presentation overrides into ``card_ui`` without clobbering siblings."""
+    companion = get_companion(companion_id)
+    if not companion:
+        raise HTTPException(status_code=404, detail="Companion not found")
+
+    next_ui = dict(companion.get("card_ui") or {})
+    if request.display_regex is not None:
+        next_ui["display_regex"] = request.display_regex
+    if request.output_regex is not None:
+        next_ui["output_regex"] = request.output_regex
+    if request.input_regex is not None:
+        next_ui["input_regex"] = request.input_regex
+    if request.prompt_regex is not None:
+        next_ui["prompt_regex"] = request.prompt_regex
+    if request.scene_rules is not None:
+        next_ui["scene_rules"] = request.scene_rules
+    if request.card_css is not None:
+        next_ui["card_css"] = request.card_css
+
+    update_companion(companion_id, {"card_ui": next_ui})
+    updated = get_companion(companion_id)
+    return {
+        "status": "success",
+        "card_ui": (updated or {}).get("card_ui", next_ui),
+        "card_presentation": (updated or {}).get("card_presentation"),
+    }
+
+
+@router.post("/{companion_id}/scene-rules/compile")
+async def compile_companion_scene_rule(companion_id: str, request: SceneRuleCompileRequest):
+    """Compile plain-language rule description into a validated Pebble rule."""
+    from .memory_engine import resolve_user_name
+    from .scene_rules_ai import compile_scene_rule
+
+    try:
+        comp = Companion(companion_id)
+    except ValueError:
+        raise HTTPException(status_code=404, detail="Companion not found")
+
+    vars_map = get_branch_variables(companion_id, request.branch_id or "main").get("variables", {})
+    asset_names = [
+        str(a.get("name") or "").strip()
+        for a in get_companion_assets(companion_id)
+        if str(a.get("name") or "").strip()
+    ]
+    llm_cfg = comp._resolve_llm_config_full(request.llm_config) or {}
+
+    try:
+        result = await compile_scene_rule(
+            instruction=request.instruction,
+            sample_text=request.sample_text,
+            preferred_mode=request.preferred_mode,
+            char_name=comp.name or companion_id,
+            user_name=resolve_user_name(comp.user_info),
+            variables=vars_map,
+            asset_names=asset_names,
+            llm_config=llm_cfg,
+        )
+        return result
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    except Exception as exc:
+        logger.error("Scene rule compile failed for %s: %s", companion_id, exc, exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Compile failed: {str(exc)}")
+
+
+@router.post("/{companion_id}/scene-rules/explain")
+async def explain_companion_scene_rules(companion_id: str, request: SceneRuleExplainRequest):
+    """Translate technical card rules into plain-language summaries."""
+    from .scene_rules_ai import explain_scene_rules
+
+    try:
+        comp = Companion(companion_id)
+    except ValueError:
+        raise HTTPException(status_code=404, detail="Companion not found")
+
+    llm_cfg = comp._resolve_llm_config_full(request.llm_config) or {}
+    try:
+        explanations = await explain_scene_rules(
+            rules=request.rules,
+            language=request.language,
+            llm_config=llm_cfg,
+        )
+        return {"explanations": explanations}
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    except Exception as exc:
+        logger.error("Scene rule explain failed for %s: %s", companion_id, exc, exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Explain failed: {str(exc)}")
+
+
 # ==================== Card Export ====================
 
 @router.get("/{companion_id}/export/json")

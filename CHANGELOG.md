@@ -4,6 +4,21 @@ All notable releases for Pebble Companion Chat are recorded here.
 Each `## x.y.z` section is used by `npm run release -- x.y.z` as both the
 GitHub Release description and the in-app update panel notes.
 
+## 0.9.0
+
+- **Scene Rules Workshop (No-Regex Immersive Rule Builder)**:
+  - Added a quick-access **Scene Rules** dock right above the chat input bar that smoothly expands upward without covering messages and automatically switches with your active character.
+  - Added three effortless ways to customize immersion without writing regex: plain-language AI rule creation (with automatic sample testing), offline visual block builders, and one-click recipes for time/turn awareness, inner-thought cards, mood badges, and OOC cleanup.
+  - Added one-click AI explanations for imported card rules, live macro variable controls, and an interactive preview sandbox.
+- **Richer CHARX Card Visuals & Audio**:
+  - Added support for inline `<audio>` playback, decorative `<svg>` graphics, CSS background/asset `url(...)` references, `{{raw::...}}` media tags, and expanded styling rules so richly formatted CHARX cards display and sound as intended.
+  - Stripped hidden `<head>` / `<title>` metadata from rendered cards and applied card variables and display rules to card stylesheets.
+- **Expanded Immersive Macro & Card Script Support**:
+  - Added support for RisuAI temporary variables, loops and asset lists, conditional logic, text helpers, and live chat time/idle/turn macros used in interactive greetings and roleplay cards.
+  - Added support for card input/output rewrite scripts, context-only history cleanup rules (keep rich HTML visible on screen while stripping clutter before sending to the AI), and full script preservation when importing `.risum` modules.
+- **Expression & Asset Typo Recovery**:
+  - Added smart matching for minor character or emotion asset typos in AI replies and greetings, preventing broken asset messages and missing expressions.
+
 ## 0.8.0
 
 - **Character Card & Stage HUD Isolation**:

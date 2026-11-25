@@ -224,6 +224,7 @@ export const useChatStore = defineStore('chat', () => {
       session.userName,
       session.branchVariables,
       `${session.activeCompanionId}:${session.activeBranch}`,
+      session.assetNames,
     )
   }
 
@@ -391,6 +392,16 @@ export const useChatStore = defineStore('chat', () => {
           pending.value = false
           target.thinking = (target.thinking ?? '') + (chunk.content ?? '')
         } else if (chunk.type === 'done') {
+          if (
+            typeof chunk.final_content === 'string' &&
+            chunk.final_content &&
+            chunk.final_content !== buffer
+          ) {
+            buffer = chunk.final_content
+            target.raw = chunk.final_content
+            target.lines = parseLines(chunk.final_content)
+            target.tail = undefined
+          }
           // Adopt the stored id so later actions hit the real row, without
           // re-fetching: a reload here repaints the whole thread mid-view.
           if (typeof chunk.message_id === 'number') target.id = chunk.message_id

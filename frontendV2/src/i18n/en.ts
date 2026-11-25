@@ -200,6 +200,7 @@ export const en = {
   'memory.fromMessages': 'Jump to the messages this came from',
   'composer.continue': 'Continue',
   'composer.narration': 'Narration mode',
+  'composer.sceneRules': 'Scene Rules (Natural Language & Macros)',
   'composer.send': 'Send',
   'composer.stop': 'Stop',
   'composer.clear': 'Clear conversation',
