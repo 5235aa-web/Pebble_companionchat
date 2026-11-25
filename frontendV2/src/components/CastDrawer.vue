@@ -97,17 +97,16 @@ async function exportActive() {
   if (!id || busyLabel.value) return
   error.value = ''
   const active = chat.cast.find((c) => c.id === id)
-  const kind = active && (isCharxCard(active) || (active.assetCount ?? 0) > 0) ? 'charx' : 'json'
   const safeName = (active?.name || id).replace(/[\\/:*?"<>|]/g, '_').trim() || id
   busyLabel.value = t('card.exporting', { pct: 0 })
   try {
-    const blob = await exportCompanion(id, kind, (pct) => {
+    const blob = await exportCompanion(id, 'json', (pct) => {
       busyLabel.value = t('card.exporting', { pct })
     })
     const url = URL.createObjectURL(blob)
     const a = document.createElement('a')
     a.href = url
-    a.download = `${safeName}.${kind}`
+    a.download = `${safeName}.json`
     a.click()
     URL.revokeObjectURL(url)
   } catch (err) {

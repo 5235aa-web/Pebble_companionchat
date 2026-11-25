@@ -32,6 +32,13 @@ const inScene = computed(
 const expanded = ref(false)
 const who = computed(() => chat.activeCast)
 const isCharx = computed(() => Boolean(who.value && isCharxCard(who.value)))
+const showCardHud = computed(
+  () =>
+    Boolean(who.value) &&
+    !inScene.value &&
+    ui.view !== 'group' &&
+    (isCharx.value || (who.value?.assetCount ?? 0) > 0 || session.companionAssets.length > 0),
+)
 
 type Slide = {
   key: string
@@ -341,7 +348,7 @@ onMounted(() => {
     @pointermove="onScenePointerMove"
     @pointerleave="onScenePointerLeave"
   >
-    <CardHudPanel v-if="who && !inScene && ui.view !== 'group'" />
+    <CardHudPanel v-if="showCardHud" />
     <div
       class="scene-photo"
       :class="{ 'has-picture': !!shownUrl, dragging, 'motion-ready': motionActive && motionReady }"

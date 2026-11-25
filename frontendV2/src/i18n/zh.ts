@@ -427,7 +427,6 @@ export const zh: Record<keyof typeof en, string> = {
   /* ---- 角色卡 ---- */
   'card.change': '更换',
   'card.nameRequired': '保存前请先填写角色名。',
-  'card.exportCharx': 'CHARX',
   'card.exportPng': 'PNG',
   'card.exportJson': 'JSON',
   'card.identity': '身份',

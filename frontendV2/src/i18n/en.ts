@@ -432,7 +432,6 @@ export const en = {
   /* ---- character editor ---- */
   'card.change': 'Change',
   'card.nameRequired': 'Give the character a name before saving.',
-  'card.exportCharx': 'CHARX',
   'card.exportPng': 'PNG',
   'card.exportJson': 'JSON',
   'card.identity': 'Identity',

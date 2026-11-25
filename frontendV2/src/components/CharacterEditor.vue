@@ -8,6 +8,7 @@ import { useInochi2dStore } from '@/stores/inochi2d'
 import { useI18n } from '@/i18n'
 import type { DisplayRegexRule } from '@/utils/displayRegex'
 import type { CharacterCard } from '@/data/character'
+import { isCharxCard } from '@/data/chat'
 import {
   createCompanion,
   deleteCompanionAsset,
@@ -188,9 +189,17 @@ const assetCountLabel = computed(() => {
   const n = session.companionAssets.length
   return n > 0 ? `${t('card.assets')} (${n})` : t('card.assets')
 })
-const exportingLabel = ref('')
 const assetInput = ref<HTMLInputElement | null>(null)
 const uploadingAsset = ref(false)
+const cardFormat = ref('')
+const isCharx = computed(() => {
+  if (ui.newCastDraft) return false
+  const active = session.companions.find((c) => c.id === session.activeCompanionId)
+  return isCharxCard({
+    cardFormat: cardFormat.value || active?.cardFormat,
+    assetCount: active?.assetCount,
+  })
+})
 
 const fromCompanion = (c: Companion): CharacterCard => ({
   avatar: c.avatar_path || '',
@@ -218,6 +227,7 @@ async function load() {
   // A draft is a card that does not exist yet: blank it out instead of loading
   // whichever companion happens to be selected behind the panel.
   if (ui.newCastDraft) {
+    cardFormat.value = ''
     Object.assign(card, makeEmpty())
     varsText.value = ''
     regexRules.value = []
@@ -229,9 +239,11 @@ async function load() {
   }
   const id = session.activeCompanionId
   if (!id) {
+    cardFormat.value = ''
     Object.assign(card, makeEmpty())
     return
   }
+  cardFormat.value = ''
   imageLimit.value = IMAGE_PAGE
   assetFilter.value = ''
   try {
@@ -240,6 +252,7 @@ async function load() {
       session.loadCompanionAssets(id),
       session.loadBranchVariables(id, session.activeBranch || 'main'),
     ])
+    cardFormat.value = c?.card_format || ''
     Object.assign(card, c ? fromCompanion(c) : makeEmpty())
     const pres = c?.card_presentation
     regexRules.value = (pres?.display_regex ?? []).map((r) => ({ ...r }))
@@ -391,23 +404,6 @@ async function onAvatarPicked(e: Event) {
   }
 }
 
-async function exportCharx() {
-  const id = session.activeCompanionId
-  if (!id || exportingLabel.value) return
-  error.value = ''
-  exportingLabel.value = t('card.exporting', { pct: 0 })
-  try {
-    const blob = await exportCompanion(id, 'charx', (pct) => {
-      exportingLabel.value = t('card.exporting', { pct })
-    })
-    download(blob, (card.name || id) + '.charx')
-  } catch (err) {
-    error.value = err instanceof Error ? err.message : String(err)
-  } finally {
-    exportingLabel.value = ''
-  }
-}
-
 function pickAssetFiles() {
   assetInput.value?.click()
 }
@@ -527,14 +523,11 @@ function removeGreeting(index: number) {
           <input v-model="card.name" class="pf-name" aria-label="character name" />
           <div class="pf-role">{{ card.role }}</div>
         </div>
-        <div v-if="!ui.newCastDraft" class="pf-exports">
-          <button class="mini-btn primary" :disabled="!!exportingLabel" @click="exportCharx">
-            {{ exportingLabel || t('card.exportCharx') }}
-          </button>
-          <button class="mini-btn" :disabled="!!exportingLabel" @click="exportPng">
+        <div v-if="!ui.newCastDraft && !isCharx" class="pf-exports">
+          <button class="mini-btn" @click="exportPng">
             {{ t('card.exportPng') }}
           </button>
-          <button class="mini-btn" :disabled="!!exportingLabel" @click="exportJson">
+          <button class="mini-btn" @click="exportJson">
             {{ t('card.exportJson') }}
           </button>
         </div>

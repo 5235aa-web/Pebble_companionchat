@@ -196,41 +196,10 @@ export const uploadCompanionAvatar = (id: string, file: File): Promise<{ avatar_
 
 export const exportCompanion = async (
   id: string,
-  kind: 'json' | 'png' | 'charx',
+  kind: 'json' | 'png',
   onProgress?: (pct: number) => void,
 ): Promise<Blob> => {
   if (useSocket()) {
-    if (kind === 'charx') {
-      const prep = await post<{
-        export_id: string
-        filename: string
-        total_size: number
-        chunk_size: number
-      }>(`${C}/${encodeURIComponent(id)}/export/charx/prepare`)
-
-      const total = Math.max(0, prep.total_size || 0)
-      const step = Math.max(64 * 1024, prep.chunk_size || 256 * 1024)
-      const parts: BlobPart[] = []
-      let offset = 0
-      try {
-        while (offset < total) {
-          const slice = await binaryGetRequest(
-            `${C}/export/download/${encodeURIComponent(prep.export_id)}/chunk?offset=${offset}&length=${step}`,
-          )
-          if (!slice.length) break
-          parts.push(slice as BlobPart)
-          offset += slice.length
-          onProgress?.(total > 0 ? Math.min(100, Math.round((offset / total) * 100)) : 100)
-        }
-        onProgress?.(100)
-        return new Blob(parts, { type: 'application/zip' })
-      } finally {
-        await del(`${C}/export/download/${encodeURIComponent(prep.export_id)}`).catch(
-          () => undefined,
-        )
-      }
-    }
-
     const bytes = await binaryGetRequest(`${C}/${encodeURIComponent(id)}/export/${kind}`)
     onProgress?.(100)
     return new Blob([bytes as BlobPart], {
@@ -253,7 +222,7 @@ export const exportCompanion = async (
       onProgress(Math.min(100, Math.round((received / total) * 100)))
     }
     return new Blob(chunks, {
-      type: kind === 'charx' ? 'application/zip' : kind === 'png' ? 'image/png' : 'application/json',
+      type: kind === 'png' ? 'image/png' : 'application/json',
     })
   }
   const blob = await res.blob()
