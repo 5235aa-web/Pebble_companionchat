@@ -309,7 +309,7 @@ PROVIDER_CATALOGUE: Dict[str, Dict[str, Any]] = {
         "fields": ["baseUrl", "apiKey"],
         "free": True,
         "requiresKey": False,
-        "note": "本地出图，不消耗任何额度。需要 ComfyUI 已启动并开放 HTTP 接口，默认地址 http://127.0.0.1:8188。",
+        "note": "",
         # Everything here maps onto nodes in the workflow, not onto a vendor API.
         # ckpt/sampler/scheduler ship with empty options on purpose: the panel
         # fills them from the running instance, so a model the user installs

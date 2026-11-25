@@ -253,6 +253,13 @@ html[data-theme="day"] .scrim{background:rgb(var(--shadow-rgb) / .32);}
   color:var(--accent-dim);margin-left:auto;
 }
 .cmp-preview{font-size:12.5px;line-height:1.68;font-style:italic;color:var(--ink-3);}
+.cmp-preview.full{white-space:pre-wrap;font-style:normal;color:var(--ink-2);}
+.cmp-more{
+  display:inline-block;margin-top:6px;padding:0;border:none;background:none;
+  font-family:var(--mono);font-size:9px;letter-spacing:.14em;text-transform:uppercase;
+  color:var(--accent-dim);cursor:pointer;transition:color .25s ease;
+}
+.cmp-more:hover{color:var(--accent);}
 
 
 /* ---- empty blocks inside panels ---- */

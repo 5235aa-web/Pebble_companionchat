@@ -413,6 +413,9 @@ export const zh: Record<keyof typeof en, string> = {
   'compact.confirmGo': '开始压缩',
   'compact.cardTitle': '对话摘要',
   'compact.viewRaw': '查看原始消息',
+  'compact.batchLabel': '第 {n} 批',
+  'compact.more': 'more',
+  'compact.less': '收起',
   'compact.msgUnit': '条',
   'compact.savedUnit': '节省',
 

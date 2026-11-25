@@ -302,7 +302,10 @@ async def delete_session_image(session_id: int, url: str = Query(..., min_length
 async def compacted_messages(session_id: int):
     """The turns the newest summary covers, so the panel can show the source."""
     _require(session_id)
-    return {"messages": db.compacted_messages(session_id)}
+    return {
+        "messages": db.compacted_messages(session_id),
+        "batches": db.compacted_batches(session_id),
+    }
 
 
 class CompactIn(BaseModel):

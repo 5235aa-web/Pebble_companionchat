@@ -4,6 +4,20 @@ All notable releases for Pebble Companion Chat are recorded here.
 Each `## x.y.z` section is used by `npm run release -- x.y.z` as both the
 GitHub Release description and the in-app update panel notes.
 
+## 0.8.0
+
+- **Character Card & Stage HUD Isolation**:
+  - Removed unsupported `.charx` export paths from the frontend (`CharacterEditor.vue`, `CastDrawer.vue`, `exportCompanion` in `frontendV2/src/api/companion.ts`, and `card.exportCharx` i18n entries), narrowing `exportCompanion` to `'json' | 'png'` and exporting active drawer cards as `.json`.
+  - Filtered out the top `PNG` / `JSON` export buttons in `CharacterEditor.vue` when viewing or editing a `charx` card (`isCharxCard`).
+  - Scoped the Stage HUD (`CardHudPanel` in `ScenePanel.vue`) via `showCardHud` so it only renders for `charx` cards or cards carrying media assets (`assetCount > 0` or `session.companionAssets.length > 0`), hiding it on plain PNG/JSON cards.
+- **Picture Studio Cleanup**:
+  - Removed the `ComfyUI` provider description note in `backend/picturesys/config.py` and updated `BackstagePanel.vue` to conditionally render `.pic-note` text only when non-empty.
+- **Single-Chat & Group Compaction Panel Improvements & Timestamp Localization**:
+  - Exposed `summary_full` alongside the 200-character `summary` preview in `GET /companions/{companion_id}/branches/{branch_id}/compaction-history` (`backend/api_routes.py`), and added a `more` / collapse toggle in `CompactPanel.vue` (`api/compaction.ts`, `data/compaction.ts`, `09-panels.css`, `i18n`) while keeping the preview behavior intact.
+  - Switched group compaction summaries in `CompactPanel.vue` (`21-group.css`) to a 200-character preview by default (omitting excess text from the DOM until expanded) with click-on-summary toggling to view the full text directly without a separate `more` button.
+  - Replaced the flat "View raw messages" list in `CompactPanel.vue` (`13-desk.css`) with a lazy-mounted **batch accordion** for both single-chat and group rooms (`getCompactedBatches` in `api/compaction.ts`, `compacted_batches()` and `batches` in `backend/group_sessions/db.py` & `routes.py`, `GroupCompactedBatch` in `api/group.ts`), keeping batches collapsed by default and mounting only the selected batch's messages.
+  - Unified local-timezone timestamp formatting (`formatDateTime`) for group compaction entries in `CompactPanel.vue` and group memory entries in `MemoryPanel.vue`.
+
 ## 0.7.0
 
 - Added an optional, standalone **Live2D / 2D Puppet** pipeline (`backend/Inochi2D` + WebGL2 stage) so users can decompose single portraits or same-pose expression/outfit packs locally with `See-through` (`LayerDiff3D` + `Marigold`) and animate them in real time without altering the core backend runtime:

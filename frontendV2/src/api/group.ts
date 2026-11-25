@@ -197,9 +197,19 @@ export const clearGroupMessages = (sessionId: number, withMembers = false) =>
     `/group/sessions/${sessionId}/messages?with_members=${withMembers}`,
   )
 
+export interface GroupCompactedBatch {
+  batch_id: string
+  message_count: number
+  started_at?: string
+  ended_at?: string
+  messages: GroupMessage[]
+}
+
 /** The turns the newest summary covers — the "view source" of a compaction. */
 export const compactedGroupMessages = (sessionId: number) =>
-  get<{ messages: GroupMessage[] }>(`/group/sessions/${sessionId}/compacted`)
+  get<{ messages: GroupMessage[]; batches?: GroupCompactedBatch[] }>(
+    `/group/sessions/${sessionId}/compacted`,
+  )
 
 export interface GroupImage {
   url: string

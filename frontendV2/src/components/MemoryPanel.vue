@@ -458,7 +458,7 @@ watch(
         <div class="grp-meta">
           <span v-if="m.about" class="grp-who">{{ m.about }}</span>
           <span v-if="m.use_count" class="mem-used">{{ m.use_count }}×</span>
-          <span v-if="m.created_at" class="grp-time">{{ m.created_at }}</span>
+          <span v-if="m.created_at" class="grp-time">{{ stamp(m.created_at) || m.created_at }}</span>
           <span class="grp-actions">
             <button
               class="grp-act heart"

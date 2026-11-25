@@ -29,6 +29,7 @@ export interface CompactionRecord {
   tokens_before: number
   tokens_after: number
   summary: string
+  summary_full?: string
   created_at: string
 }
 
@@ -93,24 +94,52 @@ export const getCompactionStats = (
     `${C}/${encodeURIComponent(companionId)}/branches/${encodeURIComponent(branchId)}/compaction-stats`,
   )
 
-export const getCompactedMessages = async (
+export interface CompactedMessage {
+  id: number
+  role: string
+  content: string
+  created_at: string
+}
+
+export interface CompactedBatch {
+  batch_id: string
+  message_count: number
+  started_at?: string
+  ended_at?: string
+  messages: CompactedMessage[]
+}
+
+export const getCompactedBatches = async (
   companionId: string,
   branchId: string,
-): Promise<Array<{ id: number; role: string; content: string; created_at: string }>> => {
+): Promise<CompactedBatch[]> => {
   const r = await get<{
-    messages?: Array<{ id: number; role: string; content: string; created_at: string }>
-    batches?: Array<{
-      batch_id: string
-      message_count: number
-      messages?: Array<{ id: number; role: string; content: string; created_at: string }>
-    }>
+    messages?: CompactedMessage[]
+    batches?: CompactedBatch[]
   }>(
     `${C}/${encodeURIComponent(companionId)}/branches/${encodeURIComponent(branchId)}/compacted-messages`,
   )
-  if (r.messages) return r.messages
-  // The endpoint groups rows by compaction batch; the panel shows one flat list,
-  // so the groups are merged here instead of teaching it the batch shape.
-  return (r.batches ?? []).flatMap((b) => b.messages ?? [])
+  if (r.batches?.length) return r.batches
+  if (r.messages?.length) {
+    return [
+      {
+        batch_id: 'legacy',
+        message_count: r.messages.length,
+        started_at: r.messages[0]?.created_at,
+        ended_at: r.messages[r.messages.length - 1]?.created_at,
+        messages: r.messages,
+      },
+    ]
+  }
+  return []
+}
+
+export const getCompactedMessages = async (
+  companionId: string,
+  branchId: string,
+): Promise<CompactedMessage[]> => {
+  const batches = await getCompactedBatches(companionId, branchId)
+  return batches.flatMap((b) => b.messages ?? [])
 }
 
 export const getLatestSummary = async (

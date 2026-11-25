@@ -1068,3 +1068,35 @@ def list_compactions(session_id: int) -> List[Dict]:
         return out
     finally:
         conn.close()
+
+
+def compacted_batches(session_id: int) -> List[Dict]:
+    """Group compacted room messages by each compaction boundary, newest batch first."""
+    compactions = list_compactions(session_id)
+    if not compactions:
+        return []
+    msgs = compacted_messages(session_id)
+    if not msgs:
+        return []
+
+    batches: List[Dict] = []
+    prev_boundary = 0
+    for comp in compactions:
+        boundary = int(comp.get("messages_compacted") or 0)
+        if boundary <= prev_boundary:
+            continue
+        batch_msgs = [
+            m for m in msgs if prev_boundary < int(m["id"]) <= boundary
+        ]
+        prev_boundary = boundary
+        if not batch_msgs:
+            continue
+        batches.append({
+            "batch_id": f"grp_{comp['id']}",
+            "message_count": len(batch_msgs),
+            "started_at": batch_msgs[0].get("created_at") or comp.get("created_at"),
+            "ended_at": batch_msgs[-1].get("created_at") or comp.get("created_at"),
+            "messages": batch_msgs,
+        })
+
+    return list(reversed(batches))

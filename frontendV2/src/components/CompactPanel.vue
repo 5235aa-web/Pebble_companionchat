@@ -3,7 +3,7 @@ import { useUiStore } from '@/stores/ui'
 import { computed, ref, watch } from 'vue'
 import { useSessionStore } from '@/stores/session'
 import { useI18n } from '@/i18n'
-import { compactBranch, getCompactedMessages, getCompactionHistory } from '@/api/compaction'
+import { compactBranch, getCompactedBatches, getCompactionHistory, type CompactedBatch } from '@/api/compaction'
 import { useChatStore } from '@/stores/chat'
 import { llmConfig } from '@/stores/chat'
 import type { CompactionRecord } from '@/data/compaction'
@@ -11,10 +11,10 @@ import {
   compactedGroupMessages,
   compactGroup,
   listGroupCompactions,
+  type GroupCompactedBatch,
   type GroupCompaction,
-  type GroupMessage,
 } from '@/api/group'
-import { formatDateTime } from '@/utils/time'
+import { formatClock, formatDateTime } from '@/utils/time'
 
 const ui = useUiStore()
 const session = useSessionStore()
@@ -41,6 +41,7 @@ const visibleGroupRecords = computed(() => (isGroupView.value ? groupRecords.val
 
 async function loadGroupRecords(): Promise<void> {
   const targetRoomId = roomId.value
+  groupExpandedIds.value = {}
   if (!isGroupView.value || !targetRoomId) {
     groupRecords.value = []
     return
@@ -74,6 +75,7 @@ function fmtTokens(n: number): string {
 
 async function load() {
   records.value = []
+  expandedIds.value = {}
   if (isGroupView.value) return
   const cid = session.activeCompanionId
   const bid = session.activeBranch
@@ -89,6 +91,7 @@ async function load() {
       count: r.message_count,
       saved: fmtTokens(Math.max(0, r.tokens_before - r.tokens_after)),
       preview: r.summary || '',
+      full: r.summary_full || '',
     }))
   } catch (e) {
     if (!isGroupView.value) error.value = e instanceof Error ? e.message : String(e)
@@ -106,21 +109,45 @@ watch(
 )
 
 const showRaw = ref(false)
-const rawMessages = ref<Array<{ id: number; role: string; content: string }>>([])
+const rawBatches = ref<CompactedBatch[]>([])
+const openBatchId = ref('')
+const expandedIds = ref<Record<number, boolean>>({})
+
+function hasMoreSummary(r: CompactionRecord): boolean {
+  return Boolean(r.full && r.full !== r.preview)
+}
+
+function toggleSummary(id: number): void {
+  expandedIds.value = { ...expandedIds.value, [id]: !expandedIds.value[id] }
+}
+
+function toggleBatch(batchId: string): void {
+  openBatchId.value = openBatchId.value === batchId ? '' : batchId
+}
+
+function formatBatchTime(batch: { started_at?: string; ended_at?: string }): string {
+  const start = formatDateTime(batch.started_at)
+  const end = formatClock(batch.ended_at)
+  if (!start) return ''
+  const startClock = formatClock(batch.started_at)
+  return end && end !== startClock ? `${start} ~ ${end}` : start
+}
 
 async function toggleRaw() {
   if (isGroupView.value) return
   if (showRaw.value) {
     showRaw.value = false
+    openBatchId.value = ''
     return
   }
   const cid = session.activeCompanionId
   const bid = session.activeBranch
   if (!cid || !bid) return
   try {
-    const raw = await getCompactedMessages(cid, bid)
+    const batches = await getCompactedBatches(cid, bid)
     if (isGroupView.value || session.activeCompanionId !== cid || session.activeBranch !== bid) return
-    rawMessages.value = raw
+    rawBatches.value = batches
+    openBatchId.value = ''
     showRaw.value = true
   } catch (e) {
     error.value = e instanceof Error ? e.message : String(e)
@@ -133,10 +160,30 @@ const notice = ref('')
 /* ---- room side ---- */
 /* Same two controls as the companion side, pointed at the room's own tables:
    compact on demand, and read back the turns a summary covers. */
+const GROUP_PREVIEW_LEN = 200
+const groupExpandedIds = ref<Record<number, boolean>>({})
 const groupShowRaw = ref(false)
-const groupRawMessages = ref<GroupMessage[]>([])
+const groupRawBatches = ref<GroupCompactedBatch[]>([])
+const groupOpenBatchId = ref('')
 const groupBusy = ref(false)
 const groupNotice = ref('')
+
+function isGroupSummaryLong(summary: string): boolean {
+  return summary.length > GROUP_PREVIEW_LEN
+}
+
+function previewGroupSummary(summary: string): string {
+  if (summary.length <= GROUP_PREVIEW_LEN) return summary
+  return summary.slice(0, GROUP_PREVIEW_LEN).trimEnd() + '...'
+}
+
+function toggleGroupSummary(id: number): void {
+  groupExpandedIds.value = { ...groupExpandedIds.value, [id]: !groupExpandedIds.value[id] }
+}
+
+function toggleGroupBatch(batchId: string): void {
+  groupOpenBatchId.value = groupOpenBatchId.value === batchId ? '' : batchId
+}
 
 watch(
   () => ui.view,
@@ -144,13 +191,17 @@ watch(
     tab.value = view === 'group' ? 'group' : 'single'
     if (view === 'group') {
       records.value = []
+      expandedIds.value = {}
       showRaw.value = false
-      rawMessages.value = []
+      rawBatches.value = []
+      openBatchId.value = ''
       notice.value = ''
     } else {
       groupRecords.value = []
+      groupExpandedIds.value = {}
       groupShowRaw.value = false
-      groupRawMessages.value = []
+      groupRawBatches.value = []
+      groupOpenBatchId.value = ''
       groupNotice.value = ''
     }
     error.value = ''
@@ -166,8 +217,10 @@ watch(
 
 watch(roomId, (id) => {
   groupRecords.value = []
+  groupExpandedIds.value = {}
   groupShowRaw.value = false
-  groupRawMessages.value = []
+  groupRawBatches.value = []
+  groupOpenBatchId.value = ''
   groupNotice.value = ''
   error.value = ''
   if (ui.isOpen('compact') && isGroupView.value && tab.value === 'group' && id) {
@@ -179,8 +232,10 @@ watch(
   () => [session.activeCompanionId, session.activeBranch] as const,
   () => {
     records.value = []
+    expandedIds.value = {}
     showRaw.value = false
-    rawMessages.value = []
+    rawBatches.value = []
+    openBatchId.value = ''
     notice.value = ''
     error.value = ''
   },
@@ -190,6 +245,7 @@ async function toggleGroupRaw(): Promise<void> {
   if (!isGroupView.value) return
   if (groupShowRaw.value) {
     groupShowRaw.value = false
+    groupOpenBatchId.value = ''
     return
   }
   const targetRoomId = roomId.value
@@ -197,7 +253,22 @@ async function toggleGroupRaw(): Promise<void> {
   try {
     const r = await compactedGroupMessages(targetRoomId)
     if (!isGroupView.value || roomId.value !== targetRoomId) return
-    groupRawMessages.value = r.messages ?? []
+    if (r.batches?.length) {
+      groupRawBatches.value = r.batches
+    } else if (r.messages?.length) {
+      groupRawBatches.value = [
+        {
+          batch_id: 'legacy',
+          message_count: r.messages.length,
+          started_at: r.messages[0]?.created_at,
+          ended_at: r.messages[r.messages.length - 1]?.created_at,
+          messages: r.messages,
+        },
+      ]
+    } else {
+      groupRawBatches.value = []
+    }
+    groupOpenBatchId.value = ''
     groupShowRaw.value = true
   } catch (e) {
     error.value = e instanceof Error ? e.message : String(e)
@@ -213,6 +284,9 @@ async function compactGroupNow(): Promise<void> {
     const r = await compactGroup(targetRoomId, llmConfig())
     if (roomId.value !== targetRoomId) return
     groupNotice.value = `${r.messages_compacted} messages folded into a summary.`
+    groupShowRaw.value = false
+    groupRawBatches.value = []
+    groupOpenBatchId.value = ''
     await loadGroupRecords()
   } catch (e) {
     if (roomId.value === targetRoomId) {
@@ -239,6 +313,9 @@ async function compactNow() {
       max_important_messages: 20,
     })
     if (r && r.success === false) notice.value = r.error || ''
+    showRaw.value = false
+    rawBatches.value = []
+    openBatchId.value = ''
     await load()
     await chat.loadMessages()
     await session.loadTokens()
@@ -292,14 +369,49 @@ function fmt(n: number) {
             <span class="cmp-time">{{ r.time }}</span>
             <span class="cmp-n">{{ r.count }} {{ t('compact.msgUnit') }} · {{ r.saved }} {{ t('compact.savedUnit') }}</span>
           </div>
-          <p class="cmp-preview">{{ r.preview }}</p>
+          <p class="cmp-preview" :class="{ full: expandedIds[r.id] }">
+            {{ expandedIds[r.id] && r.full ? r.full : r.preview }}
+          </p>
+          <button
+            v-if="hasMoreSummary(r)"
+            type="button"
+            class="cmp-more"
+            @click="toggleSummary(r.id)"
+          >
+            {{ expandedIds[r.id] ? t('compact.less') : t('compact.more') }}
+          </button>
         </div>
         <div v-if="showRaw" class="raw-list">
-          <div v-for="m in rawMessages" :key="m.id" class="raw-row">
-            <span class="raw-role">{{ m.role }}</span>
-            <p class="raw-text">{{ m.content }}</p>
+          <div
+            v-for="(b, idx) in rawBatches"
+            :key="b.batch_id"
+            class="raw-batch"
+            :class="{ open: openBatchId === b.batch_id }"
+          >
+            <button
+              type="button"
+              class="raw-batch-head"
+              :aria-expanded="openBatchId === b.batch_id ? 'true' : 'false'"
+              @click="toggleBatch(b.batch_id)"
+            >
+              <svg class="raw-batch-caret" viewBox="0 0 24 24"><path d="M6 9l6 6 6-6" /></svg>
+              <span class="raw-batch-title">
+                {{ t('compact.batchLabel', { n: rawBatches.length - idx }) }}
+              </span>
+              <span v-if="formatBatchTime(b)" class="raw-batch-time">{{ formatBatchTime(b) }}</span>
+              <span class="raw-batch-count">
+                {{ b.message_count || b.messages.length }} {{ t('compact.msgUnit') }}
+              </span>
+            </button>
+            <div v-if="openBatchId === b.batch_id" class="raw-batch-body">
+              <div v-for="m in b.messages" :key="m.id" class="raw-row">
+                <span class="raw-role">{{ m.role }}</span>
+                <p class="raw-text">{{ m.content }}</p>
+              </div>
+              <div v-if="!b.messages.length" class="eb-hint">{{ t('empty.noCompaction') }}</div>
+            </div>
           </div>
-          <div v-if="!rawMessages.length" class="eb-hint">{{ t('empty.noCompaction') }}</div>
+          <div v-if="!rawBatches.length" class="eb-hint">{{ t('empty.noCompaction') }}</div>
         </div>
         <div v-if="notice" class="empty-block"><div class="eb-hint">{{ notice }}</div></div>
         <div v-if="!singleRecords.length" class="empty-block">
@@ -323,17 +435,52 @@ function fmt(n: number) {
         <div v-for="c in visibleGroupRecords" :key="c.id" class="grp-row">
           <div class="grp-meta">
             <span class="grp-who">{{ c.covered_count ?? c.messages_compacted }} {{ t('compact.msgUnit') }}</span>
-            <span v-if="c.created_at" class="grp-time">{{ c.created_at }}</span>
+            <span v-if="c.created_at" class="grp-time">{{ formatDateTime(c.created_at) || c.created_at }}</span>
           </div>
-          <p class="grp-text">{{ c.summary }}</p>
+          <button
+            v-if="isGroupSummaryLong(c.summary)"
+            type="button"
+            class="grp-text grp-text-toggle"
+            :class="{ expanded: groupExpandedIds[c.id] }"
+            :aria-expanded="groupExpandedIds[c.id] ? 'true' : 'false'"
+            @click="toggleGroupSummary(c.id)"
+          >
+            {{ groupExpandedIds[c.id] ? c.summary : previewGroupSummary(c.summary) }}
+          </button>
+          <p v-else class="grp-text">{{ c.summary }}</p>
         </div>
 
         <div v-if="groupShowRaw" class="raw-list">
-          <div v-for="m in groupRawMessages" :key="m.id" class="raw-row">
-            <span class="raw-role">{{ m.speaker_name || m.role }}</span>
-            <p class="raw-text">{{ m.content }}</p>
+          <div
+            v-for="(b, idx) in groupRawBatches"
+            :key="b.batch_id"
+            class="raw-batch"
+            :class="{ open: groupOpenBatchId === b.batch_id }"
+          >
+            <button
+              type="button"
+              class="raw-batch-head"
+              :aria-expanded="groupOpenBatchId === b.batch_id ? 'true' : 'false'"
+              @click="toggleGroupBatch(b.batch_id)"
+            >
+              <svg class="raw-batch-caret" viewBox="0 0 24 24"><path d="M6 9l6 6 6-6" /></svg>
+              <span class="raw-batch-title">
+                {{ t('compact.batchLabel', { n: groupRawBatches.length - idx }) }}
+              </span>
+              <span v-if="formatBatchTime(b)" class="raw-batch-time">{{ formatBatchTime(b) }}</span>
+              <span class="raw-batch-count">
+                {{ b.message_count || b.messages.length }} {{ t('compact.msgUnit') }}
+              </span>
+            </button>
+            <div v-if="groupOpenBatchId === b.batch_id" class="raw-batch-body">
+              <div v-for="m in b.messages" :key="m.id" class="raw-row">
+                <span class="raw-role">{{ m.speaker_name || m.role }}</span>
+                <p class="raw-text">{{ m.content }}</p>
+              </div>
+              <div v-if="!b.messages.length" class="eb-hint">{{ t('empty.noCompaction') }}</div>
+            </div>
           </div>
-          <div v-if="!groupRawMessages.length" class="eb-hint">{{ t('empty.noCompaction') }}</div>
+          <div v-if="!groupRawBatches.length" class="eb-hint">{{ t('empty.noCompaction') }}</div>
         </div>
         <div v-if="groupNotice" class="empty-block"><div class="eb-hint">{{ groupNotice }}</div></div>
       </template>

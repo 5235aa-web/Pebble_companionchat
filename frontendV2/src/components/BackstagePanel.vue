@@ -2856,8 +2856,8 @@ function commitModel() {
         </div>
 
         <div v-if="pictureProvider" class="faders pic-params">
-          <div class="pic-note">
-            <span>{{ pictureProviderMeta?.note }}</span>
+          <div v-if="pictureProviderMeta?.note || pictureProviderMeta?.free" class="pic-note">
+            <span v-if="pictureProviderMeta?.note">{{ pictureProviderMeta.note }}</span>
             <span v-if="pictureProviderMeta?.free" class="pic-free">{{ t('picture.free') }}</span>
           </div>
           <UiLever v-model="pictureProvider.enabled" :label="t('picture.enabled')" />

@@ -4,6 +4,7 @@ export interface CompactionRecord {
   count: number
   saved: string
   preview: string
+  full?: string
 }
 
 /** Empty on purpose: history comes from the compaction backend. */

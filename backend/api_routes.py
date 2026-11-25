@@ -1572,6 +1572,7 @@ async def get_branch_compaction_history(
             "tokens_after": r.get("tokens_after") or 0,
             "tokens_saved": r.get("tokens_saved") or 0,
             "summary": r.get("summary_preview") or "",
+            "summary_full": r.get("summary_full") or "",
             "created_at": r.get("compacted_at"),
             "compaction_version": r.get("compaction_version"),
             "llm_model": r.get("llm_model"),

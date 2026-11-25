@@ -418,6 +418,9 @@ export const en = {
   'compact.confirmGo': 'Compact',
   'compact.cardTitle': 'Conversation summary',
   'compact.viewRaw': 'View raw messages',
+  'compact.batchLabel': 'Batch #{n}',
+  'compact.more': 'more',
+  'compact.less': 'less',
   'compact.msgUnit': 'msgs',
   'compact.savedUnit': 'saved',
 
