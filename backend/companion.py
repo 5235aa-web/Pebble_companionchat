@@ -7,12 +7,17 @@ from typing import List, Dict, AsyncGenerator, Optional, Tuple
 
 from .companion_db import (
     get_companion, get_companion_assets, get_branch_hud, update_branch_hud,
-    get_branch_variables,
+    get_branch_variables, set_branch_variables,
     save_message, save_message_with_swipes, get_messages,
     get_last_assistant_message, update_message_content, add_swipe_to_message,
     delete_message, delete_messages_after,
 )
-from .card_hud import CardHudStreamFilter, build_card_hud_prompt, merge_card_hud
+from .card_hud import (
+    CardHudStreamFilter,
+    build_card_hud_prompt,
+    extract_var_updates,
+    merge_card_hud,
+)
 from .card_presentation import (
     apply_regex_scripts,
     build_scene_rules_prompt,
@@ -20,6 +25,7 @@ from .card_presentation import (
     extract_output_regex,
     extract_prompt_regex,
     normalize_asset_tag_refs,
+    normalize_hud_pinned_vars,
     normalize_scene_rules_list,
 )
 from .llm_client import call_llm_stream, load_default_llm_config, resolve_provider_model_config
@@ -466,6 +472,7 @@ class Companion:
                 break
         seed = f"{self.id}:{branch_id}"
         idle_minutes, idle_duration = self._compute_idle_metrics(hist)
+        hud_state = get_branch_hud(self.id, branch_id).get("hud") or {}
         return lambda value: substitute(
             value,
             char_name,
@@ -480,6 +487,7 @@ class Companion:
             last_user_message=last_user_message,
             idle_duration=idle_duration,
             idle_minutes=idle_minutes,
+            hud=hud_state,
         )
 
     @staticmethod
@@ -626,7 +634,16 @@ class Companion:
         if include_card_hud:
             hud_state = get_branch_hud(self.id, branch_id)
             assets = get_companion_assets(self.id)
-            parts.append(build_card_hud_prompt(hud_state.get("hud"), assets))
+            vars_map = get_branch_variables(self.id, branch_id).get("variables", {})
+            parts.append(
+                build_card_hud_prompt(
+                    hud_state.get("hud"),
+                    assets,
+                    variables=vars_map,
+                    pinned_vars=self._hud_pinned_vars(),
+                    thought_enabled=self._hud_thought_enabled(),
+                )
+            )
         
         # The opening message is deliberately absent. Feeding it to the model as
         # part of the system prompt made it treat the greeting as something to
@@ -636,6 +653,14 @@ class Companion:
         # history at its requested depth, which _build_messages handles.
         
         return "\n\n".join(parts)
+
+    def _hud_pinned_vars(self) -> List[str]:
+        card_ui = getattr(self, "card_ui", None) or {}
+        return normalize_hud_pinned_vars(card_ui.get("hud_pinned_vars"))
+
+    def _hud_thought_enabled(self) -> bool:
+        card_ui = getattr(self, "card_ui", None) or {}
+        return bool(card_ui.get("hud_thought_enabled", False))
 
     def _resolve_card_hud_state(self, branch_id: str) -> Optional[Dict]:
         """Return branch HUD state when single-chat HUD is active for this branch."""
@@ -648,18 +673,32 @@ class Companion:
         hud_filter: CardHudStreamFilter,
         initial_hud: Dict,
     ) -> Tuple[str, Dict]:
-        """Flush a CardHudStreamFilter, persist merged state, and build the SSE event."""
+        """Flush a CardHudStreamFilter, persist merged state & pinned vars, and build the SSE event."""
         tail, hud_update, media_cue = hud_filter.finish()
-        merged_hud = merge_card_hud(initial_hud, hud_update)
-        if hud_update:
+        pinned = self._hud_pinned_vars()
+        clean_hud_update, var_updates = extract_var_updates(hud_update, pinned)
+        merged_hud = merge_card_hud(
+            initial_hud,
+            clean_hud_update,
+            clear_stale_thought=True,
+        )
+        if clean_hud_update or merged_hud != (initial_hud or {}):
             update_branch_hud(self.id, branch_id, hud=merged_hud)
-        event = {
+        updated_vars: Optional[Dict[str, str]] = None
+        if var_updates:
+            current_vars = dict(get_branch_variables(self.id, branch_id).get("variables", {}))
+            current_vars.update(var_updates)
+            saved = set_branch_variables(self.id, branch_id, current_vars)
+            updated_vars = saved.get("variables") or current_vars
+        event: Dict = {
             "type": "card_hud",
             "companion_id": self.id,
             "branch_id": branch_id,
             "hud": merged_hud,
             "media_cue": media_cue,
         }
+        if updated_vars is not None:
+            event["variables"] = updated_vars
         return tail, event
 
     def _build_messages(
@@ -692,6 +731,11 @@ class Companion:
             if prompt_rules
             else {}
         )
+        hud_map = (
+            get_branch_hud(self.id, branch_id).get("hud") or {}
+            if prompt_rules
+            else {}
+        )
         char_name = self.name or "your character"
         user_name = resolve_user_name(self.user_info)
         seed = f"{self.id}:{branch_id}"
@@ -719,6 +763,7 @@ class Companion:
                     asset_names=asset_names,
                     placement=1 if msg.get("role") == "user" else 2,
                     depth=max(0, hist_len - 1 - idx),
+                    hud=hud_map,
                 )
             
             if msg_type == "compaction_summary" or SUMMARY_MARKER_START in content:

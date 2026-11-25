@@ -8,6 +8,7 @@ import {
 import { useFileUrls } from '@/composables/useFileUrl'
 import { useI18n } from '@/i18n'
 import { useChatStore } from '@/stores/chat'
+import { useCardHudStore } from '@/stores/cardHud'
 import { useSessionStore } from '@/stores/session'
 import { useUiStore } from '@/stores/ui'
 import { evaluateCbs, type CbsOptions } from '@/utils/cbs'
@@ -36,6 +37,7 @@ import UiSelect, { type UiOption } from './ui/UiSelect.vue'
 
 const session = useSessionStore()
 const chat = useChatStore()
+const cardHud = useCardHudStore()
 const ui = useUiStore()
 const { locale } = useI18n()
 
@@ -118,13 +120,31 @@ const promptConditionOptions = computed<UiOption[]>(() =>
         { value: 'idle', label: '离开超过指定分钟' },
         { value: 'chat_turn', label: '对话达到指定轮数' },
         { value: 'time_window', label: '每天特定时段' },
+        { value: 'hud_affection', label: 'HUD 好感度达到指定值' },
+        { value: 'hud_field', label: 'HUD 地点 / 心情 / 着装包含关键词' },
         { value: 'always', label: '每轮对话始终生效' },
       ]
     : [
         { value: 'idle', label: 'Idle minutes >=' },
         { value: 'chat_turn', label: 'Chat turn >=' },
         { value: 'time_window', label: 'Time window (hour)' },
+        { value: 'hud_affection', label: 'HUD affection >=' },
+        { value: 'hud_field', label: 'HUD field contains keyword' },
         { value: 'always', label: 'Always active' },
+      ],
+)
+
+const hudFieldOptions = computed<UiOption[]>(() =>
+  isZh.value
+    ? [
+        { value: 'location', label: '地点 (location)' },
+        { value: 'mood', label: '心情 (mood)' },
+        { value: 'outfit', label: '着装 (outfit)' },
+      ]
+    : [
+        { value: 'location', label: 'Location' },
+        { value: 'mood', label: 'Mood' },
+        { value: 'outfit', label: 'Outfit' },
       ],
 )
 
@@ -157,6 +177,8 @@ const promptBlock = reactive({
   threshold: 120,
   nightStartHour: 22,
   nightEndHour: 5,
+  hudField: 'location' as 'location' | 'mood' | 'outfit',
+  hudMatch: '',
   placement: 'system' as 'system' | 'post_history',
   prompt: '',
 })
@@ -164,6 +186,7 @@ const promptBlock = reactive({
 /* ---- Live Sandbox Simulation State ---- */
 const simChatIndex = ref(12)
 const simIdleMinutes = ref(15)
+const simAffection = ref(50)
 const varDraft = ref<Record<string, string>>({})
 const newVarKey = ref('')
 const newVarVal = ref('')
@@ -217,12 +240,15 @@ watch(
 )
 
 watch(
-  () => [ui.sceneDockOpen, chat.beats.length] as const,
+  () => [ui.sceneDockOpen, chat.beats.length, cardHud.affectionValue] as const,
   ([open]) => {
     if (open && !sampleText.value.trim()) {
       sampleText.value = pickDefaultSample()
     }
     simChatIndex.value = Math.max(0, chat.beats.length - 1)
+    if (cardHud.affectionValue !== null) {
+      simAffection.value = Math.max(0, Math.min(100, Math.round(cardHud.affectionValue)))
+    }
   },
 )
 
@@ -522,6 +548,8 @@ const offlinePromptPreviewRule = computed(() =>
     threshold: promptBlock.threshold,
     nightStartHour: promptBlock.nightStartHour,
     nightEndHour: promptBlock.nightEndHour,
+    hudField: promptBlock.hudField,
+    hudMatch: promptBlock.hudMatch,
     placement: promptBlock.placement,
     prompt: promptBlock.prompt,
   }),
@@ -620,6 +648,10 @@ const previewCbsOpts = computed<CbsOptions>(() => {
     lastMessageId: simChatIndex.value,
     idleDuration: dur,
     idleMinutes: mins,
+    hud: {
+      ...cardHud.hud,
+      affection: simAffection.value,
+    },
   }
 })
 
@@ -1038,6 +1070,24 @@ const activePromptInjections = computed(() =>
                       {{ isZh ? '第几轮起' : 'From turn' }}
                       <input v-model.number="promptBlock.threshold" type="number" min="1" class="sd-input" />
                     </label>
+                    <label v-else-if="promptBlock.conditionMode === 'hud_affection'" class="sd-mini-label">
+                      {{ isZh ? '好感度达到 (0-100)' : 'Affection >=' }}
+                      <input v-model.number="promptBlock.threshold" type="number" min="0" max="100" class="sd-input" />
+                    </label>
+                    <div v-else-if="promptBlock.conditionMode === 'hud_field'" class="sd-form-grid">
+                      <div class="sd-mini-label">
+                        <span>{{ isZh ? 'HUD 字段' : 'HUD Field' }}</span>
+                        <UiSelect v-model="promptBlock.hudField" :options="hudFieldOptions" />
+                      </div>
+                      <label class="sd-mini-label">
+                        {{ isZh ? '包含关键词' : 'Keyword' }}
+                        <input
+                          v-model="promptBlock.hudMatch"
+                          class="sd-input"
+                          :placeholder="isZh ? '如 雨夜 / 卧室 / 害羞' : 'e.g. rain / blush'"
+                        />
+                      </label>
+                    </div>
                     <div v-else-if="promptBlock.conditionMode === 'time_window'" class="sd-form-grid">
                       <label class="sd-mini-label">
                         {{ isZh ? '起始小时' : 'From hr' }}
@@ -1103,6 +1153,12 @@ const activePromptInjections = computed(() =>
               <span class="sd-tel-item"><code v-pre>{{chat_index}}</code> = {{ simChatIndex }}</span>
               <span class="sd-tel-item"><code v-pre>{{time}}</code> = {{ currentTimeClock }}</span>
               <span class="sd-tel-item"><code v-pre>{{assetlist}}</code> = {{ session.assetNames.length }} {{ isZh ? '项' : 'items' }}</span>
+              <span v-if="cardHud.affectionValue !== null" class="sd-tel-item">
+                <code v-pre>{{hud_affection}}</code> = {{ cardHud.affectionValue }}
+              </span>
+              <span v-if="cardHud.moodText" class="sd-tel-item">
+                <code v-pre>{{hud_mood}}</code> = {{ cardHud.moodText }}
+              </span>
               <button
                 v-if="unexplainedCount > 0"
                 type="button"
@@ -1243,6 +1299,21 @@ const activePromptInjections = computed(() =>
                       class="sd-input sd-var-v"
                       @change="saveVariablesNow"
                     />
+                    <button
+                      type="button"
+                      class="sd-pin"
+                      :class="{ pinned: cardHud.isVarPinned(String(k)) }"
+                      :title="
+                        cardHud.isVarPinned(String(k))
+                          ? isZh ? '已钉选到 Stage HUD（点击取消）' : 'Pinned to Stage HUD (click to unpin)'
+                          : isZh ? '钉选到 Stage HUD 实时追踪' : 'Pin to Stage HUD'
+                      "
+                      @click="cardHud.togglePinVar(String(k))"
+                    >
+                      <svg viewBox="0 0 16 16" aria-hidden="true">
+                        <path d="M5.5 2.5h5l-.8 3.6 2 2v1.2H8.6v4.2L8 14.5l-.6-1V9.3H4.3V8.1l2-2z" />
+                      </svg>
+                    </button>
                     <button type="button" class="sd-del" @click="removeVariableKey(String(k))">×</button>
                   </div>
                 </div>
@@ -1307,6 +1378,10 @@ const activePromptInjections = computed(() =>
                   <label class="sd-mini-label">
                     {{ isZh ? `离线 ${simIdleMinutes}m` : `Idle ${simIdleMinutes}m` }}
                     <input v-model.number="simIdleMinutes" type="range" min="0" max="360" step="15" />
+                  </label>
+                  <label class="sd-mini-label">
+                    {{ isZh ? `好感 ${simAffection}` : `Affection ${simAffection}` }}
+                    <input v-model.number="simAffection" type="range" min="0" max="100" />
                   </label>
                 </div>
                 <textarea v-model="sampleText" class="sd-textarea sd-textarea-sm" rows="2"></textarea>

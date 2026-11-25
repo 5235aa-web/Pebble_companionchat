@@ -115,6 +115,52 @@ export const IMMERSIVE_RECIPES: ImmersiveRecipe[] = [
     },
   },
   {
+    id: 'recipe_hud_affection_warmth',
+    category: 'context',
+    kind: 'scene_prompt',
+    titleZh: '好感度联动 · 心动升温',
+    titleEn: 'HUD Affection Progression',
+    descZh: '当 Stage HUD 好感度达到 65 以上时，角色自动流露更明显的亲昵与偏爱（免写正则）。',
+    descEn: 'When Stage HUD affection >= 65, naturally soften distance and deepen warmth.',
+    previewSample: '♥ {{hud_affection}} · {{hud_mood}}',
+    rule: {
+      id: 'recipe_hud_affection_warmth',
+      name: '好感度升温联动',
+      summary: 'HUD 好感度 ≥ 65 时，让角色自然表达更多偏爱与亲昵',
+      enabled: true,
+      trigger_type: 'variable',
+      condition_cbs: '{{greater_equal::{{hud_affection}}::65}}',
+      prompt:
+        'Live relationship affection is {{hud_affection}}/100 and current mood is {{hud_mood}}. Let genuine closeness, lingering warmth, and quiet fondness show naturally in your wording and body language.',
+      placement: 'system',
+      origin: 'recipe',
+      recipe_id: 'recipe_hud_affection_warmth',
+    },
+  },
+  {
+    id: 'recipe_hud_scene_presence',
+    category: 'context',
+    kind: 'scene_prompt',
+    titleZh: '场景着装 · 在场细节呼应',
+    titleEn: 'HUD Scene & Outfit Grounding',
+    descZh: '把 HUD 当前追踪的地点与着装融入动作细节里，让每次互动更贴合此时此地。',
+    descEn: 'Weaves live HUD location and outfit into sensory details so scenes stay grounded.',
+    previewSample: '{{hud_location}} · {{hud_outfit}}',
+    rule: {
+      id: 'recipe_hud_scene_presence',
+      name: '当前地点与着装在场感',
+      summary: '在对话动作中自然呼应 HUD 的当前地点与着装',
+      enabled: true,
+      trigger_type: 'always',
+      condition_cbs: '{{or::{{hud_location}}::{{hud_outfit}}}}',
+      prompt:
+        'Keep physical details grounded in the active scene: location is "{{hud_location}}", outfit is "{{hud_outfit}}". Reference lighting, posture, or clothing textures subtly when fitting.',
+      placement: 'system',
+      origin: 'recipe',
+      recipe_id: 'recipe_hud_scene_presence',
+    },
+  },
+  {
     id: 'recipe_inner_thought_card',
     category: 'visual',
     kind: 'display',
@@ -293,7 +339,13 @@ export function buildOfflineBlockRule(input: OfflineBlockInput): DisplayRegexRul
   }
 }
 
-export type PromptConditionMode = 'always' | 'idle' | 'chat_turn' | 'time_window'
+export type PromptConditionMode =
+  | 'always'
+  | 'idle'
+  | 'chat_turn'
+  | 'time_window'
+  | 'hud_affection'
+  | 'hud_field'
 
 export interface OfflinePromptBlockInput {
   name: string
@@ -301,6 +353,8 @@ export interface OfflinePromptBlockInput {
   threshold: number
   nightStartHour?: number
   nightEndHour?: number
+  hudField?: 'location' | 'mood' | 'outfit'
+  hudMatch?: string
   placement: 'system' | 'post_history'
   prompt: string
 }
@@ -334,6 +388,19 @@ export function buildOfflinePromptRule(input: OfflinePromptBlockInput): ScenePro
       condition_cbs = `{{and::{{greater_equal::{{hour}}::${startH}}}::{{less::{{hour}}::${endH}}}}}`
     }
     condSummary = `${String(startH).padStart(2, '0')}:00–${String(endH).padStart(2, '0')}:00 时段触发`
+  } else if (input.conditionMode === 'hud_affection') {
+    const aff = Math.max(0, Math.min(100, Math.round(input.threshold ?? 60)))
+    trigger_type = 'variable'
+    condition_cbs = `{{greater_equal::{{hud_affection}}::${aff}}}`
+    condSummary = `HUD 好感度 ≥ ${aff} 触发`
+  } else if (input.conditionMode === 'hud_field') {
+    const field = input.hudField || 'location'
+    const kw = (input.hudMatch || '').trim()
+    if (!kw) return null
+    trigger_type = 'variable'
+    condition_cbs = `{{contains::{{lower::{{hud_${field}}}}}::${kw.toLowerCase()}}}`
+    const fieldLabel = field === 'mood' ? '心情' : field === 'outfit' ? '着装' : '地点'
+    condSummary = `HUD ${fieldLabel}含「${kw}」触发`
   }
 
   return {

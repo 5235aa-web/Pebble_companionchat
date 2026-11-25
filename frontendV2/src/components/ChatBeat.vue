@@ -117,6 +117,7 @@ const inlineMedia = computed(() => {
     charName: session.act,
     userName: session.userName,
     variables: session.branchVariables,
+    hud: session.branchHud,
     seed: `${session.activeCompanionId}:${session.activeBranch}`,
     assetNames: session.assetNames,
     chatIndex: props.index,

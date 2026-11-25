@@ -134,6 +134,21 @@ def _coerce_optional_int(val: Any) -> Optional[int]:
         return None
 
 
+def normalize_hud_pinned_vars(raw: Any) -> List[str]:
+    """Normalize unique, non-empty CBS variable names pinned to Stage HUD."""
+    if not isinstance(raw, list):
+        return []
+    seen = set()
+    out: List[str] = []
+    for item in raw:
+        key = str(item or "").strip()
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        out.append(key)
+    return out
+
+
 def normalize_scene_rules_list(rules: Any) -> List[Dict[str, Any]]:
     """Normalize prompt-level immersive Scene Rules descriptors."""
     if not isinstance(rules, list):
@@ -357,6 +372,7 @@ def apply_regex_scripts(
     asset_names: Optional[Sequence[str]] = None,
     placement: Optional[int] = None,
     depth: Optional[int] = None,
+    hud: Optional[Dict[str, Any]] = None,
 ) -> str:
     """Apply RisuAI/SillyTavern regex scripts safely to *text*."""
     if not text or not rules:
@@ -413,6 +429,7 @@ def apply_regex_scripts(
                     variables=variables,
                     seed=seed,
                     asset_names=asset_names,
+                    hud=hud,
                 )
             return expanded
 
@@ -634,6 +651,8 @@ def extract_card_presentation(raw_card_data: Any, card_ui: Any = None) -> Dict[s
     input_regex = extract_input_regex(raw_card, overrides)
     prompt_regex = extract_prompt_regex(raw_card, overrides)
     scene_rules = normalize_scene_rules_list(overrides.get("scene_rules"))
+    hud_pinned_vars = normalize_hud_pinned_vars(overrides.get("hud_pinned_vars"))
+    hud_thought_enabled = bool(overrides.get("hud_thought_enabled", False))
 
     return {
         "default_variables": default_vars,
@@ -642,5 +661,7 @@ def extract_card_presentation(raw_card_data: Any, card_ui: Any = None) -> Dict[s
         "input_regex": input_regex,
         "prompt_regex": prompt_regex,
         "scene_rules": scene_rules,
+        "hud_pinned_vars": hud_pinned_vars,
+        "hud_thought_enabled": hud_thought_enabled,
         "card_css": card_css,
     }

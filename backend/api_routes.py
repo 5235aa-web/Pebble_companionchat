@@ -769,6 +769,8 @@ class SceneRulesUpdateRequest(BaseModel):
     input_regex: Optional[List[Dict[str, Any]]] = None
     prompt_regex: Optional[List[Dict[str, Any]]] = None
     scene_rules: Optional[List[Dict[str, Any]]] = None
+    hud_pinned_vars: Optional[List[str]] = None
+    hud_thought_enabled: Optional[bool] = None
     card_css: Optional[str] = None
 
 
@@ -804,6 +806,12 @@ async def update_scene_rules(companion_id: str, request: SceneRulesUpdateRequest
         next_ui["prompt_regex"] = request.prompt_regex
     if request.scene_rules is not None:
         next_ui["scene_rules"] = request.scene_rules
+    if request.hud_pinned_vars is not None:
+        from .card_presentation import normalize_hud_pinned_vars
+
+        next_ui["hud_pinned_vars"] = normalize_hud_pinned_vars(request.hud_pinned_vars)
+    if request.hud_thought_enabled is not None:
+        next_ui["hud_thought_enabled"] = bool(request.hud_thought_enabled)
     if request.card_css is not None:
         next_ui["card_css"] = request.card_css
 
@@ -827,7 +835,9 @@ async def compile_companion_scene_rule(companion_id: str, request: SceneRuleComp
     except ValueError:
         raise HTTPException(status_code=404, detail="Companion not found")
 
-    vars_map = get_branch_variables(companion_id, request.branch_id or "main").get("variables", {})
+    branch_key = request.branch_id or "main"
+    vars_map = get_branch_variables(companion_id, branch_key).get("variables", {})
+    hud_map = get_branch_hud(companion_id, branch_key).get("hud") or {}
     asset_names = [
         str(a.get("name") or "").strip()
         for a in get_companion_assets(companion_id)
@@ -843,6 +853,7 @@ async def compile_companion_scene_rule(companion_id: str, request: SceneRuleComp
             char_name=comp.name or companion_id,
             user_name=resolve_user_name(comp.user_info),
             variables=vars_map,
+            hud=hud_map,
             asset_names=asset_names,
             llm_config=llm_cfg,
         )

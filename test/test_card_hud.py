@@ -194,6 +194,81 @@ class BranchHudDbTest(unittest.TestCase):
         self.assertEqual(branch_hud["hud"]["mood"], "warm")
         self.assertEqual(branch_hud["hud"]["affection"], 65)
 
+    def test_dual_visual_roles_and_pinned_cbs_var_bidirectional_sync(self):
+        companion_db.create_companion("c_dual", {"name": "Iris"})
+        companion_db.update_companion(
+            "c_dual",
+            {"card_ui": {"hud_pinned_vars": ["stamina", "trust_stage"]}},
+        )
+        companion_db.add_companion_asset("c_dual", {
+            "asset_type": "emotion",
+            "name": "gentle_smile",
+            "ext": "png",
+            "mime_type": "image/png",
+            "rel_path": "uploads/companion_assets/c_dual/gentle_smile.png",
+        })
+        companion_db.add_companion_asset("c_dual", {
+            "asset_type": "background",
+            "name": "rainy_cafe",
+            "ext": "png",
+            "mime_type": "image/png",
+            "rel_path": "uploads/companion_assets/c_dual/rainy_cafe.png",
+        })
+        companion_db.update_branch_hud("c_dual", "main", enabled=True, hud={"mood": "calm"})
+        companion_db.set_branch_variables("c_dual", "main", {"stamina": "80", "trust_stage": "1"})
+
+        comp = companion.Companion("c_dual")
+        sys_prompt = comp.build_system_prompt(include_card_hud=True)
+        self.assertIn("Available expression portraits: gentle_smile", sys_prompt)
+        self.assertIn("Available background scenes: rainy_cafe", sys_prompt)
+        self.assertIn("Tracked story variables (CBS):", sys_prompt)
+        self.assertIn("stamina: 80", sys_prompt)
+        self.assertIn("var.<name>:", sys_prompt)
+        self.assertIn("Keep updating any custom state fields", sys_prompt)
+
+        flt = card_hud.CardHudStreamFilter()
+        flt.feed("It is pouring outside.<<<STATE>>>\nexpression: gentle_smile\nscene: rainy_cafe\nvar.stamina: 75\ntrust_stage: 2\n<<<END>>>")
+        tail, ev = comp._finalize_card_hud("main", flt, {"mood": "calm"})
+        self.assertEqual(tail, "")
+        self.assertEqual(ev["media_cue"]["expression"], "gentle_smile")
+        self.assertEqual(ev["media_cue"]["scene"], "rainy_cafe")
+        self.assertEqual(ev["variables"]["stamina"], "75")
+        self.assertEqual(ev["variables"]["trust_stage"], "2")
+        # Pinned CBS variables stay stored in branch variables, not duplicated in card_hud.
+        self.assertNotIn("var.stamina", ev["hud"])
+        self.assertNotIn("trust_stage", ev["hud"])
+        persisted_vars = companion_db.get_branch_variables("c_dual", "main")["variables"]
+        self.assertEqual(persisted_vars["stamina"], "75")
+        self.assertEqual(persisted_vars["trust_stage"], "2")
+
+    def test_selective_thought_prompt_and_transient_clearing(self):
+        companion_db.create_companion("c_thought", {"name": "Sora"})
+        companion_db.update_branch_hud("c_thought", "main", enabled=True, hud={"mood": "tender"})
+
+        # Default disabled: no thought field instruction in prompt.
+        prompt_off = companion.Companion("c_thought").build_system_prompt(include_card_hud=True)
+        self.assertNotIn("Keep 'thought' rare", prompt_off)
+
+        # Enabled via card_ui: prompt guides rare/selective usage only.
+        companion_db.update_companion("c_thought", {"card_ui": {"hud_thought_enabled": True}})
+        comp = companion.Companion("c_thought")
+        prompt_on = comp.build_system_prompt(include_card_hud=True)
+        self.assertIn("Keep 'thought' rare", prompt_on)
+        self.assertIn("never on every reply", prompt_on)
+
+        # Turn 1 (intimate moment): thought appears cleanly.
+        f1 = card_hud.CardHudStreamFilter()
+        f1.feed("<<<STATE>>>\nmood: shy\nthought: 刚才那一秒心跳好像漏了一拍。\n<<<END>>>")
+        _, ev1 = comp._finalize_card_hud("main", f1, {"mood": "tender"})
+        self.assertEqual(ev1["hud"]["thought"], "刚才那一秒心跳好像漏了一拍。")
+
+        # Turn 2 (ordinary casual reply omitting thought): stale thought is cleared from HUD & DB.
+        f2 = card_hud.CardHudStreamFilter()
+        f2.feed("<<<STATE>>>\nmood: calm\n<<<END>>>")
+        _, ev2 = comp._finalize_card_hud("main", f2, ev1["hud"])
+        self.assertNotIn("thought", ev2["hud"])
+        self.assertNotIn("thought", companion_db.get_branch_hud("c_thought", "main")["hud"])
+
 
 if __name__ == "__main__":
     unittest.main()

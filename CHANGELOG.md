@@ -10,6 +10,11 @@ GitHub Release description and the in-app update panel notes.
   - Added a quick-access **Scene Rules** dock right above the chat input bar that smoothly expands upward without covering messages and automatically switches with your active character.
   - Added three effortless ways to customize immersion without writing regex: plain-language AI rule creation (with automatic sample testing), offline visual block builders, and one-click recipes for time/turn awareness, inner-thought cards, mood badges, and OOC cleanup.
   - Added one-click AI explanations for imported card rules, live macro variable controls, and an interactive preview sandbox.
+- **Stage HUD Upgrades (Dual-Layer Stage & Micro-Console)**:
+  - Decoupled background scenes from foreground character expressions so portrait emotion switches no longer overwrite the active stage backdrop.
+  - Turned the Stage HUD into a live micro-console with custom tracked field add/remove controls, searchable inline portrait/scene/BGM switchers (plus SFX preview and volume/mute controls), a compact layout toggle, 90%-opacity readable panels, and a collapsed pill showing location, outfit, and an affection micro-bar.
+  - Added an optional **Unspoken Thought** frosted veil that appears selectively on emotionally resonant or intimate moments (tap to peek) and subtle mood-reactive lighting on the HUD shimmer and stage edges.
+  - Connected Stage HUD state bidirectionally with **Scene Rules Workshop** and card variables, allowing HUD-triggered rules/recipes and pinned story variables with inline `-/+` steppers on the HUD.
 - **Richer CHARX Card Visuals & Audio**:
   - Added support for inline `<audio>` playback, decorative `<svg>` graphics, CSS background/asset `url(...)` references, `{{raw::...}}` media tags, and expanded styling rules so richly formatted CHARX cards display and sound as intended.
   - Stripped hidden `<head>` / `<title>` metadata from rendered cards and applied card variables and display rules to card stylesheets.

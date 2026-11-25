@@ -10,7 +10,7 @@ BGM, and one-shot SFX via a stripped trailing <<<STATE>>> block.
 from __future__ import annotations
 
 import re
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 HUD_STATE_START = "<<<STATE>>>"
 HUD_STATE_END = "<<<END>>>"
@@ -18,6 +18,7 @@ HUD_STATE_END = "<<<END>>>"
 CORE_HUD_KEYS = ("mood", "affection", "location", "outfit")
 MEDIA_CUE_KEYS = ("expression", "scene", "bg", "bgm", "sfx")
 _IGNORED_CONTROL_KEYS = {"scene_done", "scenedone", "scene_finished"}
+_THOUGHT_NULL_VALUES = frozenset({"none", "null", "off", "empty", "n/a", "-", "—", "无", "没有"})
 
 _MAX_VISUAL_TAGS = 40
 _MAX_AUDIO_TAGS = 20
@@ -69,18 +70,77 @@ def parse_hud_block(raw: str) -> Tuple[Dict[str, Any], Dict[str, str]]:
                 if canonical != "sfx":
                     hud[canonical] = "" if val_str.lower() in ("none", "stop", "off") else val_str
             continue
+        if lowered == "thought":
+            val_str = value.strip().strip("\"'")
+            hud["thought"] = "" if val_str.lower() in _THOUGHT_NULL_VALUES else val_str
+            continue
         hud[key] = _coerce_value(value)
     return hud, cue
 
 
-def merge_card_hud(current: Optional[Dict[str, Any]], update: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+def merge_card_hud(
+    current: Optional[Dict[str, Any]],
+    update: Optional[Dict[str, Any]],
+    *,
+    clear_stale_thought: bool = False,
+) -> Dict[str, Any]:
     """Merge new HUD values into existing state without dropping unmentioned keys."""
     merged = dict(current or {})
-    for key, value in (update or {}).items():
+    upd = update or {}
+    for key, value in upd.items():
         if key == "sfx":
             continue
+        if key == "thought":
+            text = str(value or "").strip()
+            if not text or text.lower() in _THOUGHT_NULL_VALUES:
+                merged.pop("thought", None)
+            else:
+                merged["thought"] = text
+            continue
         merged[key] = value
+    if clear_stale_thought and "thought" not in upd:
+        merged.pop("thought", None)
     return merged
+
+
+def extract_var_updates(
+    hud_update: Optional[Dict[str, Any]],
+    pinned_vars: Optional[Sequence[str]] = None,
+) -> Tuple[Dict[str, Any], Dict[str, str]]:
+    """Split ``var.<key>`` (or pinned CBS variable) mutations out of a parsed HUD update."""
+    clean_hud: Dict[str, Any] = {}
+    var_updates: Dict[str, str] = {}
+    pinned_set = {str(k).strip() for k in (pinned_vars or ()) if str(k).strip()}
+    pinned_lower = {k.lower(): k for k in pinned_set}
+    reserved = set(CORE_HUD_KEYS) | {"expression", "scene", "bgm", "sfx"}
+
+    for raw_k, raw_v in (hud_update or {}).items():
+        k = str(raw_k).strip()
+        if not k:
+            continue
+        low = k.lower()
+        if low.startswith("var.") and len(k) > 4:
+            var_key = k[4:].strip()
+            if var_key:
+                var_updates[var_key] = _format_var_value(raw_v)
+            continue
+        if low not in reserved:
+            if k in pinned_set:
+                var_updates[k] = _format_var_value(raw_v)
+                continue
+            if low in pinned_lower:
+                var_updates[pinned_lower[low]] = _format_var_value(raw_v)
+                continue
+        clean_hud[k] = raw_v
+    return clean_hud, var_updates
+
+
+def _format_var_value(val: Any) -> str:
+    if val is None:
+        return ""
+    if isinstance(val, bool):
+        return "1" if val else "0"
+    return str(val)
 
 
 def _summarize_assets_for_prompt(assets: List[Dict]) -> Tuple[List[str], List[str]]:
@@ -132,7 +192,7 @@ def _summarize_assets_for_prompt(assets: List[Dict]) -> Tuple[List[str], List[st
 def _format_current_hud(hud: Optional[Dict[str, Any]], limit: int = 16) -> str:
     data = hud or {}
     keys = list(CORE_HUD_KEYS) + [
-        k for k in data if k not in CORE_HUD_KEYS and k != "sfx"
+        k for k in data if k not in CORE_HUD_KEYS and k not in ("sfx", "thought")
     ]
     lines: List[str] = []
     for key in keys[:limit]:
@@ -147,12 +207,46 @@ def _format_current_hud(hud: Optional[Dict[str, Any]], limit: int = 16) -> str:
     return "\n".join(lines)
 
 
+def _split_visual_roles(assets: Sequence[Dict]) -> Tuple[List[str], List[str]]:
+    """Collect capped expression/portrait names separately from background/scene names."""
+    exprs: List[str] = []
+    bgs: List[str] = []
+    seen_e = set()
+    seen_b = set()
+    for asset in assets or []:
+        mime = str(asset.get("mime_type") or "").lower()
+        a_type = str(asset.get("asset_type") or "").lower()
+        name = str(asset.get("name") or "").strip()
+        if not name or re.fullmatch(r"\d+", name):
+            continue
+        if not (mime.startswith("image/") or a_type in ("emotion", "icon", "portrait", "background", "image")):
+            continue
+        key = name.lower()
+        if a_type == "background":
+            if key not in seen_b and len(bgs) < _MAX_VISUAL_TAGS:
+                seen_b.add(key)
+                bgs.append(name)
+        elif a_type in ("emotion", "portrait", "icon"):
+            if key not in seen_e and len(exprs) < _MAX_VISUAL_TAGS:
+                seen_e.add(key)
+                exprs.append(name)
+    return exprs, bgs
+
+
 def build_card_hud_prompt(
     current_hud: Optional[Dict[str, Any]],
     assets: Optional[List[Dict]] = None,
+    *,
+    variables: Optional[Dict[str, Any]] = None,
+    pinned_vars: Optional[Sequence[str]] = None,
+    thought_enabled: bool = False,
 ) -> str:
     """Build the [Stage HUD] prompt block appended in normal single-chat mode."""
-    visual_names, audio_names = _summarize_assets_for_prompt(assets or [])
+    asset_list = list(assets or [])
+    visual_names, audio_names = _summarize_assets_for_prompt(asset_list)
+    expr_names, bg_names = _split_visual_roles(asset_list)
+    pinned = [str(k).strip() for k in (pinned_vars or ()) if str(k).strip()]
+    vars_map = variables or {}
 
     lines = [
         "[Stage HUD]",
@@ -161,7 +255,15 @@ def build_card_hud_prompt(
         _format_current_hud(current_hud),
     ]
 
-    if visual_names:
+    if pinned:
+        var_lines = [f"{k}: {vars_map.get(k, '')}" for k in pinned[:12]]
+        lines.append("Tracked story variables (CBS):")
+        lines.extend(var_lines)
+
+    if bg_names:
+        lines.append("Available expression portraits: " + ", ".join(expr_names or visual_names))
+        lines.append("Available background scenes: " + ", ".join(bg_names))
+    elif visual_names:
         lines.append(
             "Available expression/scene images: " + ", ".join(visual_names)
         )
@@ -180,11 +282,30 @@ def build_card_hud_prompt(
         "outfit: <current clothing>",
     ])
     if visual_names:
-        lines.append("expression: <best matching image name from above, or current mood>")
+        lines.append("expression: <best matching portrait/expression name from above, or current mood>")
+        if bg_names:
+            lines.append("scene: <best matching background scene name from above, or omit to keep>")
+        else:
+            lines.append("scene: <optional background scene image name, or omit to keep>")
     if audio_names:
         lines.append("bgm: <track name to loop, 'none' to stop, or omit to keep>")
         lines.append("sfx: <optional one-shot sound effect name, or omit>")
+    if pinned:
+        lines.append("var.<name>: <updated value for any tracked story variable that changed, or omit>")
+    if thought_enabled:
+        lines.append(
+            "thought: <RARE & SELECTIVE — only on a deeply felt, tender, vulnerable, or unspoken-tension moment, "
+            "write 1 brief unspoken inner thought (under 22 words) that contrasts with or deepens spoken words; "
+            "omit or write 'none' on casual/ordinary turns>"
+        )
     lines.append(HUD_STATE_END)
+    if thought_enabled:
+        lines.append(
+            "Keep 'thought' rare—only surface it when the exchange truly feels emotionally charged, intimate, or pivotal, never on every reply."
+        )
+    lines.append(
+        "Keep updating any custom state fields listed under 'Current state' when they change."
+    )
     lines.append(
         "Write normal prose/dialogue before the block; never mention the block in dialogue."
     )

@@ -36,6 +36,7 @@ Available CBS macros for `prompt`, `condition_cbs`, and `replace`:
 - `{{chat_index}}` (0-based turn/message index), `{{idle_duration}}` (e.g. "2h 15m"), `{{idle_minutes}}` (integer minutes), `{{time}}` (HH:MM:SS), `{{hour}}` (0-23 integer), `{{date}}`, `{{datetime}}`
 - `{{assetlist}}` (JSON list of companion asset names), `{{lastmessage}}`, `{{lastcharmessage}}`, `{{lastusermessage}}`
 - `{{getvar::key}}`
+- Live Stage HUD macros: `{{hud_mood}}`, `{{hud_affection}}` (0-100), `{{hud_location}}`, `{{hud_outfit}}`, `{{hud_expression}}`, `{{hud_scene}}`, `{{hud_bgm}}`, or `{{hud::field}}` for custom HUD fields
 - Comparisons & logic returning "1" or "0": `{{equal::a::b}}`, `{{not_equal::a::b}}`, `{{greater::a::b}}`, `{{less::a::b}}`, `{{greater_equal::a::b}}`, `{{less_equal::a::b}}`, `{{and::a::b}}`, `{{or::a::b}}`, `{{not::a}}`
 - Conditionals: `{{#when::...}}...{{:else}}...{{/when}}` or `{{#if ...}}...{{/if}}`
 - Regex capture groups inside `replace`: `$1`, `$2`, ..., or `{{match}}` (full match).
@@ -150,6 +151,7 @@ def _validate_regex_on_sample(
     user_name: str,
     variables: Dict[str, str],
     asset_names: Sequence[str],
+    hud: Optional[Dict[str, Any]] = None,
 ) -> Tuple[bool, Optional[bool], str, str]:
     """Validate regex compiles cleanly and check whether it matches *sample_text*."""
     pattern = str(rule.get("pattern") or "")
@@ -173,6 +175,7 @@ def _validate_regex_on_sample(
         user_name=user_name,
         variables=variables,
         asset_names=asset_names,
+        hud=hud,
     )
     return True, matched, preview_after, ("" if matched else "Pattern did not match the sample text")
 
@@ -185,6 +188,7 @@ async def compile_scene_rule(
     char_name: str = "",
     user_name: str = "the user",
     variables: Optional[Dict[str, str]] = None,
+    hud: Optional[Dict[str, Any]] = None,
     asset_names: Optional[Sequence[str]] = None,
     llm_config: Optional[Dict[str, Any]] = None,
     rule_id: Optional[str] = None,
@@ -200,12 +204,14 @@ async def compile_scene_rule(
 
     mode_hint = (preferred_mode or "auto").strip().lower()
     asset_preview = ", ".join(list(asset_names or ())[:20])
+    hud_map = dict(hud or {})
     user_payload = {
         "instruction": clean_inst,
         "preferred_mode": mode_hint,
         "character_name": char_name or "Character",
         "sample_text": sample_text or "",
         "available_variables": sorted(list((variables or {}).keys())),
+        "available_hud_fields": sorted(list(hud_map.keys())),
         "sample_asset_names": asset_preview,
     }
     messages: List[Dict[str, str]] = [
@@ -244,6 +250,7 @@ async def compile_scene_rule(
                 user_name=user_name,
                 variables=vars_map,
                 asset_names=assets,
+                hud=hud_map,
             ).strip()
             if rule_obj.get("condition_cbs")
             else "1"
@@ -254,6 +261,7 @@ async def compile_scene_rule(
             user_name=user_name,
             variables=vars_map,
             asset_names=assets,
+            hud=hud_map,
         )
         return {
             "rule_kind": "scene_prompt",
@@ -293,6 +301,7 @@ async def compile_scene_rule(
         user_name=user_name,
         variables=vars_map,
         asset_names=assets,
+        hud=hud_map,
     )
 
     repaired = False
@@ -326,6 +335,7 @@ async def compile_scene_rule(
                         user_name=user_name,
                         variables=vars_map,
                         asset_names=assets,
+                        hud=hud_map,
                     )
                     if v2:
                         rule_obj = norm_retry[0]

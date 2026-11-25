@@ -691,6 +691,38 @@ class SceneRulesStudioTest(unittest.TestCase):
         self.assertEqual(len(pres['input_regex']), 1)
         self.assertEqual(len(pres['prompt_regex']), 1)
 
+    def test_hud_macros_in_cbs_and_pinned_vars_endpoint(self):
+        companion_db.create_companion('c_hud_cbs', {'name': 'Luna'})
+        companion_db.update_branch_hud(
+            'c_hud_cbs',
+            'main',
+            enabled=True,
+            hud={
+                'mood': 'tender',
+                'affection': 72,
+                'location': 'rooftop_garden',
+                '心跳理由': '记得约定',
+            },
+        )
+        res = asyncio.run(api_routes.update_scene_rules(
+            'c_hud_cbs',
+            api_routes.SceneRulesUpdateRequest(
+                hud_pinned_vars=['stamina', 'stamina', 'mood_tag'],
+                scene_rules=[{
+                    'id': 'hud_aff',
+                    'name': '好感升温',
+                    'trigger_type': 'variable',
+                    'condition_cbs': '{{greater_equal::{{hud_affection}}::65}}',
+                    'prompt': 'At {{hud_location}}, mood={{hud_mood}}, reason={{hud::心跳理由}}, expr={{? hud_affection >= 70}}',
+                    'placement': 'system',
+                    'enabled': True,
+                }],
+            ),
+        ))
+        self.assertEqual(res['card_presentation']['hud_pinned_vars'], ['stamina', 'mood_tag'])
+        prompt = companion.Companion('c_hud_cbs').build_system_prompt(history=[])
+        self.assertIn('At rooftop_garden, mood=tender, reason=记得约定, expr=1', prompt)
+
 
 if __name__ == '__main__':
     unittest.main()

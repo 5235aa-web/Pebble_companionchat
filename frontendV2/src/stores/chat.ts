@@ -434,6 +434,7 @@ export const useChatStore = defineStore('chat', () => {
           useCardHudStore().applyStreamUpdate(
             (chunk.hud as Record<string, unknown>) ?? {},
             (chunk.media_cue as Record<string, unknown>) ?? {},
+            chunk.variables as Record<string, string> | undefined,
           )
         } else if (chunk.type === 'error') {
           error.value = chunk.message ?? 'stream error'

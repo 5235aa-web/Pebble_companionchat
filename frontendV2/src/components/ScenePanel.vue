@@ -85,7 +85,7 @@ const slides = computed<Slide[]>(() => {
     seenUrls.add(avatar)
   }
 
-  const overridePath = cardHud.stageOverrideRelPath
+  const overridePath = cardHud.stageExpressionRelPath
   if (overridePath && !seenUrls.has(overridePath)) {
     const matched = session.imageAssets.find((a) => a.rel_path === overridePath)
     out.push({
@@ -119,6 +119,7 @@ const canSlide = computed(() => slides.value.length > 1)
 // whole app down at mount time. 0 asks for the original bytes, because the
 // scene is the one image drawn large enough for a downscaled copy to look soft.
 const sceneUrl = useFileUrl(() => slide.value?.url, 0)
+const backdropSceneUrl = useFileUrl(() => cardHud.stageSceneRelPath || undefined, 0)
 
 /**
  * The image actually on screen.
@@ -138,6 +139,23 @@ watch(
     shownKey.value = next.key
     shownUrl.value = url
     shownKind.value = next.kind
+  },
+  { immediate: true },
+)
+
+const shownBackdropKey = ref('')
+const shownBackdropUrl = ref('')
+watch(
+  [() => cardHud.stageSceneRelPath, backdropSceneUrl],
+  ([relPath, url]) => {
+    if (!relPath) {
+      shownBackdropKey.value = ''
+      shownBackdropUrl.value = ''
+      return
+    }
+    if (!url) return
+    shownBackdropKey.value = relPath
+    shownBackdropUrl.value = url
   },
   { immediate: true },
 )
@@ -221,7 +239,7 @@ watch(
 // Also watches `slides.length` with `immediate: true` so switching views or
 // async asset/picture loading never drops an active override.
 watch(
-  () => [cardHud.stageOverrideRelPath, slides.value.length] as const,
+  () => [cardHud.stageExpressionRelPath, slides.value.length] as const,
   ([relPath], prev) => {
     if (!slides.value.length) return
     if (relPath) {
@@ -345,6 +363,7 @@ onMounted(() => {
   <aside
     class="scene"
     :class="{ expanded }"
+    :style="showCardHud && cardHud.moodRgb ? { '--scene-mood-rgb': cardHud.moodRgb } : undefined"
     @pointermove="onScenePointerMove"
     @pointerleave="onScenePointerLeave"
   >
@@ -362,10 +381,18 @@ onMounted(() => {
     >
       <PuppetStage v-if="inochi.activeMode === 'live2d'" :active-slide-url="slide?.url" />
       <template v-else>
-        <div v-if="!shownUrl" class="scene-glow"></div>
+        <div v-if="!shownUrl && !shownBackdropUrl" class="scene-glow"></div>
         <Transition name="scene-backdrop-swap">
           <img
-            v-if="shownUrl"
+            v-if="shownBackdropUrl"
+            :key="'scene-' + shownBackdropKey"
+            :src="shownBackdropUrl"
+            alt=""
+            aria-hidden="true"
+            class="scene-backdrop scene-backdrop-live"
+          />
+          <img
+            v-else-if="shownUrl"
             :key="shownKey + '-bg'"
             :src="shownUrl"
             alt=""
@@ -373,6 +400,8 @@ onMounted(() => {
             class="scene-backdrop"
           />
         </Transition>
+        <div v-if="shownBackdropUrl" class="scene-backdrop-scrim" aria-hidden="true"></div>
+        <div v-if="showCardHud && cardHud.moodRgb" class="scene-mood-aura" aria-hidden="true"></div>
         <Transition name="scene-swap">
           <img
             v-if="shownUrl"

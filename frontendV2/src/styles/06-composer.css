@@ -340,13 +340,24 @@
   font-family:var(--mono);font-size:10.5px;color:var(--ink-2);
   max-width:74px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;
 }
-.sd-var-v{padding:2px 6px;font-size:11px;}
+.sd-var-v{padding:2px 6px;font-size:11px;min-width:0;flex:1;}
+.sd-pin{
+  display:grid;place-items:center;width:20px;height:20px;flex:none;
+  border-radius:4px;border:1px solid transparent;color:var(--ink-4);
+  transition:color .2s ease,border-color .2s ease,background-color .2s ease;
+}
+.sd-pin svg{width:11px;height:11px;stroke:currentColor;fill:none;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round;}
+.sd-pin:hover{color:var(--ink);border-color:var(--line-2);}
+.sd-pin.pinned{
+  color:var(--accent);border-color:rgb(var(--accent-rgb) / .45);
+  background:rgb(var(--accent-rgb) / .14);
+}
 .sd-var-add{display:flex;gap:4px;align-items:center;}
 
 .sd-recipe-list{max-height:245px;overflow-y:auto;padding-right:2px;}
 .sd-recipe-top{display:flex;align-items:center;justify-content:space-between;gap:6px;}
 
-.sd-sim-sliders{display:grid;grid-template-columns:1fr 1fr;gap:8px;}
+.sd-sim-sliders{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;}
 .sd-sim-sliders input[type="range"]{
   -webkit-appearance:none;appearance:none;width:100%;height:2px;margin:7px 0;
   background:rgb(var(--ink-rgb) / .16);outline:none;cursor:pointer;

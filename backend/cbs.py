@@ -18,8 +18,8 @@ import hashlib
 import json
 import random
 import re
-from dataclasses import dataclass
-from typing import Dict, List, Optional, Sequence, Tuple
+from dataclasses import dataclass, field
+from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 _CHARACTER_ALIASES = frozenset({"char", "character"})
 _USER_ALIASES = frozenset({"user", "persona"})
@@ -39,6 +39,33 @@ def _is_truthy(value: str) -> bool:
     if not s or s in ("0", "false", "null", "undefined", "none", "nan"):
         return False
     return True
+
+
+def _normalize_hud_map(hud: Optional[Dict[str, Any]]) -> Dict[str, str]:
+    """Flatten HUD values to strings keyed by both original and lowercased names."""
+    out: Dict[str, str] = {}
+    if not isinstance(hud, dict):
+        return out
+    for raw_k, raw_v in hud.items():
+        if raw_v is None:
+            continue
+        k = str(raw_k).strip()
+        if not k:
+            continue
+        if isinstance(raw_v, bool):
+            val = "1" if raw_v else "0"
+        elif isinstance(raw_v, (list, tuple)):
+            val = ", ".join(str(x) for x in raw_v)
+        else:
+            val = str(raw_v)
+        out[k] = val
+        low = k.lower()
+        if low not in out:
+            out[low] = val
+        slug = re.sub(r"\s+", "_", low)
+        if slug and slug not in out:
+            out[slug] = val
+    return out
 
 
 def _match_block_open_kind(inner: str) -> Optional[str]:
@@ -382,6 +409,7 @@ class _CbsState:
     last_user_message: str = ""
     idle_duration: str = ""
     idle_minutes: int = 0
+    hud: Dict[str, str] = field(default_factory=dict)
 
 
 def _find_block_clauses(
@@ -630,7 +658,8 @@ def _evaluate_macro_value(
     if stripped.startswith("?"):
         expr_raw = stripped[1:]
         expr_eval = _eval_with_state(expr_raw, state, depth + 1)
-        merged_vars = {**state.variables, **state.temp_vars}
+        hud_expr_vars = {f"hud_{k}": v for k, v in state.hud.items()}
+        merged_vars = {**hud_expr_vars, **state.variables, **state.temp_vars}
         res = _eval_expr(expr_eval, merged_vars)
         return res if res is not None else raw_macro
 
@@ -669,6 +698,9 @@ def _evaluate_macro_value(
 
         if cmd in ("getvar", "getglobalvar") and args:
             return str(state.variables.get(args[0].strip(), ""))
+        if cmd == "hud" and args:
+            hkey = args[0].strip()
+            return str(state.hud.get(hkey, state.hud.get(hkey.lower(), "")))
         if cmd == "setvar" and len(args) >= 2:
             if state.allow_mutation:
                 state.variables[args[0].strip()] = args[1]
@@ -758,7 +790,8 @@ def _evaluate_macro_value(
             sep = args[1] if len(args) >= 2 else ","
             return sep.join(_parse_array_items(args[0]))
         if cmd == "calc" and args:
-            merged_vars = {**state.variables, **state.temp_vars}
+            hud_expr_vars = {f"hud_{k}": v for k, v in state.hud.items()}
+            merged_vars = {**hud_expr_vars, **state.variables, **state.temp_vars}
             res = _eval_expr(args[0], merged_vars)
             return res if res is not None else raw_macro
         if cmd in ("random", "pick"):
@@ -815,6 +848,9 @@ def _evaluate_macro_value(
         return state.idle_duration or "0m"
     if low in ("idle_minutes", "idleminutes"):
         return str(max(0, int(state.idle_minutes or 0)))
+    if low.startswith("hud_") and len(low) > 4:
+        hkey = low[4:]
+        return str(state.hud.get(hkey, ""))
     if low == "hour":
         return str(datetime.datetime.now().hour)
     if low == "time":
@@ -941,6 +977,7 @@ def evaluate_cbs(
     last_user_message: str = "",
     idle_duration: str = "",
     idle_minutes: int = 0,
+    hud: Optional[Dict[str, Any]] = None,
     _depth: int = 0,
 ) -> str:
     """Resolve CBS macros, variables, loops, and conditionals in *text*."""
@@ -965,5 +1002,6 @@ def evaluate_cbs(
         last_user_message=last_user_message,
         idle_duration=idle_duration,
         idle_minutes=idle_minutes,
+        hud=_normalize_hud_map(hud),
     )
     return _eval_with_state(text, state, _depth)

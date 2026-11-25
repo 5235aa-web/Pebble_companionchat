@@ -20,6 +20,8 @@ export interface CardPresentation {
   input_regex?: DisplayRegexRule[]
   prompt_regex?: DisplayRegexRule[]
   scene_rules?: ScenePromptRule[]
+  hud_pinned_vars?: string[]
+  hud_thought_enabled?: boolean
   card_css: string
 }
 
@@ -477,6 +479,8 @@ export interface SceneRulesUpdatePayload {
   input_regex?: DisplayRegexRule[]
   prompt_regex?: DisplayRegexRule[]
   scene_rules?: ScenePromptRule[]
+  hud_pinned_vars?: string[]
+  hud_thought_enabled?: boolean
   card_css?: string
 }
 

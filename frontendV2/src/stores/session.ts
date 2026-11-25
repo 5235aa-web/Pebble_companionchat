@@ -201,15 +201,20 @@ export const useSessionStore = defineStore('session', () => {
     input_regex: [],
     prompt_regex: [],
     scene_rules: [],
+    hud_pinned_vars: [],
+    hud_thought_enabled: false,
     card_css: '',
   })
   const defaultVariables = ref<Record<string, string>>({})
   const branchVariables = ref<Record<string, string>>({})
+  const branchHud = ref<Record<string, unknown>>({})
   const displayRegexRules = computed(() => cardPresentation.value.display_regex)
   const outputRegexRules = computed(() => cardPresentation.value.output_regex ?? [])
   const inputRegexRules = computed(() => cardPresentation.value.input_regex ?? [])
   const promptRegexRules = computed(() => cardPresentation.value.prompt_regex ?? [])
   const sceneRules = computed(() => cardPresentation.value.scene_rules ?? [])
+  const hudPinnedVars = computed(() => cardPresentation.value.hud_pinned_vars ?? [])
+  const hudThoughtEnabled = computed(() => Boolean(cardPresentation.value.hud_thought_enabled))
   const cardCss = computed(() => {
     const raw = cardPresentation.value.card_css || ''
     if (!raw) return ''
@@ -217,6 +222,7 @@ export const useSessionStore = defineStore('session', () => {
       charName: act.value,
       userName: userName.value,
       variables: branchVariables.value,
+      hud: branchHud.value,
       seed: `${activeCompanionId.value}:${activeBranch.value}`,
       assetNames: assetNames.value,
     }
@@ -233,6 +239,7 @@ export const useSessionStore = defineStore('session', () => {
         branchVariables.value,
         `${activeCompanionId.value}:${activeBranch.value}`,
         assetNames.value,
+        branchHud.value,
       ),
     ),
   )
@@ -415,6 +422,12 @@ export const useSessionStore = defineStore('session', () => {
         ...(payload.input_regex !== undefined ? { input_regex: payload.input_regex } : {}),
         ...(payload.prompt_regex !== undefined ? { prompt_regex: payload.prompt_regex } : {}),
         ...(payload.scene_rules !== undefined ? { scene_rules: payload.scene_rules } : {}),
+        ...(payload.hud_pinned_vars !== undefined
+          ? { hud_pinned_vars: payload.hud_pinned_vars }
+          : {}),
+        ...(payload.hud_thought_enabled !== undefined
+          ? { hud_thought_enabled: payload.hud_thought_enabled }
+          : {}),
         ...(payload.card_css !== undefined ? { card_css: payload.card_css } : {}),
       }
     }
@@ -643,11 +656,14 @@ export const useSessionStore = defineStore('session', () => {
     cardPresentation,
     defaultVariables,
     branchVariables,
+    branchHud,
     displayRegexRules,
     outputRegexRules,
     inputRegexRules,
     promptRegexRules,
     sceneRules,
+    hudPinnedVars,
+    hudThoughtEnabled,
     cardCss,
     loadBranchVariables,
     saveBranchVariables,

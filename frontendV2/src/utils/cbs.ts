@@ -24,6 +24,7 @@ export interface CbsOptions {
   lastUserMessage?: string
   idleDuration?: string
   idleMinutes?: number
+  hud?: Record<string, unknown>
 }
 
 interface SpreadList {
@@ -51,6 +52,35 @@ interface CbsState {
   lastUserMessage: string
   idleDuration: string
   idleMinutes: number
+  hud: Record<string, string>
+}
+
+function normalizeHudMap(hud?: Record<string, unknown>): Record<string, string> {
+  const out: Record<string, string> = {}
+  if (!hud || typeof hud !== 'object') return out
+  for (const [rawK, rawV] of Object.entries(hud)) {
+    if (rawV === null || rawV === undefined) continue
+    const k = String(rawK).trim()
+    if (!k) continue
+    let val: string
+    if (typeof rawV === 'boolean') val = rawV ? '1' : '0'
+    else if (Array.isArray(rawV)) val = rawV.map((x) => String(x)).join(', ')
+    else val = String(rawV)
+    out[k] = val
+    const low = k.toLowerCase()
+    if (!(low in out)) out[low] = val
+    const slug = low.replace(/\s+/g, '_')
+    if (slug && !(slug in out)) out[slug] = val
+  }
+  return out
+}
+
+function buildHudExprVars(hud: Record<string, string>): Record<string, string> {
+  const out: Record<string, string> = {}
+  for (const [k, v] of Object.entries(hud)) {
+    out[`hud_${k}`] = v
+  }
+  return out
 }
 
 function isTruthy(value: string): boolean {
@@ -616,7 +646,7 @@ function evaluateMacroValue(
 
   if (stripped.startsWith('?')) {
     const exprEval = evalWithState(stripped.slice(1), state, depth + 1)
-    const mergedVars = { ...state.variables, ...state.tempVars }
+    const mergedVars = { ...buildHudExprVars(state.hud), ...state.variables, ...state.tempVars }
     const res = evalExpr(exprEval, mergedVars)
     return res !== null ? res : rawMacro
   }
@@ -655,6 +685,10 @@ function evaluateMacroValue(
 
     if ((cmd === 'getvar' || cmd === 'getglobalvar') && args.length) {
       return state.variables[args[0].trim()] ?? ''
+    }
+    if (cmd === 'hud' && args.length) {
+      const hkey = args[0].trim()
+      return state.hud[hkey] ?? state.hud[hkey.toLowerCase()] ?? ''
     }
     if (cmd === 'setvar' && args.length >= 2) {
       if (state.allowMutation) state.variables[args[0].trim()] = args[1]
@@ -764,7 +798,7 @@ function evaluateMacroValue(
       return parseArrayItems(args[0]).join(sep)
     }
     if (cmd === 'calc' && args.length) {
-      const mergedVars = { ...state.variables, ...state.tempVars }
+      const mergedVars = { ...buildHudExprVars(state.hud), ...state.variables, ...state.tempVars }
       const res = evalExpr(args[0], mergedVars)
       return res !== null ? res : rawMacro
     }
@@ -812,6 +846,10 @@ function evaluateMacroValue(
   if (low === 'idle_duration' || low === 'idleduration') return state.idleDuration || '0m'
   if (low === 'idle_minutes' || low === 'idleminutes') {
     return String(Math.max(0, Math.floor(state.idleMinutes || 0)))
+  }
+  if (low.startsWith('hud_') && low.length > 4) {
+    const hkey = low.slice(4)
+    return state.hud[hkey] ?? ''
   }
   if (low === 'hour') return String(new Date().getHours())
   if (low === 'time') {
@@ -953,6 +991,7 @@ export function evaluateCbs(text: string | null | undefined, opts: CbsOptions = 
     lastUserMessage: opts.lastUserMessage ?? '',
     idleDuration: opts.idleDuration ?? '',
     idleMinutes: opts.idleMinutes ?? 0,
+    hud: normalizeHudMap(opts.hud),
   }
   return evalWithState(source, state, 0)
 }

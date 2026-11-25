@@ -22,6 +22,8 @@ export interface ChatChunk {
   hud?: Record<string, unknown>
   /** Present on a card_hud frame: expression / scene / bgm / sfx triggers. */
   media_cue?: Record<string, unknown>
+  /** Present on a card_hud frame when pinned CBS story variables changed. */
+  variables?: Record<string, string>
   scene_done?: boolean
   turns_done?: number
   /** Present on the done frame: the id the assistant message was stored under. */
