@@ -708,13 +708,26 @@ const hoveredCardTip = computed(() => {
 /**
  * `.gc-scroll` covers the whole stage above the composer so wheel scrolling and
  * the right-edge scrollbar work anywhere, which places it in front of `.gc-hand`.
- * When the pointer is over stage backdrop (not message text or tools), hit-test
- * down to `.gc-card` so the fanned cards respond to hover and click directly.
+ * Only hit-test down to `.gc-card` in the exposed stage margins to the left and
+ * right of `.gc-thread` so text selection, spacing clicks, and the middle card
+ * behind the reading column never intercept thread interactions.
  */
-function isStageBackdropTarget(target: EventTarget | null): boolean {
-  if (!(target instanceof Node)) return false
-  if (target === scroller.value || target === thread.value) return true
-  return target instanceof HTMLElement && target.classList.contains('gc-axis')
+const STAGE_CLICK_DRAG_PX = 5
+let stageDown = { x: 0, y: 0, allowCard: false, hadSelection: false }
+
+function isInsideThreadColumn(clientX: number): boolean {
+  const el = thread.value
+  if (!el) return false
+  const rect = el.getBoundingClientRect()
+  return clientX >= rect.left && clientX <= rect.right
+}
+
+function canHitStageCard(target: EventTarget | null, clientX: number): boolean {
+  const el = scroller.value
+  if (!el || target !== el) return false
+  const rect = el.getBoundingClientRect()
+  if (clientX > rect.left + el.clientWidth) return false
+  return !isInsideThreadColumn(clientX)
 }
 
 function findCardAt(clientX: number, clientY: number): string {
@@ -727,8 +740,20 @@ function findCardAt(clientX: number, clientY: number): string {
   return ''
 }
 
+function onStageMouseDown(e: MouseEvent): void {
+  stageDown = {
+    x: e.clientX,
+    y: e.clientY,
+    allowCard:
+      e.button === 0 &&
+      cards.value.length > 0 &&
+      canHitStageCard(e.target, e.clientX),
+    hadSelection: Boolean(window.getSelection()?.toString()),
+  }
+}
+
 function onStageMouseMove(e: MouseEvent): void {
-  if (!cards.value.length || !isStageBackdropTarget(e.target)) {
+  if (!cards.value.length || !canHitStageCard(e.target, e.clientX)) {
     if (hoveredCardId.value) hoveredCardId.value = ''
     return
   }
@@ -736,7 +761,9 @@ function onStageMouseMove(e: MouseEvent): void {
 }
 
 function onStageClick(e: MouseEvent): void {
-  if (!cards.value.length || !isStageBackdropTarget(e.target)) return
+  if (!cards.value.length || !canHitStageCard(e.target, e.clientX)) return
+  if (!stageDown.allowCard || stageDown.hadSelection) return
+  if (Math.hypot(e.clientX - stageDown.x, e.clientY - stageDown.y) > STAGE_CLICK_DRAG_PX) return
   if (window.getSelection()?.toString()) return
   const key = findCardAt(e.clientX, e.clientY)
   if (key) void onCardClick(key)
@@ -1576,6 +1603,7 @@ onMounted(async () => {
       :class="{ 'card-hover': Boolean(hoveredCardId) }"
       :title="hoveredCardTip || undefined"
       @scroll.passive="onScroll"
+      @mousedown="onStageMouseDown"
       @mousemove="onStageMouseMove"
       @mouseleave="hoveredCardId = ''"
       @click="onStageClick"

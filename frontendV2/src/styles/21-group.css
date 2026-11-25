@@ -175,6 +175,7 @@
 .gc-axis{
   position:absolute;left:20px;top:34px;bottom:40px;width:1px;
   background:linear-gradient(180deg,transparent,rgb(var(--ink-rgb) / .09) 4%,rgb(var(--ink-rgb) / .09) 95%,transparent);
+  pointer-events:none;
 }
 
 .gc-beat{position:relative;margin-bottom:34px;}
