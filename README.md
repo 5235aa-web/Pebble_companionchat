@@ -81,47 +81,6 @@ Switch seamlessly between **Day / Night** themes, **7 accent palettes** (Amber, 
 | **ASR (Ears)** | `audio.cpp` (built-in Qwen3-ASR, Confucius4-R2T2 & custom GGUF specs), custom OpenAI-compatible HTTP | OpenAI-compatible STT endpoints |
 | **Picture Studio** | Local ComfyUI (with custom workflow JSON import) | SiliconFlow (Kolors), Zhipu (CogView-3-Flash), Cloudflare Workers AI, AI Horde, Gemini, ModelScope, Pollinations |
 
----
-
-## 📁 Project Structure
-
-```text
-companionchat/
-├── backend/                   # FastAPI backend
-│   ├── main.py                # Standalone backend entrypoint (default port 8002)
-│   ├── api_routes.py          # Core endpoints (companions, conversations, files, STT)
-│   ├── api_routesV2.py        # Text chat streaming endpoints mounted onto api_routes
-│   ├── paths.py               # Data root & model path resolution
-│   ├── companion.py           # Chat orchestration & prompt assembly
-│   ├── compaction.py          # Conversation summarization & compaction
-│   ├── memory_engine.py       # Long-term memory extraction & retrieval
-│   ├── world_book_engine.py   # Optional keyword-matching module (backend only, no UI)
-│   ├── script_mode.py         # Script mode prompt builder & HUD state filter
-│   ├── tavern_importer.py     # PNG / JSON character card importer
-│   ├── tavern_exporter.py     # PNG / JSON character card exporter
-│   ├── tts_service.py         # TTS engine routing & management
-│   ├── stt_registry.py        # ASR engine registry & hot-switching
-│   ├── llama_server_engine.py # llama.cpp local server lifecycle
-│   ├── ws_call.py             # Real-time voice call WebSocket handler
-│   ├── group_sessions/        # Group chat rooms (routes, memory, compaction, turns)
-│   └── picturesys/            # Picture Studio (providers, ComfyUI, gallery store)
-├── frontendV2/                # Active frontend (Vue 3 + TypeScript + Vite)
-│   ├── src/
-│   │   ├── components/        # Chat, GroupStage, BackstagePanel, CharacterEditor, Gallery, etc.
-│   │   ├── stores/            # Pinia stores (session, chat, llm, tts, stt, call, pictures, script)
-│   │   ├── api/               # REST & WebSocket clients
-│   │   ├── i18n/              # Locale dictionaries (en.ts / zh.ts)
-│   │   └── styles/            # Design tokens & stylesheets
-│   └── src-tauri/             # Tauri 2 desktop wrapper & NSIS bundle config
-├── docs/                      # Documentation & brand assets (including logo.svg)
-├── scripts/                   # Maintenance scripts
-├── requirements.txt           # Python dependencies
-├── companion.bat              # Windows launcher for both backend and frontendV2
-└── frontendv2.bat             # Windows launcher for frontendV2 dev server
-```
-
----
-
 ## 🚀 Quick Start
 
 ### Prerequisites
