@@ -23,7 +23,7 @@
   color:var(--accent-dim);margin-bottom:12px;
 }
 .dlg-title{font-size:19px;line-height:1.35;color:var(--ink);margin-bottom:10px;}
-.dlg-text{font-size:13.5px;line-height:1.78;color:var(--ink-3);margin:0 0 26px;}
+.dlg-text{font-size:13.5px;line-height:1.78;color:var(--ink-3);margin:0 0 26px;white-space:pre-line;overflow-wrap:anywhere;}
 .dlg-actions{display:flex;justify-content:flex-end;gap:8px;}
 
 /* ============================================================

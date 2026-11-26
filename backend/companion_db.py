@@ -1105,6 +1105,56 @@ def get_messages(companion_id: str, branch_id: str = "main", include_swipes: boo
         conn.close()
 
 
+def get_branch_export_messages(
+    companion_id: str,
+    branch_id: str = "main",
+    include_compacted: bool = True,
+) -> List[Dict]:
+    """Return branch messages ordered by id for export, including swipe and compaction fields."""
+    conn = _get_conn()
+    try:
+        compacted_filter = "" if include_compacted else " AND COALESCE(is_compacted, 0) = 0"
+        rows = conn.execute(
+            f"""SELECT id, role, content, swipes, swipe_id, created_at,
+                       message_type, metadata, is_important,
+                       COALESCE(is_compacted, 0) AS is_compacted,
+                       COALESCE(compaction_batch_id, '') AS compaction_batch_id
+                FROM companion_messages
+                WHERE companion_id = ? AND branch_id = ?{compacted_filter}
+                ORDER BY id""",
+            (companion_id, branch_id),
+        ).fetchall()
+        result: List[Dict] = []
+        for row in rows:
+            data = dict(row)
+            raw_swipes = data.get("swipes")
+            if raw_swipes:
+                try:
+                    parsed_swipes = json.loads(raw_swipes)
+                    data["swipes"] = parsed_swipes if isinstance(parsed_swipes, list) else [data["content"]]
+                except (ValueError, TypeError):
+                    data["swipes"] = [data["content"]]
+            else:
+                data["swipes"] = [data["content"]]
+
+            raw_meta = data.get("metadata")
+            if raw_meta:
+                try:
+                    parsed_meta = json.loads(raw_meta)
+                    data["metadata"] = parsed_meta if isinstance(parsed_meta, dict) else {}
+                except (ValueError, TypeError):
+                    data["metadata"] = {}
+            else:
+                data["metadata"] = {}
+
+            data["is_important"] = bool(data.get("is_important"))
+            data["is_compacted"] = bool(data.get("is_compacted"))
+            result.append(data)
+        return result
+    finally:
+        conn.close()
+
+
 def get_message_count(companion_id: str, branch_id: str = "main") -> int:
     """获取指定分支的可见消息数量（不含已压缩的消息）。"""
     conn = _get_conn()

@@ -335,6 +335,38 @@ export const clearBranchMessages = (
 ): Promise<{ deleted_count: number }> =>
   del(`${C}/${encodeURIComponent(companionId)}/branches/${encodeURIComponent(branchId)}/messages`)
 
+export type ChatExportFormat = 'md' | 'json' | 'html' | 'jsonl'
+
+export interface BranchExportResult {
+  status: string
+  format: ChatExportFormat
+  file_path: string
+  output_dir: string
+  filename: string
+  companion_id: string
+  companion_name: string
+  branch_id: string
+  branch_name: string
+  include_compacted: boolean
+  message_count: number
+  compacted_count: number
+  size_bytes: number
+}
+
+export const exportBranchChat = (
+  companionId: string,
+  branchId: string,
+  format: ChatExportFormat,
+  includeCompacted = true,
+): Promise<BranchExportResult> =>
+  post<BranchExportResult>(
+    `${C}/${encodeURIComponent(companionId)}/branches/${encodeURIComponent(branchId)}/export`,
+    {
+      format,
+      include_compacted: includeCompacted,
+    },
+  )
+
 /* ---- messages ---- */
 
 export const getMessages = async (companionId: string, branchId: string): Promise<CompanionMessage[]> => {

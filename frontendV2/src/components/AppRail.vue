@@ -9,7 +9,11 @@ import { useScriptStore } from '@/stores/script'
 import { useLlmStore } from '@/stores/llm'
 import { useMemoryStore } from '@/stores/memory'
 import UpdateButton from './UpdateButton.vue'
-import { searchMessages } from '@/api/companion'
+import {
+  exportBranchChat,
+  searchMessages,
+  type ChatExportFormat,
+} from '@/api/companion'
 import { closeWindow, isDesktop, minimizeWindow, toggleMaximizeWindow } from '@/lib/window'
 
 const ui = useUiStore()
@@ -240,20 +244,71 @@ function toggleSearch() {
 
 function toggleMenu() {
   menuOpen.value = !menuOpen.value
+  if (!menuOpen.value) {
+    exportTarget.value = null
+  }
 }
 
 function pickBranch(id: string) {
   session.selectBranch(id)
   menuOpen.value = false
+  exportTarget.value = null
 }
 
 function addBranch() {
   session.newBranch()
   menuOpen.value = false
+  exportTarget.value = null
 }
 
 const editingId = ref('')
 const draftName = ref('')
+const exportTarget = ref<Branch | null>(null)
+const exportIncludeCompacted = ref(true)
+const exportingFormat = ref<ChatExportFormat | null>(null)
+
+const exportFormats: Array<{ id: ChatExportFormat; labelKey: LabelKey; hintKey: LabelKey }> = [
+  { id: 'md', labelKey: 'rail.exportFormatMd', hintKey: 'rail.exportFormatMdHint' },
+  { id: 'html', labelKey: 'rail.exportFormatHtml', hintKey: 'rail.exportFormatHtmlHint' },
+  { id: 'json', labelKey: 'rail.exportFormatJson', hintKey: 'rail.exportFormatJsonHint' },
+  { id: 'jsonl', labelKey: 'rail.exportFormatJsonl', hintKey: 'rail.exportFormatJsonlHint' },
+]
+
+function openExportPicker(b: Branch) {
+  editingId.value = ''
+  exportTarget.value = b
+}
+
+function closeExportPicker() {
+  if (exportingFormat.value) return
+  exportTarget.value = null
+}
+
+async function runExport(fmt: ChatExportFormat) {
+  const target = exportTarget.value
+  const cid = session.activeCompanionId
+  if (!target || !cid || exportingFormat.value) return
+  exportingFormat.value = fmt
+  try {
+    const res = await exportBranchChat(cid, target.id, fmt, exportIncludeCompacted.value)
+    exportTarget.value = null
+    menuOpen.value = false
+    ui.askAlert({
+      title: t('rail.exportDoneTitle'),
+      text: t('rail.exportDoneText', {
+        count: String(res.message_count),
+        path: res.file_path,
+      }),
+    })
+  } catch (err) {
+    ui.askAlert({
+      title: t('rail.exportFailedTitle'),
+      text: err instanceof Error ? err.message : String(err),
+    })
+  } finally {
+    exportingFormat.value = null
+  }
+}
 
 function startRename(b: Branch) {
   // The main branch is renameable too; only deletion is blocked.
@@ -298,47 +353,98 @@ function askDeleteBranch(id: string) {
           <path d="M6 9l6 6 6-6" />
         </svg>
         <div class="menu" :class="{ show: menuOpen }" @click.stop>
-          <div class="menu-label">{{ t('rail.branches') }}</div>
-          <div
-            v-for="b in session.branches"
-            :key="b.id"
-            class="menu-item"
-            :class="{ active: b.active }"
-            role="button"
-            tabindex="0"
-            @click="pickBranch(b.id)"
-            @keydown.enter="pickBranch(b.id)"
-          >
-            <span class="mi-dot"></span>
-            <input
-              v-if="editingId === b.id"
-              v-model="draftName"
-              class="mi-input"
-              @click.stop
-              @keydown.enter.prevent="commitRename(b.id)"
-              @keydown.esc.prevent="cancelRename"
-              @blur="commitRename(b.id)"
-            />
-            <span v-else class="mi-name">{{ b.name || t('branch.main') }}</span>
-            <span class="mi-meta">{{ b.count }}</span>
-            <button
-              class="mi-act"
-              :aria-label="t('rail.renameBranch')"
-              @click.stop="startRename(b)"
+          <template v-if="exportTarget">
+            <div class="export-head">
+              <button
+                class="export-back"
+                :disabled="Boolean(exportingFormat)"
+                :aria-label="t('rail.exportBack')"
+                @click="closeExportPicker"
+              >
+                <svg viewBox="0 0 24 24"><path d="M15 6l-6 6 6 6" /></svg>
+              </button>
+              <span class="export-title">
+                {{ t('rail.exportTitle', { name: exportTarget.name || t('branch.main') }) }}
+              </span>
+            </div>
+            <label class="export-opt">
+              <input
+                v-model="exportIncludeCompacted"
+                type="checkbox"
+                :disabled="Boolean(exportingFormat)"
+              />
+              <span>{{ t('rail.exportIncludeCompacted') }}</span>
+            </label>
+            <div class="menu-sep"></div>
+            <div class="export-formats">
+              <button
+                v-for="item in exportFormats"
+                :key="item.id"
+                class="export-fmt-btn"
+                :disabled="Boolean(exportingFormat)"
+                @click="runExport(item.id)"
+              >
+                <span class="export-fmt-name">
+                  {{ exportingFormat === item.id ? t('rail.exporting') : t(item.labelKey) }}
+                </span>
+                <span class="export-fmt-desc">{{ t(item.hintKey) }}</span>
+              </button>
+            </div>
+          </template>
+          <template v-else>
+            <div class="menu-label">{{ t('rail.branches') }}</div>
+            <div
+              v-for="b in session.branches"
+              :key="b.id"
+              class="menu-item"
+              :class="{ active: b.active }"
+              role="button"
+              tabindex="0"
+              @click="pickBranch(b.id)"
+              @keydown.enter="pickBranch(b.id)"
             >
-              <svg viewBox="0 0 24 24"><path d="M4 20h4L18 10l-4-4L4 16v4z" /><path d="M14 6l4 4" /></svg>
-            </button>
-            <button
-              v-if="b.id !== 'main'"
-              class="mi-act mi-act-del"
-              :aria-label="t('rail.deleteBranch')"
-              @click.stop="askDeleteBranch(b.id)"
-            >
-              <svg viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18" /></svg>
-            </button>
-          </div>
-          <div class="menu-sep"></div>
-          <button class="menu-item ghost" @click="addBranch">{{ t('rail.newBranch') }}</button>
+              <span class="mi-dot"></span>
+              <input
+                v-if="editingId === b.id"
+                v-model="draftName"
+                class="mi-input"
+                @click.stop
+                @keydown.enter.prevent="commitRename(b.id)"
+                @keydown.esc.prevent="cancelRename"
+                @blur="commitRename(b.id)"
+              />
+              <span v-else class="mi-name">{{ b.name || t('branch.main') }}</span>
+              <span class="mi-meta">{{ b.count }}</span>
+              <button
+                class="mi-act"
+                :aria-label="t('rail.renameBranch')"
+                @click.stop="startRename(b)"
+              >
+                <svg viewBox="0 0 24 24"><path d="M4 20h4L18 10l-4-4L4 16v4z" /><path d="M14 6l4 4" /></svg>
+              </button>
+              <button
+                class="mi-act"
+                :aria-label="t('rail.exportBranch')"
+                @click.stop="openExportPicker(b)"
+              >
+                <svg viewBox="0 0 24 24">
+                  <path d="M12 4v11" />
+                  <path d="M8 11l4 4 4-4" />
+                  <path d="M4 17v2a1 1 0 001 1h14a1 1 0 001-1v-2" />
+                </svg>
+              </button>
+              <button
+                v-if="b.id !== 'main'"
+                class="mi-act mi-act-del"
+                :aria-label="t('rail.deleteBranch')"
+                @click.stop="askDeleteBranch(b.id)"
+              >
+                <svg viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18" /></svg>
+              </button>
+            </div>
+            <div class="menu-sep"></div>
+            <button class="menu-item ghost" @click="addBranch">{{ t('rail.newBranch') }}</button>
+          </template>
         </div>
       </div>
     </div>

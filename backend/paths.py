@@ -254,6 +254,7 @@ COMPANION_ASSETS_DIR = UPLOAD_ROOT / "companion_assets"
 TMP_UPLOAD_DIR = DATA_ROOT / "tmp_uploads"
 CONFIG_DIR = DATA_ROOT / "config"
 LOG_DIR = DATA_ROOT / "logs"
+OUTPUT_CHAT_DIR = DATA_ROOT / "outputchat"
 
 # TTS reference audio is recorded by the user, so it is data, not a resource.
 VOICE_DIR = DATA_ROOT / "voice"
@@ -288,6 +289,7 @@ def ensure_dirs() -> None:
         TMP_UPLOAD_DIR,
         CONFIG_DIR,
         LOG_DIR,
+        OUTPUT_CHAT_DIR,
         VOICE_DIR,
         ENGINE_STATE_DIR,
     ):

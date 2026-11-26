@@ -3,13 +3,14 @@ from __future__ import annotations
 
 import json
 import logging
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Literal, Optional
 
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
 from . import token_engine
+from .chat_exporter import export_branch_chat
 from .companion import Companion
 from .companion_db import get_companion, is_last_active_message
 from .picturesys import service as picture_service
@@ -252,3 +253,30 @@ async def companion_chat_reedit_stream(request: ReeditStreamRequest):
             yield "data: [DONE]\n\n"
 
     return _sse_response(event_generator)
+
+
+class BranchExportRequest(BaseModel):
+    """Export one branch conversation to DATA_ROOT/outputchat."""
+
+    format: Literal["md", "json", "html", "jsonl"] = "md"
+    include_compacted: bool = True
+
+
+@router.post("/{companion_id}/branches/{branch_id}/export")
+async def export_companion_branch(
+    companion_id: str,
+    branch_id: str,
+    request: BranchExportRequest,
+):
+    """Export a single-companion branch to DATA_ROOT/outputchat."""
+    try:
+        return export_branch_chat(
+            companion_id=companion_id,
+            branch_id=branch_id,
+            fmt=request.format,
+            include_compacted=request.include_compacted,
+        )
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc

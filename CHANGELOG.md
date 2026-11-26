@@ -4,6 +4,13 @@ All notable releases for Pebble Companion Chat are recorded here.
 Each `## x.y.z` section is used by `npm run release -- x.y.z` as both the
 GitHub Release description and the in-app update panel notes.
 
+## 1.0.0
+
+- **Conversation Branch Export**:
+  - Added per-branch export directly from the top-bar branch menu (next to each branch's rename action), saving all exported files to `.pebblecompanion/outputchat`.
+  - Supports four formats: **Markdown (`.md`)** for clean reading, **HTML (`.html`)** with full restoration of status bars, card CSS, inline styles, and embedded images (including RisuAI/CHARX card templates), **Pebble JSON (`.json`)** for lossless backups, and **SillyTavern JSONL (`.jsonl`)** for ecosystem compatibility.
+  - Added an option to include or exclude compacted message history alongside compaction and script-mode scene summaries.
+
 ## 0.9.0
 
 - **Scene Rules Workshop (No-Regex Immersive Rule Builder)**:

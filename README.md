@@ -44,50 +44,31 @@ Whether running local GGUF weights, calling cloud LLM APIs, holding live voice c
 ## 🌟 Core Features
 
 ### 1. Single Chat & Multiple Conversations
-- **Narrative Stage**: Streaming replies, stage-direction / narration mode, message regeneration (reroll), and multiple candidate versions.
-- **Multiple Conversations**: Start a new conversation on the same card, switch, rename, or delete them, and see the active one in the side rail. A conversation is an independent thread, not a fork of an existing one.
-- **Manual Context Compaction**: Fold older history into a summary on demand — segmented summarization with token-aware budgets. Nothing is compacted automatically.
+Streaming narrative replies with candidate swipes, independent conversation threads per character card, and manual token-aware context compaction. Any branch can also be exported in one click to clean Markdown, rich self-contained HTML (preserving status bars and embedded images), Pebble JSON, or SillyTavern JSONL.
 
 ### 2. Multi-Character Group Stage
-- **Up to 3 Companions per Room**: Characters appear as fanned portrait cards behind a semi-transparent reading column.
-- **Stage Direction & Pacing**: Mention specific speakers with `@`, click any card to cue their next line, enable multi-turn **Relay** rounds for autonomous back-and-forth, or manage room members with `/invite` and `/remove`.
-- **Per-Room Context**: Configure a shared room scene, room-specific user persona notes, and isolated room memories and summaries.
-- **Narration Mode (Give the conversation a break)**: One-click activation switch supporting all chat modes. In a voice-over manner, describe the behaviors and states (actions, space, psychology) of the user and character to guide the dialogue direction—affecting only the next reply without continuously contaminating surrounding context.
+Bring up to 3 companions onto a fanned portrait stage with `@` speaker cues, autonomous multi-turn **Relay**, isolated room memories, and a one-click **Narration Mode** to steer scenes without polluting ongoing context.
 
 ### 3. Live2D
-- **Optional Local Decomposition**: This is an **optional** module (`backend/Inochi2D` + WebGL2 stage) and **does not affect normal usage** when skipped—core text chat, voice calls, picture generation, and built-in `2.5D Motion` work normally with zero PyTorch or GPU dependencies. When enabled, you can locally decompose a single character portrait or same-pose expression pack via `See-through` (`LayerDiff3D` + `Marigold`) across NVIDIA CUDA, AMD ROCm, or CPU fallback, with automatic blink-layer synthesis, collar/neck occlusion cleanup, and bilingual expression mapping.
-- **Interactive WebGL2 Stage & Multi-Outfit**: Once built, the puppet renders purely client-side in WebGL2 with breathing and body sway, spring hair/accessory physics, soft global gaze tracking, real-time TTS audio lip-sync, cheek blush shaders, and interactive pointer gestures (head pat, cheek poke/pet, and startled chest-tap recoil). Both CHARX cards and standard PNG/JSON cards can attach expression packs or add same-pose outfits incrementally through **Character Editor → Media assets** and **Live2D → Build**.
+An optional local portrait-decomposition module (`See-through`, safely skipped with zero PyTorch required) that turns static art or expression packs into interactive WebGL2 puppets with breathing, gaze tracking, TTS lip-sync, multi-outfit switching, and touch reactions.
 
 ### 4. Character Cards
-- **SillyTavern Ecosystem**: Import and export **PNG / JSON** character cards, with a built-in editor covering identity, dialogue fields (first message, conversation examples, advanced prompt), bound TTS voice clip/ID, system instructions, and raw JSON.
-- **CHARX Cards & `.risum` Modules**: Import **CHARX** (`.charx` / `.zip` Character Card V3 packages) and RisuAI **`.risum` / `module.json`** packs effortlessly—including large multi-media archives. Pebble automatically unpacks alternate greetings, character expressions, illustrations, background music, sound effects, video clips, card stylesheets, variables, and rewrite scripts into organized per-character storage that you can browse and manage right in the editor.
-- **Rich Media & Stage HUD**: Greetings and chat replies render clean Markdown, styled HTML/CSS cards, decorative SVG accents, and bundled media right inline—showing character expressions, scene art, video cards, and playable audio/BGM pills with automatic typo recovery when the AI slightly misspells an asset name. For media-rich cards in single chat, an optional Stage HUD gently tracks mood, affection, location, and outfit while swapping portraits and sound cues as the story unfolds.
-- **Scene Rules Workshop (No-Regex Customization)**: Click the quick button in the chat composer to slide open a **non-overlaying upward dock** synced automatically with your active character—no regex writing required:
-  - **Plain-Language & Offline Blocks**: Describe formatting, cleanup, or story triggers in everyday words (compiled and auto-verified against a real sample reply), or combine offline visual blocks to restyle inner thoughts, badges, OOC cleanup, context-only history trimming, and idle/time/turn-aware behaviors.
-  - **One-Click Recipes & Live Sandbox**: Toggle curated immersive presets, tweak live character variables, preview real message bubbles on the spot, or translate cryptic rules inside imported cards into plain language with one click.
-- **Global Rules**: Append shared scope, behaviour, and post-history instructions across all characters without editing individual cards.
+Import and edit SillyTavern **PNG / JSON**, **CHARX**, and RisuAI **`.risum`** packages with automatic asset unpacking, inline media, a reactive Stage HUD, global rules, and a no-regex **Scene Rules Workshop** for plain-language or block-based customization.
 
 ### 5. Script Mode
-- **Scene-by-Scene Playthrough**: Author a script as ordered scenes, each with its own title, turn budget, and director instruction. The model advances one scene at a time instead of free-running the story.
-- **Structured State Protocol**: Every reply ends with a `<<<STATE>>>` block carrying HUD fields (mood, affection, location, outfit) and a scene-done flag. A stream filter strips the block from the visible text and uses it to drive progression.
-- **Rewind & Per-Scene Summaries**: Roll the session back to any earlier scene, and compact each scene into its own summary card that stays readable in the thread — unlike chat compaction, scene summaries are never merged into one.
-- **Isolated Prompt Path**: The scripted prompt is built separately from the normal chat prompt, so no memory, lore or card field leaks into a scene.
+Direct stories scene by scene using ordered turn budgets, a structured `<<<STATE>>>` HUD progression protocol, isolated prompts, instant scene rewind, and preserved per-scene summary cards.
 
 ### 6. Long-Term Memory & Token Engine
-- **Embedding-Free Memory Retrieval**: Durable facts and relationship memories are extracted in the background, then ranked without any embedding model. Scoring is BM25 over keyword and token fields (with CJK n-gram weighting), phrase hits, importance, and use-count damping — no vector store, no extra model to download.
-- **Provider-Aware Token Counting**: Prefers server-reported usage; otherwise it dispatches per provider — `llama.cpp /tokenize`, `tiktoken` for OpenAI vocabularies, or a local `tokenizer.json` — and degrades to a language-aware estimate when none is available. For Anthropic and Gemini it first tries their native counting endpoints, though those only answer if the configured base URL exposes them.
+Automatically extract and rank durable memories using embedding-free BM25 retrieval (no vector store or extra model needed), paired with provider-aware token counting across local and cloud backends.
 
 ### 7. Cascaded Streaming Voice Calls, TTS & ASR
-- **Cascaded Voice Loop**: The browser captures PCM through an AudioWorklet and streams it over WebSocket. The backend transcribes incrementally every 2 seconds, sends the finalized utterance down the normal LLM path, then streams the reply back as TTS audio. Listening and speaking alternate around this ASR → LLM → TTS chain — it is not a single full-duplex model — with Silero VAD barge-in so you can cut a reply mid-sentence.
-- **Bring Your Own Everything**: LLM, TTS, and ASR are each independently replaceable or self-hostable — local `llama.cpp` GGUF for chat, `audio.cpp` model families, any OpenAI-compatible HTTP endpoint, or cloud providers (MiniMax, ElevenLabs) for speech, with inline voice auditioning.
+Hold natural spoken conversations through an interchangeable **ASR → LLM → TTS** streaming loop with Silero VAD barge-in, supporting local `audio.cpp` engines alongside OpenAI-compatible and cloud speech providers.
 
 ### 8. Picture Studio & Multimodal Attachments
-- **File & Document Parsing**: Attach images, PDFs (`pypdf`), Word documents (`python-docx`), spreadsheets (`openpyxl`), and plain-text/code files directly in chat.
-- **Video Attachments**: Send video clips (`.mp4`, `.mov`, `.mkv`, `.webm`, etc.) in single and group chats. Prefers local FFmpeg (auto-detected or user-configured in Backstage Paths, with browser `<canvas>` fallback) to extract a dense chronological frame stream (up to 180 frames at 2–4 fps) injected for the active turn only, with optional opt-in speech recognition (off by default, toggleable globally or per chip), click-to-mount throttled playback, and per-session duplicate filename filtering in the media gallery.
-- **Scene Illustration & Gallery**: Generate scene pictures manually or via story triggers with prompt rewriting, daily quotas, cooldowns, and a unified gallery across single and group rooms.
+Chat with images, documents, and sampled video frames (with opt-in speech transcription), and generate manual or story-triggered scene illustrations via local ComfyUI or cloud image providers into a unified gallery.
 
 ### 9. Customizable Aesthetic
-- **Day / Night** themes, **7 accent palettes** (Amber, Ember, Celadon, Moon, Plum, Jade, Rose), selectable typography, and instant **English / 中文** UI switching.
+Switch seamlessly between **Day / Night** themes, **7 accent palettes** (Amber, Ember, Celadon, Moon, Plum, Jade, Rose), selectable typography, and instant **English / 中文** UI localization.
 
 ---
 
