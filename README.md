@@ -53,7 +53,7 @@ Bring up to 3 companions onto a fanned portrait stage with `@` speaker cues, aut
 An optional local portrait-decomposition module (`See-through`, safely skipped with zero PyTorch required) that turns static art or expression packs into interactive WebGL2 puppets with breathing, gaze tracking, TTS lip-sync, multi-outfit switching, and touch reactions.
 
 ### 4. Character Cards
-Import and edit SillyTavern **PNG / JSON**, **CHARX**, and RisuAI **`.risum`** packages with automatic asset unpacking, inline media, a reactive Stage HUD, global rules, and a no-regex **Scene Rules Workshop** for plain-language or block-based customization.
+Import and edit SillyTavern **PNG / JSON**, **CHARX**, and RisuAI **`.risum`** packages with automatic asset unpacking, inline media, a reactive Stage HUD, global rules, and a no-regex **Scene Rules Workshop** for plain-language or block-based customization.And it has a built-in translation function, which translates the description fields of the character cards (independently of the original text), supporting both Chinese and English.
 
 ### 5. Script Mode
 Direct stories scene by scene using ordered turn budgets, a structured `<<<STATE>>>` HUD progression protocol, isolated prompts, instant scene rewind, and preserved per-scene summary cards.
