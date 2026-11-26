@@ -28,6 +28,7 @@ from .card_presentation import (
     normalize_hud_pinned_vars,
     normalize_scene_rules_list,
 )
+from .card_translation import resolve_companion_fields
 from .llm_client import call_llm_stream, load_default_llm_config, resolve_provider_model_config
 from .world_book_engine import get_active_world_book_content
 from .compaction import is_summary_message, SUMMARY_MARKER_START
@@ -353,18 +354,19 @@ class Companion:
         data = get_companion(self.id)
         if not data:
             raise ValueError(f"Companion not found: {self.id}")
-        
+
+        prompt_data = resolve_companion_fields(data, for_prompt=True)
         self.name = data['name']
-        self.description = data.get('description', '')
-        self.personality = data.get('personality', '')
-        self.scenario = data.get('scenario', '')
-        self.first_mes = data.get('first_mes', '')
+        self.description = prompt_data.get('description', '')
+        self.personality = prompt_data.get('personality', '')
+        self.scenario = prompt_data.get('scenario', '')
+        self.first_mes = prompt_data.get('first_mes', '')
         self.mes_example = data.get('mes_example', '')
         self.advanced_prompt = data.get('advanced_prompt', '')
         self.user_info = data.get('user_info', '')
         self.system_prompt = data.get('system_prompt', '')
         self.post_history_instructions = data.get('post_history_instructions', '')
-        self.creator_notes = data.get('creator_notes', '')
+        self.creator_notes = prompt_data.get('creator_notes', '')
         self.depth_prompt = data.get('depth_prompt', {})
         self.raw_card_data = data.get('raw_card_data', '')
         self.card_ui = data.get('card_ui', {}) if isinstance(data.get('card_ui'), dict) else {}

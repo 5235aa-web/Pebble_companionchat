@@ -325,7 +325,8 @@ def list_members(session_id: int) -> List[Dict]:
     try:
         rows = conn.execute(
             "SELECT m.companion_id, m.turn_order, m.focus, "
-            "c.name, c.personality, c.description, c.user_info, c.scenario "
+            "c.name, c.personality, c.description, c.user_info, c.scenario, "
+            "c.translations, c.active_locale, c.prompt_use_original "
             "FROM group_members m "
             "LEFT JOIN companions c ON c.id = m.companion_id "
             "WHERE m.session_id = ? ORDER BY m.turn_order, m.id",
@@ -337,6 +338,14 @@ def list_members(session_id: int) -> List[Dict]:
             # A card deleted from the cast leaves the membership row behind so
             # the room keeps its shape; the prompt just gets a placeholder name.
             item["name"] = item.get("name") or item.get("companion_id") or "Unknown"
+            try:
+                parsed_tr = json.loads(item.get("translations") or "{}")
+                item["translations"] = parsed_tr if isinstance(parsed_tr, dict) else {}
+            except (ValueError, TypeError):
+                item["translations"] = {}
+            loc = str(item.get("active_locale") or "").strip().lower()
+            item["active_locale"] = loc if loc in ("zh", "en") else ""
+            item["prompt_use_original"] = bool(item.get("prompt_use_original"))
             out.append(item)
         return out
     finally:

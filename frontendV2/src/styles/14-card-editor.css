@@ -167,3 +167,51 @@ img.pf-avatar-big{object-fit:cover;display:block;}
   font-family:var(--mono);font-size:8.5px;letter-spacing:.12em;
   color:var(--ink-4);margin-bottom:4px;
 }
+
+/* ---- card translation bar ---- */
+.pf-name-row{display:flex;align-items:center;gap:8px;min-width:0;}
+.pf-name-row .pf-name{flex:1;min-width:0;}
+.pf-name.readonly,.pf-area.readonly{opacity:.72;cursor:default;}
+.pf-tr-badge{
+  flex:none;font-family:var(--mono);font-size:7.5px;letter-spacing:.12em;
+  text-transform:uppercase;color:var(--ink-4);
+  border:1px solid var(--line-2);padding:2px 6px;border-radius:3px;
+}
+.pf-trans-bar{
+  display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;
+  padding:10px 26px;border-bottom:1px solid var(--line);
+  background:rgb(var(--ink-rgb) / .018);flex:none;
+}
+.pf-trans-left{display:flex;align-items:center;gap:12px;flex-wrap:wrap;}
+.pf-lang-seg{
+  display:inline-flex;align-items:center;gap:2px;padding:2px;
+  border:1px solid var(--line-2);border-radius:4px;background:rgb(var(--ink-rgb) / .02);
+}
+.pf-lang-btn{
+  position:relative;
+  font-family:var(--mono);font-size:9px;letter-spacing:.08em;
+  padding:4px 9px;border-radius:2px;color:var(--ink-4);
+  transition:color .2s ease,background-color .2s ease;
+}
+.pf-lang-btn:hover{color:var(--ink-2);}
+.pf-lang-btn.on{color:var(--accent-ink);background:rgb(var(--accent-rgb) / .16);}
+.pf-lang-btn.has::after{
+  content:'';display:inline-block;width:4px;height:4px;border-radius:50%;
+  background:var(--accent);margin-left:5px;vertical-align:middle;
+}
+.pf-prompt-orig{
+  display:inline-flex;align-items:center;gap:6px;cursor:pointer;
+  font-family:var(--mono);font-size:9px;letter-spacing:.05em;color:var(--ink-3);
+}
+.pf-prompt-orig input{accent-color:var(--accent);cursor:pointer;}
+.pf-trans-actions{display:flex;align-items:center;gap:6px;flex-wrap:wrap;}
+.pf-trans-prog{font-family:var(--mono);font-size:9px;letter-spacing:.08em;color:var(--accent);}
+.pf-err{
+  padding:8px 26px;font-size:11.5px;color:var(--ember);
+  border-bottom:1px solid var(--line);background:rgb(var(--ember-rgb) / .08);flex:none;
+}
+.pf-trans-note{
+  padding:8px 26px;font-size:11px;line-height:1.5;color:var(--accent);
+  border-bottom:1px solid var(--line);background:rgb(var(--accent-rgb) / .06);flex:none;
+}
+.pf-trans-note.soft{color:var(--ink-4);background:rgb(var(--ink-rgb) / .015);}

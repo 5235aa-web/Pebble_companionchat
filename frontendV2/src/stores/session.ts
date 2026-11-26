@@ -6,6 +6,13 @@ import { resolvePlaceholders, resolveUserName } from '@/utils/text'
 import { evaluateCbs } from '@/utils/cbs'
 import { applyDisplayRegex } from '@/utils/displayRegex'
 import {
+  normalizeCompanionLocale,
+  resolveCompanionDisplayGreetings,
+  resolveCompanionDisplayTags,
+  resolveCompanionDisplayText,
+  type CompanionLocale,
+} from '@/utils/companionTranslation'
+import {
   createBranch,
   deleteBranch,
   getBranchVariables,
@@ -118,25 +125,32 @@ function readVoice(cfg: Record<string, unknown> | undefined): CastMember['ttsVoi
   return ref || id ? { ref, id } : undefined
 }
 
-const toCast = (c: Companion): CastMember => ({
-  id: c.id,
-  avatar: c.avatar_path || '',
-  letter: (c.name || '?').charAt(0).toUpperCase(),
-  name: c.name || c.id,
-  role: c.creator || '',
-  desc: c.description || '',
-  meta: (c.tags ?? []).join(' · '),
-  tags: (c.tags ?? []).join(', '),
-  acts: '',
-  lore: '',
-  lastSeen: (c.updated_at || '').slice(0, 10),
-  branch: '',
-  active: false,
-  pinned: Boolean(c.pinned),
-  assetCount: Number(c.asset_count ?? 0),
-  cardFormat: c.card_format || '',
-  ttsVoice: readVoice(c.tts_config),
-})
+const toCast = (c: Companion): CastMember => {
+  const displayDesc = resolveCompanionDisplayText(c, 'description')
+  const displayTags = resolveCompanionDisplayTags(c)
+  return {
+    id: c.id,
+    avatar: c.avatar_path || '',
+    letter: (c.name || '?').charAt(0).toUpperCase(),
+    name: c.name || c.id,
+    role: c.creator || '',
+    desc: displayDesc,
+    meta: displayTags.join(' · '),
+    tags: displayTags.join(', '),
+    acts: '',
+    lore: '',
+    lastSeen: (c.updated_at || '').slice(0, 10),
+    branch: '',
+    active: false,
+    pinned: Boolean(c.pinned),
+    assetCount: Number(c.asset_count ?? 0),
+    cardFormat: c.card_format || '',
+    translations: c.translations,
+    activeLocale: normalizeCompanionLocale(c.active_locale),
+    promptUseOriginal: Boolean(c.prompt_use_original),
+    ttsVoice: readVoice(c.tts_config),
+  }
+}
 
 const toBranch = (b: CompanionBranch, activeId: string): Branch => ({
   id: b.branch_id,
@@ -339,7 +353,7 @@ export const useSessionStore = defineStore('session', () => {
 
   function applyCompanion(c: Companion) {
     act.value = c.name || c.id
-    scenario.value = c.scenario || ''
+    scenario.value = resolveCompanionDisplayText(c, 'scenario')
     const name = resolveUserName(c.user_info)
     userName.value = name
     cardPresentation.value = c.card_presentation ?? {
@@ -357,21 +371,33 @@ export const useSessionStore = defineStore('session', () => {
     }
     // Keep raw greetings so CBS conditionals & variables re-evaluate reactively
     // whenever branchVariables change.
+    const resolvedGreetings = resolveCompanionDisplayGreetings(c)
     const list: string[] = []
-    if ((c.first_mes || '').trim()) {
-      list.push(c.first_mes)
+    if ((resolvedGreetings.firstMes || '').trim()) {
+      list.push(resolvedGreetings.firstMes)
     }
-    for (const alt of c.alternate_greetings ?? []) {
+    for (const alt of resolvedGreetings.alternateGreetings) {
       if (typeof alt === 'string' && alt.trim()) {
         list.push(alt)
       }
     }
     rawGreetings.value = list
     greetingIndex.value = 0
-    companions.value = companions.value.map((m) => ({
-      ...m,
-      active: m.id === c.id,
-    }))
+    const castPatch = toCast(c)
+    companions.value = companions.value.map((m) =>
+      m.id === c.id ? { ...castPatch, active: true } : { ...m, active: false },
+    )
+  }
+
+  async function setCompanionLocale(id: string, locale: CompanionLocale) {
+    if (!id) return
+    const nextLocale = normalizeCompanionLocale(locale)
+    try {
+      await updateCompanion(id, { active_locale: nextLocale })
+      await loadCompanions()
+    } catch (e) {
+      error.value = e instanceof Error ? e.message : String(e)
+    }
   }
 
   async function loadBranchVariables(
@@ -650,6 +676,7 @@ export const useSessionStore = defineStore('session', () => {
     loadCompanionAssets,
     findAssetByRef,
     selectCompanion,
+    setCompanionLocale,
     togglePin,
     loadBranches,
     loadTokens,

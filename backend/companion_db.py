@@ -80,6 +80,9 @@ def _init_tables(conn: sqlite3.Connection) -> None:
             raw_card_data TEXT DEFAULT '',
             card_format TEXT DEFAULT '',
             card_ui TEXT DEFAULT '{}',
+            translations TEXT DEFAULT '{}',
+            active_locale TEXT DEFAULT '',
+            prompt_use_original INTEGER NOT NULL DEFAULT 0,
             pinned INTEGER NOT NULL DEFAULT 0,
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
             updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
@@ -316,6 +319,12 @@ def _init_tables(conn: sqlite3.Connection) -> None:
             conn.execute("ALTER TABLE companions ADD COLUMN pinned INTEGER NOT NULL DEFAULT 0")
         if 'card_ui' not in companion_columns:
             conn.execute("ALTER TABLE companions ADD COLUMN card_ui TEXT DEFAULT '{}'")
+        if 'translations' not in companion_columns:
+            conn.execute("ALTER TABLE companions ADD COLUMN translations TEXT DEFAULT '{}'")
+        if 'active_locale' not in companion_columns:
+            conn.execute("ALTER TABLE companions ADD COLUMN active_locale TEXT DEFAULT ''")
+        if 'prompt_use_original' not in companion_columns:
+            conn.execute("ALTER TABLE companions ADD COLUMN prompt_use_original INTEGER NOT NULL DEFAULT 0")
         if 'card_format' not in companion_columns:
             conn.execute("ALTER TABLE companions ADD COLUMN card_format TEXT DEFAULT ''")
             # Backfill existing CHARX imports from extracted assets or CCv3 embedded asset URIs.
@@ -451,6 +460,14 @@ def get_companion(companion_id: str) -> Optional[Dict]:
             data['card_ui'] = json.loads(data.get('card_ui') or '{}')
         except (ValueError, TypeError):
             data['card_ui'] = {}
+        try:
+            parsed_tr = json.loads(data.get('translations') or '{}')
+            data['translations'] = parsed_tr if isinstance(parsed_tr, dict) else {}
+        except (ValueError, TypeError):
+            data['translations'] = {}
+        loc = str(data.get('active_locale') or '').strip().lower()
+        data['active_locale'] = loc if loc in ('zh', 'en') else ''
+        data['prompt_use_original'] = bool(data.get('prompt_use_original'))
         data['card_presentation'] = extract_card_presentation(
             data.get('raw_card_data', ''), data['card_ui']
         )
@@ -470,6 +487,7 @@ def get_all_companions() -> List[Dict]:
                    c.tags, c.alternate_greetings, c.depth_prompt, c.avatar_path,
                    c.llm_provider_id, c.tts_config, c.created_at, c.updated_at,
                    c.advanced_prompt, c.user_info, c.pinned, c.card_format,
+                   c.translations, c.active_locale, c.prompt_use_original,
                    (SELECT COUNT(*) FROM companion_assets
                     WHERE companion_id = c.id) AS asset_count,
                    (SELECT content FROM companion_messages
@@ -486,6 +504,14 @@ def get_all_companions() -> List[Dict]:
             data['tags'] = json.loads(data.get('tags', '[]'))
             data['alternate_greetings'] = json.loads(data.get('alternate_greetings', '[]'))
             data['tts_config'] = json.loads(data.get('tts_config', '{}'))
+            try:
+                parsed_tr = json.loads(data.get('translations') or '{}')
+                data['translations'] = parsed_tr if isinstance(parsed_tr, dict) else {}
+            except (ValueError, TypeError):
+                data['translations'] = {}
+            loc = str(data.get('active_locale') or '').strip().lower()
+            data['active_locale'] = loc if loc in ('zh', 'en') else ''
+            data['prompt_use_original'] = bool(data.get('prompt_use_original'))
             result.append(data)
         return result
     finally:
@@ -537,7 +563,7 @@ def update_companion(companion_id: str, fields: Dict) -> bool:
         'mes_example', 'advanced_prompt', 'user_info', 'creator_notes', 'system_prompt', 'post_history_instructions',
         'creator', 'character_version', 'tags', 'alternate_greetings',
         'depth_prompt', 'avatar_path', 'llm_provider_id', 'tts_config',
-        'pinned', 'card_ui',
+        'pinned', 'card_ui', 'translations', 'active_locale', 'prompt_use_original',
     }
     set_parts = []
     values = []
@@ -545,10 +571,13 @@ def update_companion(companion_id: str, fields: Dict) -> bool:
         if key in allowed:
             if isinstance(val, (list, dict)):
                 val = json.dumps(val, ensure_ascii=False)
-            elif key == 'pinned':
+            elif key in ('pinned', 'prompt_use_original'):
                 # Stored as INTEGER; keep the coercion explicit so a bool never
                 # lands in the column as the literal string "True".
                 val = 1 if val else 0
+            elif key == 'active_locale':
+                loc = str(val or '').strip().lower()
+                val = loc if loc in ('zh', 'en') else ''
             set_parts.append(f"{key} = ?")
             values.append(val)
     if not set_parts:

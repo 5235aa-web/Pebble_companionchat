@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, reactive, ref, watch } from 'vue'
+import { computed, onUnmounted, reactive, ref, watch, type WritableComputedRef } from 'vue'
 import { useUiStore } from '@/stores/ui'
 import { useSessionStore } from '@/stores/session'
 import { useLlmStore } from '@/stores/llm'
@@ -10,12 +10,20 @@ import type { DisplayRegexRule } from '@/utils/displayRegex'
 import type { CharacterCard } from '@/data/character'
 import { isCharxCard } from '@/data/chat'
 import {
+  hasLocaleTranslation,
+  normalizeCompanionLocale,
+  type CompanionLocale,
+  type CompanionTranslationBucket,
+  type CompanionTranslations,
+} from '@/utils/companionTranslation'
+import {
   createCompanion,
   deleteCompanionAsset,
   exportCompanion,
   getCompanion,
   importCompanionRisum,
   setAvatarFromAsset,
+  translateCompanionCard,
   updateCompanion,
   uploadCompanionAsset,
   uploadCompanionAvatar,
@@ -64,6 +72,223 @@ const newTag = ref('')
 const rawOpen = ref(false)
 const saving = ref(false)
 const error = ref('')
+
+const editorLocale = ref<CompanionLocale>('')
+const translationsDraft = reactive<CompanionTranslations>({})
+const promptUseOriginal = ref(false)
+const translatingLocale = ref<'zh' | 'en' | null>(null)
+const translatingField = ref('')
+const translateProgress = ref<{ done: number; total: number }>({ done: 0, total: 0 })
+let translateAbort: AbortController | null = null
+
+const isTranslationView = computed(() => editorLocale.value !== '')
+const currentTranslationHasContent = computed(() =>
+  editorLocale.value === ''
+    ? true
+    : hasLocaleTranslation(translationsDraft, editorLocale.value),
+)
+
+function cloneTranslations(raw: CompanionTranslations | undefined): CompanionTranslations {
+  const out: CompanionTranslations = {}
+  for (const loc of ['zh', 'en'] as const) {
+    const b = raw?.[loc]
+    if (!b || typeof b !== 'object') continue
+    out[loc] = {
+      ...(typeof b.description === 'string' ? { description: b.description } : {}),
+      ...(typeof b.personality === 'string' ? { personality: b.personality } : {}),
+      ...(typeof b.scenario === 'string' ? { scenario: b.scenario } : {}),
+      ...(typeof b.first_mes === 'string' ? { first_mes: b.first_mes } : {}),
+      ...(typeof b.creator_notes === 'string' ? { creator_notes: b.creator_notes } : {}),
+      ...(Array.isArray(b.tags) ? { tags: [...b.tags] } : {}),
+      ...(Array.isArray(b.alternate_greetings)
+        ? { alternate_greetings: [...b.alternate_greetings] }
+        : {}),
+      ...(typeof b.translated_at === 'string' ? { translated_at: b.translated_at } : {}),
+    }
+  }
+  return out
+}
+
+function resetTranslationsDraft(raw?: CompanionTranslations): void {
+  delete translationsDraft.zh
+  delete translationsDraft.en
+  const cloned = cloneTranslations(raw)
+  if (cloned.zh) translationsDraft.zh = cloned.zh
+  if (cloned.en) translationsDraft.en = cloned.en
+}
+
+function ensureBucket(loc: 'zh' | 'en'): CompanionTranslationBucket {
+  if (!translationsDraft[loc]) {
+    translationsDraft[loc] = {
+      description: '',
+      personality: '',
+      scenario: '',
+      tags: [],
+      first_mes: '',
+      alternate_greetings: card.alternateGreetings.map(() => ''),
+      creator_notes: '',
+    }
+  }
+  return translationsDraft[loc]!
+}
+
+function bindStringField(
+  origKey: 'description' | 'personality' | 'scenario' | 'firstMes' | 'creatorNotes',
+  trKey: 'description' | 'personality' | 'scenario' | 'first_mes' | 'creator_notes',
+): WritableComputedRef<string> {
+  return computed({
+    get() {
+      const loc = editorLocale.value
+      if (!loc) return card[origKey]
+      return String(translationsDraft[loc]?.[trKey] ?? '')
+    },
+    set(val: string) {
+      const loc = editorLocale.value
+      if (!loc) {
+        card[origKey] = val
+        return
+      }
+      ensureBucket(loc)[trKey] = val
+    },
+  })
+}
+
+const activeDescription = bindStringField('description', 'description')
+const activePersonality = bindStringField('personality', 'personality')
+const activeScenario = bindStringField('scenario', 'scenario')
+const activeFirstMes = bindStringField('firstMes', 'first_mes')
+const activeCreatorNotes = bindStringField('creatorNotes', 'creator_notes')
+
+const activeTags = computed(() => {
+  const loc = editorLocale.value
+  if (!loc) return card.tags
+  return translationsDraft[loc]?.tags ?? []
+})
+
+function greetingText(index: number): string {
+  const loc = editorLocale.value
+  if (!loc) return card.alternateGreetings[index] ?? ''
+  return translationsDraft[loc]?.alternate_greetings?.[index] ?? ''
+}
+
+function setGreetingText(index: number, val: string): void {
+  const loc = editorLocale.value
+  if (!loc) {
+    card.alternateGreetings[index] = val
+    return
+  }
+  const bucket = ensureBucket(loc)
+  if (!Array.isArray(bucket.alternate_greetings)) {
+    bucket.alternate_greetings = card.alternateGreetings.map(() => '')
+  }
+  while (bucket.alternate_greetings.length <= index) {
+    bucket.alternate_greetings.push('')
+  }
+  bucket.alternate_greetings[index] = val
+}
+
+function buildCleanTranslationsPayload(): CompanionTranslations {
+  const out: CompanionTranslations = {}
+  for (const loc of ['zh', 'en'] as const) {
+    const b = translationsDraft[loc]
+    if (!b || !hasLocaleTranslation(translationsDraft, loc)) continue
+    out[loc] = {
+      ...(typeof b.description === 'string' && b.description.trim()
+        ? { description: b.description }
+        : {}),
+      ...(typeof b.personality === 'string' && b.personality.trim()
+        ? { personality: b.personality }
+        : {}),
+      ...(typeof b.scenario === 'string' && b.scenario.trim()
+        ? { scenario: b.scenario }
+        : {}),
+      ...(typeof b.first_mes === 'string' && b.first_mes.trim()
+        ? { first_mes: b.first_mes }
+        : {}),
+      ...(typeof b.creator_notes === 'string' && b.creator_notes.trim()
+        ? { creator_notes: b.creator_notes }
+        : {}),
+      ...(Array.isArray(b.tags) && b.tags.some((t) => t.trim())
+        ? { tags: b.tags.map((t) => t.trim()).filter(Boolean) }
+        : {}),
+      ...(Array.isArray(b.alternate_greetings) && b.alternate_greetings.some((g) => g.trim())
+        ? { alternate_greetings: [...b.alternate_greetings] }
+        : {}),
+      ...(typeof b.translated_at === 'string' && b.translated_at ? { translated_at: b.translated_at } : {}),
+    }
+  }
+  return out
+}
+
+const translateProgressText = computed(() => {
+  if (!translatingLocale.value) return ''
+  const { done, total } = translateProgress.value
+  return total > 0
+    ? t('card.translatingProgress', { done, total })
+    : t('card.translating')
+})
+
+function cancelTranslation(): void {
+  translateAbort?.abort()
+  translateAbort = null
+  translatingLocale.value = null
+  translatingField.value = ''
+}
+
+async function runTranslate(target: 'zh' | 'en', fields?: string[]): Promise<void> {
+  const id = session.activeCompanionId
+  if (!id || ui.newCastDraft || translatingLocale.value) return
+  error.value = ''
+  translatingLocale.value = target
+  translatingField.value = fields?.length === 1 ? fields[0] : ''
+  translateProgress.value = { done: 0, total: fields?.length ?? 0 }
+  translateAbort = new AbortController()
+  try {
+    const finalEv = await translateCompanionCard(
+      id,
+      { target_locale: target, fields, activate: true },
+      {
+        signal: translateAbort.signal,
+        onEvent(ev) {
+          if (ev.type === 'start' || ev.type === 'progress' || ev.type === 'field_done') {
+            translateProgress.value = {
+              done: ev.done ?? 0,
+              total: ev.total ?? translateProgress.value.total,
+            }
+          } else if (ev.type === 'done' && ev.translations) {
+            resetTranslationsDraft(ev.translations)
+          }
+        },
+      },
+    )
+    if (finalEv?.translations) {
+      resetTranslationsDraft(finalEv.translations)
+    } else {
+      const refreshed = await getCompanion(id)
+      if (refreshed) resetTranslationsDraft(refreshed.translations)
+    }
+    editorLocale.value = target
+    await session.loadCompanions()
+  } catch (e) {
+    if ((e as { name?: string })?.name !== 'AbortError') {
+      error.value = e instanceof Error ? e.message : String(e)
+    }
+    try {
+      const refreshed = await getCompanion(id)
+      if (refreshed) resetTranslationsDraft(refreshed.translations)
+    } catch {
+      /* keep current draft on secondary fetch error */
+    }
+  } finally {
+    translateAbort = null
+    translatingLocale.value = null
+    translatingField.value = ''
+  }
+}
+
+onUnmounted(() => {
+  translateAbort?.abort()
+})
 
 /**
  * Reference clips available to the cloning engines. Loaded once per open rather
@@ -229,6 +454,9 @@ async function load() {
   if (ui.newCastDraft) {
     cardFormat.value = ''
     Object.assign(card, makeEmpty())
+    editorLocale.value = ''
+    resetTranslationsDraft(undefined)
+    promptUseOriginal.value = false
     varsText.value = ''
     regexRules.value = []
     cardCssText.value = ''
@@ -254,6 +482,9 @@ async function load() {
     ])
     cardFormat.value = c?.card_format || ''
     Object.assign(card, c ? fromCompanion(c) : makeEmpty())
+    editorLocale.value = normalizeCompanionLocale(c?.active_locale)
+    resetTranslationsDraft(c?.translations)
+    promptUseOriginal.value = Boolean(c?.prompt_use_original)
     const pres = c?.card_presentation
     regexRules.value = (pres?.display_regex ?? []).map((r) => ({ ...r }))
     cardCssText.value = pres?.card_css ?? ''
@@ -328,6 +559,11 @@ async function save() {
       display_regex: cleanRules,
       card_css: cardCssText.value,
     })
+    const cleanTranslations = buildCleanTranslationsPayload()
+    const nextLocale: CompanionLocale =
+      editorLocale.value && hasLocaleTranslation(cleanTranslations, editorLocale.value)
+        ? editorLocale.value
+        : ''
     const fields: Record<string, unknown> = {
       name: card.name,
       description: card.description,
@@ -349,6 +585,13 @@ async function save() {
         voiceRef: card.ttsVoiceRef.trim(),
         voiceId: card.ttsVoiceId.trim(),
       },
+      ...(!draft
+        ? {
+            translations: cleanTranslations,
+            active_locale: nextLocale,
+            prompt_use_original: promptUseOriginal.value,
+          }
+        : {}),
     }
     if (currentCardUiSnapshot !== loadedCardUiSnapshot) {
       fields.card_ui = {
@@ -492,13 +735,26 @@ async function exportJson() {
 }
 
 function removeTag(tag: string) {
-  card.tags = card.tags.filter((x) => x !== tag)
+  const loc = editorLocale.value
+  if (!loc) {
+    card.tags = card.tags.filter((x) => x !== tag)
+    return
+  }
+  const bucket = ensureBucket(loc)
+  bucket.tags = (bucket.tags ?? []).filter((x) => x !== tag)
 }
 
 function addTag() {
   const v = newTag.value.trim()
   if (!v) return
-  card.tags.push(v)
+  const loc = editorLocale.value
+  if (!loc) {
+    card.tags.push(v)
+  } else {
+    const bucket = ensureBucket(loc)
+    if (!Array.isArray(bucket.tags)) bucket.tags = []
+    bucket.tags.push(v)
+  }
   newTag.value = ''
 }
 
@@ -525,7 +781,16 @@ function removeGreeting(index: number) {
           </button>
         </div>
         <div class="pf-id">
-          <input v-model="card.name" class="pf-name" aria-label="character name" />
+          <div class="pf-name-row">
+            <input
+              v-model="card.name"
+              class="pf-name"
+              :class="{ readonly: isTranslationView }"
+              :readonly="isTranslationView"
+              aria-label="character name"
+            />
+            <span v-if="isTranslationView" class="pf-tr-badge">{{ t('card.translationNameBadge') }}</span>
+          </div>
           <div class="pf-role">{{ card.role }}</div>
         </div>
         <div v-if="!ui.newCastDraft && !isCharx" class="pf-exports">
@@ -541,6 +806,75 @@ function removeGreeting(index: number) {
         </button>
       </div>
 
+      <div v-if="!ui.newCastDraft" class="pf-trans-bar">
+        <div class="pf-trans-left">
+          <div class="pf-lang-seg" role="group" :aria-label="t('card.localeSwitchTip')">
+            <button
+              type="button"
+              class="pf-lang-btn"
+              :class="{ on: editorLocale === '' }"
+              @click="editorLocale = ''"
+            >
+              {{ t('card.langOriginal') }}
+            </button>
+            <button
+              type="button"
+              class="pf-lang-btn"
+              :class="{ on: editorLocale === 'zh', has: hasLocaleTranslation(translationsDraft, 'zh') }"
+              @click="editorLocale = 'zh'"
+            >
+              {{ t('card.langZh') }}
+            </button>
+            <button
+              type="button"
+              class="pf-lang-btn"
+              :class="{ on: editorLocale === 'en', has: hasLocaleTranslation(translationsDraft, 'en') }"
+              @click="editorLocale = 'en'"
+            >
+              {{ t('card.langEn') }}
+            </button>
+          </div>
+
+          <label
+            class="pf-prompt-orig"
+            :data-tip="t('card.promptUseOriginalTip')"
+            data-tip-float
+          >
+            <input v-model="promptUseOriginal" type="checkbox" />
+            <span>{{ t('card.promptUseOriginal') }}</span>
+          </label>
+        </div>
+
+        <div class="pf-trans-actions">
+          <template v-if="translatingLocale">
+            <span class="pf-trans-prog">{{ translateProgressText }}</span>
+            <button type="button" class="mini-btn" @click="cancelTranslation">
+              {{ t('card.cancel') }}
+            </button>
+          </template>
+          <template v-else>
+            <button type="button" class="mini-btn" @click="runTranslate('zh')">
+              {{ t('card.translateZh') }}
+            </button>
+            <button type="button" class="mini-btn" @click="runTranslate('en')">
+              {{ t('card.translateEn') }}
+            </button>
+          </template>
+        </div>
+      </div>
+
+      <div v-if="error" class="pf-err">{{ error }}</div>
+      <div v-else-if="isTranslationView && !currentTranslationHasContent" class="pf-trans-note">
+        {{
+          t('card.translationUntranslated', {
+            lang: editorLocale === 'zh' ? t('card.langZh') : t('card.langEn'),
+          })
+        }}
+      </div>
+      <div v-else-if="isTranslationView" class="pf-trans-note soft">
+        {{ t('card.translationOriginalLocked') }}
+      </div>
+
       <div class="pf-body">
         <!-- Identity -->
         <div class="pf-group" :class="{ collapsed: collapsed.identity }">
@@ -550,23 +884,82 @@ function removeGreeting(index: number) {
           </div>
           <div class="pf-fields">
             <div class="pf-field">
-              <label>{{ t('card.description') }}</label>
-              <textarea v-model="card.description" class="pf-area" rows="3"></textarea>
+              <div class="pf-field-head">
+                <label>{{ t('card.description') }}</label>
+                <button
+                  v-if="isTranslationView && card.description.trim()"
+                  type="button"
+                  class="pf-raw-toggle"
+                  :disabled="Boolean(translatingLocale)"
+                  @click="runTranslate(editorLocale as 'zh' | 'en', ['description'])"
+                >
+                  {{ translatingField === 'description' ? t('card.translating') : t('card.retranslateField') }}
+                </button>
+              </div>
+              <textarea
+                v-model="activeDescription"
+                class="pf-area"
+                rows="3"
+                :placeholder="isTranslationView ? t('card.translationFallbackHint') : undefined"
+              ></textarea>
             </div>
             <div class="pf-field">
-              <label>{{ t('card.personality') }}</label>
-              <textarea v-model="card.personality" class="pf-area" rows="2"></textarea>
+              <div class="pf-field-head">
+                <label>{{ t('card.personality') }}</label>
+                <button
+                  v-if="isTranslationView && card.personality.trim()"
+                  type="button"
+                  class="pf-raw-toggle"
+                  :disabled="Boolean(translatingLocale)"
+                  @click="runTranslate(editorLocale as 'zh' | 'en', ['personality'])"
+                >
+                  {{ translatingField === 'personality' ? t('card.translating') : t('card.retranslateField') }}
+                </button>
+              </div>
+              <textarea
+                v-model="activePersonality"
+                class="pf-area"
+                rows="2"
+                :placeholder="isTranslationView ? t('card.translationFallbackHint') : undefined"
+              ></textarea>
             </div>
             <div class="pf-field">
-              <label>{{ t('card.scenario') }}</label>
-              <textarea v-model="card.scenario" class="pf-area" rows="2"></textarea>
+              <div class="pf-field-head">
+                <label>{{ t('card.scenario') }}</label>
+                <button
+                  v-if="isTranslationView && card.scenario.trim()"
+                  type="button"
+                  class="pf-raw-toggle"
+                  :disabled="Boolean(translatingLocale)"
+                  @click="runTranslate(editorLocale as 'zh' | 'en', ['scenario'])"
+                >
+                  {{ translatingField === 'scenario' ? t('card.translating') : t('card.retranslateField') }}
+                </button>
+              </div>
+              <textarea
+                v-model="activeScenario"
+                class="pf-area"
+                rows="2"
+                :placeholder="isTranslationView ? t('card.translationFallbackHint') : undefined"
+              ></textarea>
             </div>
             <div class="pf-field">
-              <label>{{ t('card.tags') }}</label>
+              <div class="pf-field-head">
+                <label>{{ t('card.tags') }}</label>
+                <button
+                  v-if="isTranslationView && card.tags.length"
+                  type="button"
+                  class="pf-raw-toggle"
+                  :disabled="Boolean(translatingLocale)"
+                  @click="runTranslate(editorLocale as 'zh' | 'en', ['tags'])"
+                >
+                  {{ translatingField === 'tags' ? t('card.translating') : t('card.retranslateField') }}
+                </button>
+              </div>
               <div class="pf-tags">
-                <span v-for="t in card.tags" :key="t" class="pf-tag">
-                  {{ t }}
-                  <button aria-label="remove tag" @click="removeTag(t)">
+                <span v-for="tag in activeTags" :key="tag" class="pf-tag">
+                  {{ tag }}
+                  <button aria-label="remove tag" @click="removeTag(tag)">
                     <svg viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18" /></svg>
                   </button>
                 </span>
@@ -590,25 +983,55 @@ function removeGreeting(index: number) {
           </div>
           <div class="pf-fields">
             <div class="pf-field">
-              <label>{{ t('card.firstMessage') }}</label>
-              <textarea v-model="card.firstMes" class="pf-area" rows="3"></textarea>
+              <div class="pf-field-head">
+                <label>{{ t('card.firstMessage') }}</label>
+                <button
+                  v-if="isTranslationView && card.firstMes.trim()"
+                  type="button"
+                  class="pf-raw-toggle"
+                  :disabled="Boolean(translatingLocale)"
+                  @click="runTranslate(editorLocale as 'zh' | 'en', ['first_mes'])"
+                >
+                  {{ translatingField === 'first_mes' ? t('card.translating') : t('card.retranslateField') }}
+                </button>
+              </div>
+              <textarea
+                v-model="activeFirstMes"
+                class="pf-area"
+                rows="3"
+                :placeholder="isTranslationView ? t('card.translationFallbackHint') : undefined"
+              ></textarea>
             </div>
             <div class="pf-field">
               <div class="pf-field-head">
                 <label>{{ t('card.alternateGreetings') }}</label>
-                <button type="button" class="pf-raw-toggle" @click="addGreeting">
+                <button v-if="!isTranslationView" type="button" class="pf-raw-toggle" @click="addGreeting">
                   + {{ t('card.addGreeting') }}
                 </button>
               </div>
               <div v-if="card.alternateGreetings.length" class="pf-greet-list">
                 <div
-                  v-for="(_, i) in card.alternateGreetings"
+                  v-for="(origAlt, i) in card.alternateGreetings"
                   :key="i"
                   class="pf-greet-item"
                 >
                   <div class="pf-greet-meta">
                     <span>#{{ i + 1 }}</span>
                     <button
+                      v-if="isTranslationView && origAlt.trim()"
+                      type="button"
+                      class="pf-raw-toggle"
+                      :disabled="Boolean(translatingLocale)"
+                      @click="runTranslate(editorLocale as 'zh' | 'en', [`alternate_greetings:${i}`])"
+                    >
+                      {{
+                        translatingField === `alternate_greetings:${i}`
+                          ? t('card.translating')
+                          : t('card.retranslateField')
+                      }}
+                    </button>
+                    <button
+                      v-if="!isTranslationView"
                       type="button"
                       class="pf-asset-btn danger"
                       aria-label="remove greeting"
@@ -618,20 +1041,40 @@ function removeGreeting(index: number) {
                     </button>
                   </div>
                   <textarea
-                    v-model="card.alternateGreetings[i]"
+                    :value="greetingText(i)"
                     class="pf-area"
                     rows="3"
+                    :placeholder="isTranslationView ? t('card.translationFallbackHint') : undefined"
+                    @input="setGreetingText(i, ($event.target as HTMLTextAreaElement).value)"
                   ></textarea>
                 </div>
               </div>
             </div>
             <div class="pf-field">
-              <label>{{ t('card.conversationExamples') }}</label>
-              <textarea v-model="card.mesExample" class="pf-area" rows="4"></textarea>
+              <div class="pf-field-head">
+                <label>{{ t('card.conversationExamples') }}</label>
+                <span v-if="isTranslationView" class="pf-tr-badge">{{ t('card.translationOriginalBadge') }}</span>
+              </div>
+              <textarea
+                v-model="card.mesExample"
+                class="pf-area"
+                :class="{ readonly: isTranslationView }"
+                :readonly="isTranslationView"
+                rows="4"
+              ></textarea>
             </div>
             <div class="pf-field">
-              <label>{{ t('card.advancedPrompt') }}</label>
-              <textarea v-model="card.advancedPrompt" class="pf-area" rows="3"></textarea>
+              <div class="pf-field-head">
+                <label>{{ t('card.advancedPrompt') }}</label>
+                <span v-if="isTranslationView" class="pf-tr-badge">{{ t('card.translationOriginalBadge') }}</span>
+              </div>
+              <textarea
+                v-model="card.advancedPrompt"
+                class="pf-area"
+                :class="{ readonly: isTranslationView }"
+                :readonly="isTranslationView"
+                rows="3"
+              ></textarea>
             </div>
           </div>
         </div>
@@ -931,20 +1374,63 @@ function removeGreeting(index: number) {
           </div>
           <div class="pf-fields">
             <div class="pf-field">
-              <label>{{ t('card.systemInstructions') }}</label>
-              <textarea v-model="card.systemPrompt" class="pf-area" rows="3"></textarea>
+              <div class="pf-field-head">
+                <label>{{ t('card.systemInstructions') }}</label>
+                <span v-if="isTranslationView" class="pf-tr-badge">{{ t('card.translationOriginalBadge') }}</span>
+              </div>
+              <textarea
+                v-model="card.systemPrompt"
+                class="pf-area"
+                :class="{ readonly: isTranslationView }"
+                :readonly="isTranslationView"
+                rows="3"
+              ></textarea>
             </div>
             <div class="pf-field">
-              <label>{{ t('card.postHistory') }}</label>
-              <textarea v-model="card.postHistory" class="pf-area" rows="2"></textarea>
+              <div class="pf-field-head">
+                <label>{{ t('card.postHistory') }}</label>
+                <span v-if="isTranslationView" class="pf-tr-badge">{{ t('card.translationOriginalBadge') }}</span>
+              </div>
+              <textarea
+                v-model="card.postHistory"
+                class="pf-area"
+                :class="{ readonly: isTranslationView }"
+                :readonly="isTranslationView"
+                rows="2"
+              ></textarea>
             </div>
             <div class="pf-field">
-              <label>{{ t('card.userInfo') }}</label>
-              <textarea v-model="card.userInfo" class="pf-area" rows="2"></textarea>
+              <div class="pf-field-head">
+                <label>{{ t('card.userInfo') }}</label>
+                <span v-if="isTranslationView" class="pf-tr-badge">{{ t('card.translationOriginalBadge') }}</span>
+              </div>
+              <textarea
+                v-model="card.userInfo"
+                class="pf-area"
+                :class="{ readonly: isTranslationView }"
+                :readonly="isTranslationView"
+                rows="2"
+              ></textarea>
             </div>
             <div class="pf-field">
-              <label>{{ t('card.creatorNotes') }}</label>
-              <textarea v-model="card.creatorNotes" class="pf-area" rows="2"></textarea>
+              <div class="pf-field-head">
+                <label>{{ t('card.creatorNotes') }}</label>
+                <button
+                  v-if="isTranslationView && card.creatorNotes.trim()"
+                  type="button"
+                  class="pf-raw-toggle"
+                  :disabled="Boolean(translatingLocale)"
+                  @click="runTranslate(editorLocale as 'zh' | 'en', ['creator_notes'])"
+                >
+                  {{ translatingField === 'creator_notes' ? t('card.translating') : t('card.retranslateField') }}
+                </button>
+              </div>
+              <textarea
+                v-model="activeCreatorNotes"
+                class="pf-area"
+                rows="2"
+                :placeholder="isTranslationView ? t('card.translationFallbackHint') : undefined"
+              ></textarea>
             </div>
             <div class="pf-field">
               <button class="pf-raw-toggle" @click="rawOpen = !rawOpen">{{ t('card.rawJson') }}</button>

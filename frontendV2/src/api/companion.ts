@@ -7,9 +7,11 @@ import {
   post,
   postForm,
   put,
+  streamRequest,
   useSocket,
 } from './client'
 import type { DisplayRegexRule, ScenePromptRule } from '@/utils/displayRegex'
+import type { CompanionLocale, CompanionTranslations } from '@/utils/companionTranslation'
 
 const C = '/companions'
 
@@ -48,6 +50,9 @@ export interface Companion {
   raw_card_data?: string
   card_ui?: Record<string, unknown>
   card_presentation?: CardPresentation
+  translations?: CompanionTranslations
+  active_locale?: CompanionLocale
+  prompt_use_original?: boolean
   pinned?: boolean
   asset_count?: number
   card_format?: string
@@ -636,3 +641,61 @@ export const explainSceneRules = (
     rules,
     language,
   })
+
+export interface CardTranslateEvent {
+  type: 'start' | 'progress' | 'field_done' | 'done' | 'error'
+  locale?: 'zh' | 'en'
+  done?: number
+  total?: number
+  field?: string
+  message?: string
+  translations?: CompanionTranslations
+  companion?: Companion
+}
+
+export async function translateCompanionCard(
+  companionId: string,
+  payload: {
+    target_locale: 'zh' | 'en'
+    fields?: string[]
+    activate?: boolean
+  },
+  handlers: {
+    onEvent: (ev: CardTranslateEvent) => void
+    signal?: AbortSignal
+  },
+): Promise<CardTranslateEvent | null> {
+  let buffer = ''
+  let finalEvent: CardTranslateEvent | null = null
+  let streamErr = ''
+
+  const processLine = (line: string) => {
+    const trimmed = line.trim()
+    if (!trimmed.startsWith('data:')) return
+    const raw = trimmed.slice(5).trim()
+    if (!raw || raw === '[DONE]') return
+    try {
+      const ev = JSON.parse(raw) as CardTranslateEvent
+      handlers.onEvent(ev)
+      if (ev.type === 'done') finalEvent = ev
+      else if (ev.type === 'error' && ev.message) streamErr = ev.message
+    } catch {
+      /* ignore malformed SSE frames */
+    }
+  }
+
+  await streamRequest(
+    `${C}/${encodeURIComponent(companionId)}/translate`,
+    payload,
+    (chunk) => {
+      buffer += chunk
+      const lines = buffer.split('\n')
+      buffer = lines.pop() ?? ''
+      for (const line of lines) processLine(line)
+    },
+    { signal: handlers.signal },
+  )
+  if (buffer.trim()) processLine(buffer)
+  if (streamErr) throw new Error(streamErr)
+  return finalEvent
+}

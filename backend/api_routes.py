@@ -362,7 +362,17 @@ class CompanionUpdateRequest(BaseModel):
     llm_provider_id: Optional[str] = None
     tts_config: Optional[Dict[str, Any]] = None
     card_ui: Optional[Dict[str, Any]] = None
+    translations: Optional[Dict[str, Any]] = None
+    active_locale: Optional[str] = None
+    prompt_use_original: Optional[bool] = None
     pinned: Optional[bool] = None
+
+
+class CompanionTranslateRequest(BaseModel):
+    target_locale: str = "zh"
+    fields: Optional[List[str]] = None
+    activate: bool = True
+    llm_config: Optional[Dict[str, Any]] = None
 
 
 class BranchRenameRequest(BaseModel):
@@ -888,6 +898,37 @@ async def explain_companion_scene_rules(companion_id: str, request: SceneRuleExp
     except Exception as exc:
         logger.error("Scene rule explain failed for %s: %s", companion_id, exc, exc_info=True)
         raise HTTPException(status_code=500, detail=f"Explain failed: {str(exc)}")
+
+
+@router.post("/{companion_id}/translate")
+async def translate_companion_card(companion_id: str, request: CompanionTranslateRequest):
+    """Stream per-field LLM translations for display fields without mutating original card columns."""
+    from .card_translation import iter_translate_companion_card
+
+    try:
+        comp = Companion(companion_id)
+    except ValueError:
+        raise HTTPException(status_code=404, detail="Companion not found")
+
+    llm_cfg = comp._resolve_llm_config_full(request.llm_config) or {}
+
+    async def event_stream():
+        try:
+            async for ev in iter_translate_companion_card(
+                companion_id,
+                target_locale=request.target_locale,
+                fields=request.fields,
+                activate=request.activate,
+                llm_config=llm_cfg,
+            ):
+                yield f"data: {json.dumps(ev, ensure_ascii=False)}\n\n"
+        except ValueError as exc:
+            yield f"data: {json.dumps({'type': 'error', 'message': str(exc)}, ensure_ascii=False)}\n\n"
+        except Exception as exc:
+            logger.error("Card translate failed for %s: %s", companion_id, exc, exc_info=True)
+            yield f"data: {json.dumps({'type': 'error', 'message': str(exc)}, ensure_ascii=False)}\n\n"
+
+    return StreamingResponse(event_stream(), media_type="text/event-stream")
 
 
 # ==================== Card Export ====================

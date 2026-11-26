@@ -1,3 +1,5 @@
+import type { CompanionLocale, CompanionTranslations } from '@/utils/companionTranslation'
+
 export type BeatRole = 'ai' | 'you' | 'narration' | 'summary' | 'scene-summary'
 
 export interface BeatLine {
@@ -98,6 +100,9 @@ export interface CastMember {
   pinned?: boolean
   assetCount?: number
   cardFormat?: string
+  translations?: CompanionTranslations
+  activeLocale?: CompanionLocale
+  promptUseOriginal?: boolean
   /**
    * Voice this character speaks in, stored on the companion row as
    * `tts_config`. Only identity is kept here; the engine and its sampling

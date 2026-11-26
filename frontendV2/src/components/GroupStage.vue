@@ -9,6 +9,7 @@ import ChatAttachmentPicker from './ChatAttachmentPicker.vue'
 import InlineVideoCard from './InlineVideoCard.vue'
 import { attachmentToPayload, type PickedAttachment } from '@/api/gallery'
 import { isCharxCard, type BeatLine } from '@/data/chat'
+import { resolveCompanionDisplayText } from '@/utils/companionTranslation'
 import {
   addGroupMember,
   clearGroupMessages,
@@ -121,7 +122,7 @@ const cards = computed<CardView[]>(() =>
       letter: cast?.letter || (name || '?').slice(0, 1).toUpperCase(),
       avatar: cast?.avatar || '',
       role: cast?.role || '',
-      desc: cast?.desc || m.description || '',
+      desc: cast?.desc || resolveCompanionDisplayText(m, 'description'),
       speaking,
       focused,
     }

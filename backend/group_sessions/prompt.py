@@ -25,6 +25,7 @@ import re
 from typing import Any, Dict, List, Optional, Union
 
 from ..attachment_parser import format_video_for_prompt, resolve_image_path
+from ..card_translation import resolve_companion_fields
 from ..global_prompts import load_global_prompts
 from ..memory_engine import resolve_user_name
 from ..placeholders import substitute
@@ -159,16 +160,17 @@ def build_system_prompt(
 
     roster_lines = []
     for member in members:
-        name = str(member.get("name") or "")
+        resolved_member = resolve_companion_fields(member, for_prompt=True)
+        name = str(resolved_member.get("name") or "")
         if not name:
             continue
-        if member.get("companion_id") == speaker.get("companion_id"):
+        if resolved_member.get("companion_id") == speaker.get("companion_id"):
             # The speaker's own card is spelled out under [Character] below, so
             # a line of it here would only spend budget on itself.
             roster_lines.append(f"- {name} (you)")
             continue
         desc = _clip(
-            sub(str(member.get("personality") or member.get("description") or "")),
+            sub(str(resolved_member.get("personality") or resolved_member.get("description") or "")),
             ROSTER_DESC_CHARS,
         )
         roster_lines.append(f"- {name}: {desc}" if desc else f"- {name}")
@@ -178,10 +180,11 @@ def build_system_prompt(
             "Everyone in this scene, with the user:\n" + "\n".join(roster_lines)
         )
 
+    resolved_speaker = resolve_companion_fields(speaker, for_prompt=True)
     who = [f"[Character]\nYou are {speaker_name}."]
-    personality = _truncate(sub(str(speaker.get("personality") or "")), CHARACTER_FIELD_CHARS)
-    description = _truncate(sub(str(speaker.get("description") or "")), CHARACTER_FIELD_CHARS)
-    scenario = _truncate(sub(str(speaker.get("scenario") or "")), SCENARIO_FIELD_CHARS)
+    personality = _truncate(sub(str(resolved_speaker.get("personality") or "")), CHARACTER_FIELD_CHARS)
+    description = _truncate(sub(str(resolved_speaker.get("description") or "")), CHARACTER_FIELD_CHARS)
+    scenario = _truncate(sub(str(resolved_speaker.get("scenario") or "")), SCENARIO_FIELD_CHARS)
     if personality:
         who.append(f"[Personality]\n{personality}")
     if description:

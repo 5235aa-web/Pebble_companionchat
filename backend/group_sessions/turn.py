@@ -21,6 +21,7 @@ import math
 import re
 from typing import AsyncGenerator, Dict, List, Optional
 
+from ..card_translation import resolve_companion_fields
 from ..llm_client import call_llm_stream
 from ..memory_retriever import tokenize
 from . import db, memory, prompt
@@ -211,8 +212,9 @@ def _pick_by_persona_relevance(
     doc_counts: List[Counter] = []
     df: Counter = Counter()
     for member in members:
+        resolved = resolve_companion_fields(member, for_prompt=True)
         blob = " ".join(
-            str(member.get(field) or "")
+            str(resolved.get(field) or "")
             for field in ("personality", "description", "scenario")
         )
         counts = Counter(tokenize(blob))

@@ -1,5 +1,6 @@
 import { del, get, patch, post } from './client'
 import { run, type LlmConfig, type StreamHandlers } from './stream'
+import type { CompanionLocale, CompanionTranslations } from '@/utils/companionTranslation'
 
 /**
  * Group rooms.
@@ -25,8 +26,12 @@ export interface GroupMember {
   name: string
   description?: string
   personality?: string
+  scenario?: string
   avatar_path?: string
   user_info?: string
+  translations?: CompanionTranslations
+  active_locale?: CompanionLocale
+  prompt_use_original?: boolean
   turn_order: number
   focus: number
 }

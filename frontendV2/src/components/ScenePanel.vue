@@ -10,6 +10,7 @@ import { useCardAudioStore } from '@/stores/cardAudio'
 import { useCardHudStore } from '@/stores/cardHud'
 import { useScriptStore } from '@/stores/script'
 import { useInochi2dStore } from '@/stores/inochi2d'
+import { availableCompanionLocales, type CompanionLocale } from '@/utils/companionTranslation'
 import CardHudPanel from './CardHudPanel.vue'
 import SceneMotionCanvas from './SceneMotionCanvas.vue'
 import PuppetStage from './PuppetStage.vue'
@@ -31,6 +32,8 @@ const inScene = computed(
 
 const expanded = ref(false)
 const who = computed(() => chat.activeCast)
+const availableLocales = computed(() => availableCompanionLocales(who.value?.translations))
+const activeCardLocale = computed<CompanionLocale>(() => who.value?.activeLocale ?? '')
 const isCharx = computed(() => Boolean(who.value && isCharxCard(who.value)))
 const showCardHud = computed(
   () =>
@@ -465,7 +468,35 @@ onMounted(() => {
     </div>
 
     <div v-if="who" class="scene-info">
-      <div class="sc-name">{{ who?.name }}</div>
+      <div class="sc-head-row">
+        <div class="sc-name">{{ who?.name }}</div>
+        <div
+          v-if="availableLocales.length"
+          class="sc-lang-switch"
+          role="group"
+          :data-tip="t('card.localeSwitchTip')"
+          data-tip-float
+        >
+          <button
+            type="button"
+            class="sc-lang-btn"
+            :class="{ on: activeCardLocale === '' }"
+            @click="session.setCompanionLocale(who.id, '')"
+          >
+            {{ t('card.langOriginal') }}
+          </button>
+          <button
+            v-for="loc in availableLocales"
+            :key="loc"
+            type="button"
+            class="sc-lang-btn"
+            :class="{ on: activeCardLocale === loc }"
+            @click="session.setCompanionLocale(who.id, loc)"
+          >
+            {{ loc === 'zh' ? t('card.langZh') : t('card.langEn') }}
+          </button>
+        </div>
+      </div>
       <div class="sc-role">{{ who?.role }}</div>
       <p class="sc-desc">{{ who?.desc }}</p>
 

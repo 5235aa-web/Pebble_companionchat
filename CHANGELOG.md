@@ -4,6 +4,17 @@ All notable releases for Pebble Companion Chat are recorded here.
 Each `## x.y.z` section is used by `npm run release -- x.y.z` as both the
 GitHub Release description and the in-app update panel notes.
 
+## 1.0.1
+
+- **Character Card Translation (Chinese & English)**:
+  - Added isolated LLM-powered translation for character cards (`POST /companions/{id}/translate`), storing `translations`, `active_locale`, and `prompt_use_original` separately from original card columns so source cards, `raw_card_data`, and PNG/JSON exports remain untouched.
+  - Translates natural-language display fields only (`description`, `personality`, `scenario`, `tags`, `first_mes`, `alternate_greetings`, `creator_notes`) while preserving the character's original `name`, prompt-override instructions (`system_prompt`, `post_history_instructions`, `advanced_prompt`, `user_info`, `mes_example`), placeholders (`{{char}}`, `{{user}}`), CBS macros, HTML/CSS tags, and `embedded://` asset paths.
+  - Added an editor translation bar in **Character Editor** (`Original / 中文 / EN` switcher, one-click streaming translation with progress & cancel, manual translation editing, per-field retranslation, and read-only protection on original name/system fields) plus a quick language toggle pill in the right-hand **Scene** panel.
+  - Wired active translations seamlessly across single chat, script mode, greetings, cast list, and group chat (including group roster/character prompts and persona relevance routing), with an **Always use original fields for Prompt** option when you want translated UI/greetings while keeping original prompt fields for the AI.
+- **Unified `data-tip` Tooltips**:
+  - Replaced all remaining browser-native `title` tooltips across the frontend (`ScenePanel`, `CardHudPanel`, `GroupStage`, `SceneRulesDock`, `ImageGallery`, `InlineVideoCard`, `BackstagePanel`, `AttachmentChipStrip`, `CharacterEditor`, `PuppetEditorPopup`, and `UpdateButton`) with the app's themed `data-tip` style.
+  - Added a viewport-clamped `FloatingTip` portal layer so tooltips inside scrollable, `overflow: hidden`, truncated-ellipsis, or edge-anchored containers never clip or spill off-screen.
+
 ## 1.0.0
 
 - **Conversation Branch Export**:
