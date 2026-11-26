@@ -1,6 +1,7 @@
 <script setup lang="ts">
-import { computed, ref } from 'vue'
+import { computed, ref, watch } from 'vue'
 import type { PuppetEmotion } from '@/api/inochi2d'
+import { useFileUrls } from '@/composables/useFileUrl'
 import { useInochi2dStore } from '@/stores/inochi2d'
 import { useSessionStore } from '@/stores/session'
 import { useUiStore } from '@/stores/ui'
@@ -41,6 +42,36 @@ const packItems = ref<PackItem[]>([])
 const baseIndex = ref(0)
 const saveToAssets = ref(true)
 const assetPickerOpen = ref(false)
+const ASSET_PAGE = 20
+const assetLimit = ref(ASSET_PAGE)
+
+watch(
+  () => session.activeCompanionId,
+  () => {
+    assetPickerOpen.value = false
+    assetLimit.value = ASSET_PAGE
+  },
+)
+
+const visibleAssetImages = computed(() => session.imageAssets.slice(0, assetLimit.value))
+const remainingAssetImages = computed(() =>
+  Math.max(0, session.imageAssets.length - visibleAssetImages.value.length),
+)
+const selectedAssetIds = computed(() => {
+  const ids = new Set<number>()
+  for (const item of packItems.value) {
+    if (item.assetId !== undefined) ids.add(item.assetId)
+  }
+  return ids
+})
+
+// Render-throttled thumbnail loader: resolves nothing while popup/tab/picker is closed
+const assetThumbMap = useFileUrls(() => {
+  if (!inochi.editorOpen || inochi.activeMode !== 'live2d' || tab.value !== 'build' || !assetPickerOpen.value) {
+    return []
+  }
+  return visibleAssetImages.value.map((a) => a.rel_path).filter(Boolean)
+}, 256)
 
 // Non-modal draggable positioning anchored to the left of the right-hand ScenePanel
 const offsetX = ref(0)
@@ -73,6 +104,7 @@ const emotions: { id: PuppetEmotion; label: string; labelEn: string }[] = [
   { id: 'happy', label: '开心', labelEn: 'Happy' },
   { id: 'shy', label: '害羞', labelEn: 'Shy' },
   { id: 'surprised', label: '惊讶', labelEn: 'Surprised' },
+  { id: 'angry', label: '生气', labelEn: 'Angry' },
   { id: 'sad', label: '委屈', labelEn: 'Sad' },
 ]
 
@@ -235,11 +267,15 @@ function removePackItem(index: number): void {
 }
 
 async function openAssetChooser(): Promise<void> {
-  const id = session.activeCompanionId
-  if (id && !session.imageAssets.length) {
-    await session.loadCompanionAssets(id).catch(() => undefined)
+  const nextOpen = !assetPickerOpen.value
+  if (nextOpen) {
+    assetLimit.value = ASSET_PAGE
+    const id = session.activeCompanionId
+    if (id && !session.imageAssets.length) {
+      await session.loadCompanionAssets(id).catch(() => undefined)
+    }
   }
-  assetPickerOpen.value = !assetPickerOpen.value
+  assetPickerOpen.value = nextOpen
 }
 
 async function runPackBuild(): Promise<void> {
@@ -616,21 +652,44 @@ async function onDeleteOutfit(oid: string): Promise<void> {
             </button>
           </div>
 
-          <!-- Character media assets picker -->
+          <!-- Character media assets picker (render-throttled: mounted & loaded only when open) -->
           <div v-if="assetPickerOpen" class="puppet-asset-picker">
             <p v-if="!session.imageAssets.length" class="cp-hint">{{ t('live2d.noCardImageAssets') }}</p>
-            <div v-else class="puppet-asset-chips">
-              <button
-                v-for="a in session.imageAssets.slice(0, 48)"
-                :key="a.id"
-                type="button"
-                class="puppet-emo-btn"
-                :class="{ on: packItems.some((p) => p.assetId === a.id) }"
-                @click="toggleAssetForPack(a.id, a.name)"
-              >
-                {{ a.name }}
-              </button>
-            </div>
+            <template v-else>
+              <div class="puppet-asset-grid">
+                <button
+                  v-for="a in visibleAssetImages"
+                  :key="a.id"
+                  type="button"
+                  class="puppet-asset-card"
+                  :class="{ on: selectedAssetIds.has(a.id) }"
+                  :data-tip="a.name || undefined"
+                  data-tip-float
+                  @click="toggleAssetForPack(a.id, a.name)"
+                >
+                  <span class="puppet-asset-thumb">
+                    <img
+                      v-if="assetThumbMap[a.rel_path]"
+                      :src="assetThumbMap[a.rel_path]"
+                      :alt="a.name"
+                      loading="lazy"
+                      decoding="async"
+                    />
+                  </span>
+                  <span v-if="selectedAssetIds.has(a.id)" class="puppet-asset-check">✓</span>
+                  <span class="puppet-asset-name">{{ a.name }}</span>
+                </button>
+              </div>
+              <div v-if="remainingAssetImages > 0" class="puppet-asset-more">
+                <button
+                  type="button"
+                  class="mini-btn"
+                  @click="assetLimit += ASSET_PAGE"
+                >
+                  {{ t('card.assetsShowMore', { left: remainingAssetImages }) }}
+                </button>
+              </div>
+            </template>
           </div>
 
           <!-- Staged pack items with inline label + wide-eyed base selector -->

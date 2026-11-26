@@ -47,7 +47,7 @@ def _persistent_requirements_path(pkg_dir: Path) -> Path:
 
 _JOB_LOCK = asyncio.Lock()
 _JOBS: Dict[str, Dict[str, Any]] = {}
-_PROCS: Dict[str, asyncio.subprocess.Process] = {}
+_PROCS: Dict[str, subprocess.Popen[bytes]] = {}
 _PROBE_CACHE: Dict[Tuple[str, float, int], Dict[str, Any]] = {}
 
 DEFAULT_PUPPET_CONFIG: Dict[str, Any] = {
@@ -112,7 +112,7 @@ if "torch" not in missing:
             pass
         bf16 = bool(torch.cuda.is_bf16_supported()) if hasattr(torch.cuda, "is_bf16_supported") else False
         rt["dtype"] = "bf16" if ((is_rocm and bf16) or (not is_rocm and major >= 8 and bf16)) else "fp16"
-        rt["offloadDefault"] = rt["vramGb"] <= 0.0 or rt["vramGb"] < 20.0
+        rt["offloadDefault"] = rt["vramGb"] <= 0.0 or rt["vramGb"] < 7.5
     elif mps_ok:
         rt["backend"] = "mps"
         rt["gpuName"] = "Apple Silicon (MPS)"
@@ -552,17 +552,22 @@ async def _run_worker(
         job["stage"] = "loading"
         job["progress"] = 10
 
+        proc: Optional[subprocess.Popen[bytes]] = None
         try:
-            proc = await asyncio.create_subprocess_exec(
-                *cmd,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.STDOUT,
+            # Use subprocess.Popen + asyncio.to_thread instead of asyncio.create_subprocess_exec
+            # because `uvicorn --reload` on Windows runs under SelectorEventLoop, which does not
+            # implement _make_subprocess_transport and raises NotImplementedError.
+            proc = subprocess.Popen(
+                cmd,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0,
             )
             _PROCS[companion_id] = proc
             tail_lines: List[str] = []
             assert proc.stdout is not None
             while True:
-                raw = await proc.stdout.readline()
+                raw = await asyncio.to_thread(proc.stdout.readline)
                 if not raw:
                     break
                 line = raw.decode("utf-8", errors="replace").strip()
@@ -586,7 +591,7 @@ async def _run_worker(
                         job["stage"] = "postprocess"
                         job["progress"] = 95
 
-            rc = await proc.wait()
+            rc = await asyncio.to_thread(proc.wait)
             _PROCS.pop(companion_id, None)
             if rc != 0:
                 err_msg = "\n".join(tail_lines[-8:]) or f"拆层进程退出码 {rc}"
@@ -606,6 +611,12 @@ async def _run_worker(
             job["progress"] = 100
             job["error"] = ""
         except asyncio.CancelledError:
+            _PROCS.pop(companion_id, None)
+            if proc is not None and proc.poll() is None:
+                try:
+                    proc.terminate()
+                except OSError:
+                    pass
             raise
         except Exception as exc:
             _PROCS.pop(companion_id, None)
@@ -617,10 +628,10 @@ async def _run_worker(
 
 async def cancel_build_job(companion_id: str) -> Dict[str, Any]:
     proc = _PROCS.pop(companion_id, None)
-    if proc is not None and proc.returncode is None:
+    if proc is not None and proc.poll() is None:
         try:
             proc.terminate()
-        except ProcessLookupError:
+        except OSError:
             pass
     job = _JOBS.get(companion_id)
     if job and job.get("status") == "running":

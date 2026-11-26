@@ -27,6 +27,10 @@ uniform vec4 u_layerRect;
 uniform vec2 u_cheekR;
 uniform vec2 u_cheekL;
 uniform vec4 u_cheekAxes;
+uniform vec3 u_faceMood;
+uniform vec4 u_eyeMood;
+uniform vec4 u_eyeAnchors;
+uniform float u_mouthOpen;
 
 out vec4 outColor;
 
@@ -40,25 +44,111 @@ float cheekGlow(vec2 p, vec2 c, vec2 uHat, vec2 vHat, float rx, float ry) {
 
 void main() {
   vec4 c = texture(u_tex, v_uv);
-  if (u_blush > 0.005 && c.a > 0.01) {
+  if (c.a > 0.01 && (u_blush > 0.005 || u_faceMood.x > 0.005 || u_faceMood.y > 0.005)) {
     vec2 charPos = vec2(
       u_layerRect.x + v_uv.x * u_layerRect.z,
       u_layerRect.y + v_uv.y * u_layerRect.w
     );
     vec2 aspect = vec2(u_cheekAxes.w, 1.0);
+    vec2 pIso = charPos * aspect;
     vec2 uHat = u_cheekAxes.xy;
     vec2 vHat = vec2(-uHat.y, uHat.x);
-    float rx = u_cheekAxes.z * 0.40;
-    float ry = u_cheekAxes.z * 0.24;
-    float g = max(
-      cheekGlow(charPos * aspect, u_cheekR * aspect, uHat, vHat, rx, ry),
-      cheekGlow(charPos * aspect, u_cheekL * aspect, uHat, vHat, rx, ry)
-    );
+    float dIso = max(0.001, u_cheekAxes.z);
     float skinMask = smoothstep(0.32, 0.65, c.r) * smoothstep(0.18, 0.45, min(c.g, c.b));
-    float tint = clamp(g * u_blush * skinMask, 0.0, 0.62);
-    vec3 rose = vec3(1.02, 0.68, 0.72);
-    c.rgb = mix(c.rgb, c.rgb * rose + vec3(0.055, -0.025, -0.015), tint);
+
+    if (u_blush > 0.005) {
+      float rx = dIso * 0.40;
+      float ry = dIso * 0.24;
+      float g = max(
+        cheekGlow(pIso, u_cheekR * aspect, uHat, vHat, rx, ry),
+        cheekGlow(pIso, u_cheekL * aspect, uHat, vHat, rx, ry)
+      );
+      vec2 stripeDir = normalize(0.85 * uHat - 0.52 * vHat);
+      float stripePhase = dot(pIso, stripeDir) / max(0.001, dIso * 0.048);
+      float stripes = smoothstep(0.35, 0.88, sin(stripePhase * 6.28318));
+      float tint = clamp((g + g * g * stripes * 0.26 * u_faceMood.z) * u_blush * skinMask, 0.0, 0.68);
+      vec3 rose = vec3(1.02, 0.68, 0.72);
+      c.rgb = mix(c.rgb, c.rgb * rose + vec3(0.055, -0.025, -0.015), tint);
+    }
+
+    if (u_faceMood.y > 0.005) {
+      vec2 lidR = u_eyeAnchors.xy * aspect + vHat * (0.14 * dIso);
+      vec2 lidL = u_eyeAnchors.zw * aspect + vHat * (0.14 * dIso);
+      float lidGlow = max(
+        cheekGlow(pIso, lidR, uHat, vHat, dIso * 0.24, dIso * 0.09),
+        cheekGlow(pIso, lidL, uHat, vHat, dIso * 0.24, dIso * 0.09)
+      );
+      float lidTint = clamp(lidGlow * u_faceMood.y * skinMask * 0.44, 0.0, 0.44);
+      c.rgb = mix(c.rgb, c.rgb * vec3(1.04, 0.72, 0.76) + vec3(0.04, -0.02, -0.01), lidTint);
+
+      // Delicate translucent corner tear bead on sad > 0.35
+      float tearFade = smoothstep(0.35, 0.85, u_faceMood.y);
+      if (tearFade > 0.005) {
+        vec2 tearR = u_eyeAnchors.xy * aspect - uHat * (0.18 * dIso) + vHat * (0.115 * dIso);
+        vec2 tearL = u_eyeAnchors.zw * aspect + uHat * (0.18 * dIso) + vHat * (0.115 * dIso);
+        float dropR = cheekGlow(pIso, tearR, uHat, vHat, dIso * 0.042, dIso * 0.056);
+        float dropL = cheekGlow(pIso, tearL, uHat, vHat, dIso * 0.042, dIso * 0.056);
+        float drop = max(dropR, dropL) * tearFade;
+        float specR = cheekGlow(pIso, tearR - vHat * (0.014 * dIso), uHat, vHat, dIso * 0.016, dIso * 0.016);
+        float specL = cheekGlow(pIso, tearL - vHat * (0.014 * dIso), uHat, vHat, dIso * 0.016, dIso * 0.016);
+        float spec = max(specR, specL) * tearFade;
+        c.rgb = mix(c.rgb, c.rgb * vec3(0.92, 0.95, 1.03) + vec3(0.06, 0.08, 0.11), clamp(drop * 0.55, 0.0, 0.55));
+        c.rgb = mix(c.rgb, vec3(0.98, 0.99, 1.0), clamp(spec * 0.85, 0.0, 0.85));
+      }
+    }
+
+    if (u_faceMood.x > 0.005) {
+      vec2 eyeMid = 0.5 * (u_eyeAnchors.xy + u_eyeAnchors.zw) * aspect;
+      float aboveEyes = dot(eyeMid - pIso, vHat) / dIso;
+      float gloomBand = smoothstep(-0.08, 0.46, aboveEyes);
+      float faceTone = smoothstep(0.18, 0.45, c.r);
+      float gloomAmt = clamp(gloomBand * u_faceMood.x * faceTone * 0.46, 0.0, 0.46);
+      c.rgb = mix(c.rgb, c.rgb * vec3(0.68, 0.70, 0.88), gloomAmt);
+    }
   }
+
+  if (c.a > 0.15 && (u_eyeMood.x > 0.005 || u_eyeMood.y > 0.005 || u_eyeMood.w > 0.005)) {
+    float xArch = sin(clamp(v_uv.x, 0.0, 1.0) * 3.14159);
+    // Sad iris catchlight suppression ("empty / hopeless eyes")
+    if (u_eyeMood.w > 0.005) {
+      float lum = dot(c.rgb, vec3(0.299, 0.587, 0.114));
+      float maxC = max(c.r, max(c.g, c.b));
+      float minC = min(c.r, min(c.g, c.b));
+      float sat = maxC - minC;
+      float specMask = smoothstep(0.42, 0.76, lum) * smoothstep(0.30, 0.08, sat) * smoothstep(0.68, 0.22, v_uv.y);
+      c.rgb = mix(c.rgb, c.rgb * 0.30, clamp(specMask * u_eyeMood.w * 0.88, 0.0, 0.88));
+      c.rgb = mix(c.rgb, vec3(lum) * vec3(0.84, 0.86, 0.94), clamp(u_eyeMood.w * 0.30, 0.0, 0.32));
+    }
+    if (u_eyeMood.x > 0.005) {
+      float lowerBand = smoothstep(0.52, 0.78, v_uv.y) * smoothstep(0.98, 0.74, v_uv.y);
+      float shimmer = 0.86 + 0.14 * sin(u_eyeMood.z * 3.8 + v_uv.x * 6.0);
+      float tear = clamp(lowerBand * xArch * shimmer * u_eyeMood.x * 0.42, 0.0, 0.45);
+      c.rgb = mix(c.rgb, vec3(0.96, 0.98, 1.0), tear);
+    }
+    if (u_eyeMood.y > 0.005) {
+      float midBand = smoothstep(0.18, 0.48, v_uv.y) * smoothstep(0.85, 0.52, v_uv.y);
+      float pulse = 0.90 + 0.10 * sin(u_eyeMood.z * 4.5);
+      float lift = clamp(midBand * xArch * pulse * u_eyeMood.y * 0.16, 0.0, 0.18);
+      c.rgb = min(vec3(1.0), c.rgb * (1.0 + lift) + vec3(0.035, 0.028, 0.02) * lift);
+    }
+  }
+
+  // Procedural oral cavity interior when mouth opens (speech, testMouth, or surprised/happy)
+  if (u_mouthOpen > 0.03 && c.a > 0.05) {
+    vec2 mUV = (v_uv - vec2(0.5, 0.50)) / vec2(0.34, 0.16 + 0.24 * u_mouthOpen);
+    float r2 = dot(mUV, mUV);
+    float cavMask = smoothstep(1.05, 0.58, r2) * smoothstep(0.03, 0.20, u_mouthOpen) * smoothstep(0.08, 0.45, c.a);
+    if (cavMask > 0.002) {
+      float tongue = smoothstep(0.05, 0.58, mUV.y);
+      vec3 cavCol = mix(vec3(0.24, 0.06, 0.09), vec3(0.62, 0.22, 0.26), tongue);
+      float teeth = smoothstep(-0.18, -0.54, mUV.y) * smoothstep(0.85, 0.22, abs(mUV.x)) * smoothstep(0.28, 0.55, u_mouthOpen);
+      cavCol = mix(cavCol, vec3(0.95, 0.91, 0.89), teeth * 0.72);
+      float rim = smoothstep(0.66, 0.90, r2) * (1.0 - smoothstep(0.90, 1.08, r2));
+      cavCol = mix(cavCol, vec3(0.18, 0.08, 0.08), rim * 0.55);
+      c.rgb = mix(c.rgb, cavCol, cavMask);
+    }
+  }
+
   outColor = vec4(c.rgb, c.a * u_alpha);
 }
 `
@@ -75,8 +165,8 @@ interface LayerRuntime {
   velY: number
 }
 
-const GRID_X = 14
-const GRID_Y = 18
+const GRID_X = 18
+const GRID_Y = 22
 
 function compileShader(gl: WebGL2RenderingContext, type: number, src: string): WebGLShader {
   const s = gl.createShader(type)!
@@ -121,6 +211,14 @@ function smoothstep(t: number): number {
 }
 
 type EmotionGroup = 'neutral' | 'happy' | 'shy' | 'surprised' | 'angry' | 'sad'
+
+interface ProceduralEmotionWeights {
+  happy: number
+  shy: number
+  surprised: number
+  angry: number
+  sad: number
+}
 
 interface EmotionDynamics {
   group: EmotionGroup
@@ -389,8 +487,13 @@ interface LayerDrawContext {
   headOffsetX: number
   headOffsetY: number
   blinkAmt: number
+  blinkClose: number
   hasClosedBlink: boolean
   hasDiffExpr: boolean
+  emo: ProceduralEmotionWeights
+  faceMood: [number, number, number]
+  eyeMood: [number, number, number, number]
+  pupilScale: number
   anchors: PuppetManifest['anchors']
 }
 
@@ -411,6 +514,10 @@ export class Puppet2DRenderer {
   private readonly cheekRLoc: WebGLUniformLocation
   private readonly cheekLLoc: WebGLUniformLocation
   private readonly cheekAxesLoc: WebGLUniformLocation
+  private readonly faceMoodLoc: WebGLUniformLocation
+  private readonly eyeMoodLoc: WebGLUniformLocation
+  private readonly eyeAnchorsLoc: WebGLUniformLocation
+  private readonly mouthOpenLoc: WebGLUniformLocation
   private readonly vboPos: WebGLBuffer
   private readonly vboUv: WebGLBuffer
   private readonly ibo: WebGLBuffer
@@ -517,10 +624,19 @@ export class Puppet2DRenderer {
   private lastEmotionId: string | null = null
   private targetExprId = ''
   private exprWeights = new Map<string, number>([['', 1]])
+  private emoWeights: ProceduralEmotionWeights = {
+    happy: 0,
+    shy: 0,
+    surprised: 0,
+    angry: 0,
+    sad: 0,
+  }
 
   private blinkPhase = 0
   private nextBlinkAt = 2.6
   private blinkValue = 0
+  private pupilScale = 1.0
+  private pupilVel = 0
 
   private destroyed = false
   private onReady?: (ready: boolean) => void
@@ -536,7 +652,7 @@ export class Puppet2DRenderer {
 
     const gl = canvas.getContext('webgl2', {
       alpha: true,
-      premultipliedAlpha: false,
+      premultipliedAlpha: true,
       antialias: true,
     })
     if (!gl) {
@@ -553,6 +669,10 @@ export class Puppet2DRenderer {
     this.cheekRLoc = gl.getUniformLocation(this.program, 'u_cheekR')!
     this.cheekLLoc = gl.getUniformLocation(this.program, 'u_cheekL')!
     this.cheekAxesLoc = gl.getUniformLocation(this.program, 'u_cheekAxes')!
+    this.faceMoodLoc = gl.getUniformLocation(this.program, 'u_faceMood')!
+    this.eyeMoodLoc = gl.getUniformLocation(this.program, 'u_eyeMood')!
+    this.eyeAnchorsLoc = gl.getUniformLocation(this.program, 'u_eyeAnchors')!
+    this.mouthOpenLoc = gl.getUniformLocation(this.program, 'u_mouthOpen')!
 
     const vertCount = (GRID_X + 1) * (GRID_Y + 1)
     this.posBuffer = new Float32Array(vertCount * 2)
@@ -958,6 +1078,9 @@ export class Puppet2DRenderer {
     this.targetExprId = ''
     this.exprWeights.clear()
     this.exprWeights.set('', 1)
+    this.emoWeights = { happy: 0, shy: 0, surprised: 0, angry: 0, sad: 0 }
+    this.pupilScale = 1.0
+    this.pupilVel = 0
     this.chestRecoil = 0
     this.chestRecoilVel = 0
     this.breathHoldTimer = 0
@@ -1030,9 +1153,10 @@ export class Puppet2DRenderer {
       }
     }
     if (dyn.group === 'surprised') {
-      // Startle opens eyes cleanly instead of blinking shut
+      // Startle opens eyes cleanly & snaps pupil inward instead of blinking shut
       this.blinkPhase = 0
       this.blinkValue = -0.06
+      this.pupilVel -= 0.72
     } else if (
       dyn.microBlink &&
       cfg.blinkRate > 0.02 &&
@@ -1103,6 +1227,13 @@ export class Puppet2DRenderer {
       } else {
         this.exprWeights.set(id, nextW)
       }
+    }
+
+    // Smoothly blend procedural emotion weights for single-image / fallback expressions
+    const emoBlendRate = 1 - Math.exp(-dt * 10.0)
+    const keys: (keyof ProceduralEmotionWeights)[] = ['happy', 'shy', 'surprised', 'angry', 'sad']
+    for (const k of keys) {
+      this.emoWeights[k] = lerp(this.emoWeights[k], dyn.group === k ? 1 : 0, emoBlendRate)
     }
 
     if (!cfg.motionEnabled) {
@@ -1201,16 +1332,21 @@ export class Puppet2DRenderer {
     this.petHairForceX *= Math.exp(-dt * 6.5)
     this.petHairForceY *= Math.exp(-dt * 6.5)
 
-    // Blush glow hold & gradual fade
+    // Blush glow hold & gradual fade (combine interactive click/pet blush + ambient shy/happy blush)
     if (this.blushHoldTimer > 0) {
       this.blushHoldTimer = Math.max(0, this.blushHoldTimer - dt)
     } else {
       this.blushGoal = 0
     }
+    const hasDiffActive = this.targetExprId !== ''
+    const blushPulse = 1 + 0.055 * Math.sin(this.simTime * 2.4) * this.emoWeights.shy
+    const ambientBlush = !hasDiffActive
+      ? (this.emoWeights.shy * 0.72 + this.emoWeights.happy * 0.22) * blushPulse
+      : 0
     this.blushLevel = lerp(
       this.blushLevel,
-      this.blushGoal,
-      1 - Math.exp(-dt * (this.blushHoldTimer > 0 ? 7.5 : 1.4)),
+      Math.max(this.blushGoal, ambientBlush),
+      1 - Math.exp(-dt * (this.blushHoldTimer > 0 ? 7.5 : 3.2)),
     )
 
     // Sustained dodge & head-tilt pose hold
@@ -1342,18 +1478,45 @@ export class Puppet2DRenderer {
     this.curEyeX = lerp(this.curEyeX, eyeTargetX, eyeSmooth)
     this.curEyeY = lerp(this.curEyeY, eyeTargetY, eyeSmooth)
 
-    // Randomized natural blinking
+    // Spring-damped pupil dilation/contraction + emotion-driven blink rhythm
+    const targetPupil = !hasDiffActive
+      ? clamp(
+          1 -
+            this.emoWeights.surprised * 0.12 -
+            this.emoWeights.angry * 0.06 +
+            this.emoWeights.happy * 0.04 +
+            this.emoWeights.shy * 0.03,
+          0.8,
+          1.08,
+        )
+      : 1.0
+    this.pupilVel += ((targetPupil - this.pupilScale) * 95 - this.pupilVel * 11) * dt
+    this.pupilScale = clamp(this.pupilScale + this.pupilVel * dt, 0.76, 1.12)
+
     if (cfg.blinkRate > 0.02) {
-      this.nextBlinkAt -= dt * cfg.blinkRate
+      const blinkFreqMul = clamp(
+        1 + this.emoWeights.shy * 0.55 - this.emoWeights.angry * 0.35 - this.emoWeights.surprised * 0.45,
+        0.45,
+        1.7,
+      )
+      const blinkSpeedMul = clamp(
+        1 + this.emoWeights.shy * 0.18 + this.emoWeights.angry * 0.22 - this.emoWeights.sad * 0.32,
+        0.58,
+        1.35,
+      )
+      this.nextBlinkAt -= dt * cfg.blinkRate * blinkFreqMul
       if (this.nextBlinkAt <= 0 && this.blinkPhase === 0) {
         this.blinkPhase = 0.001
       }
       if (this.blinkPhase > 0) {
-        this.blinkPhase += dt * 5.2
+        this.blinkPhase += dt * 5.2 * blinkSpeedMul
         if (this.blinkPhase >= 1) {
           this.blinkPhase = 0
           this.blinkValue = 0
-          this.nextBlinkAt = 1.8 + Math.random() * 3.2
+          this.nextBlinkAt =
+            this.emoWeights.shy > 0.5 && Math.random() < 0.28
+              ? 0.16
+              : (1.8 + Math.random() * 3.2) / blinkFreqMul
         } else {
           this.blinkValue = Math.sin(this.blinkPhase * Math.PI)
         }
@@ -1402,7 +1565,6 @@ export class Puppet2DRenderer {
 
   private drawLayer(layer: LayerRuntime, opacityScale: number, ctx: LayerDrawContext): void {
     const gl = this.gl
-    const cfg = this.config
     const rig = layer.meta.rig
     const isEyeOpenRig = rig === 'eye_l' || rig === 'eye_r' || rig === 'iris_l' || rig === 'iris_r'
     const isClosedBlinkRig = rig === 'blink_l' || rig === 'blink_r'
@@ -1410,9 +1572,9 @@ export class Puppet2DRenderer {
     let layerAlpha = opacityScale
     if (ctx.hasClosedBlink) {
       if (isEyeOpenRig) {
-        layerAlpha *= clamp(1.0 - (ctx.blinkAmt - 0.14) / 0.42, 0.0, 1.0)
+        layerAlpha *= clamp(1.0 - (ctx.blinkClose - 0.25) / 0.28, 0.0, 1.0)
       } else if (isClosedBlinkRig) {
-        layerAlpha *= clamp((ctx.blinkAmt - 0.22) / 0.38, 0.0, 1.0)
+        layerAlpha *= clamp((ctx.blinkClose - 0.35) / 0.25, 0.0, 1.0)
       }
     }
     if (layerAlpha <= 0.01) return
@@ -1476,25 +1638,67 @@ export class Puppet2DRenderer {
           y += ctx.headOffsetY * postureWeight + this.curAngleY * layer.meta.parallaxY * 0.025
         }
 
-        // 3. Tilt-aligned eye blink & gaze
+        // 3. Tilt-aligned eye blink, gaze & procedural expression shaping
         if (isEyeOpenRig) {
           const ex = eyeCenter[0] + ctx.headOffsetX
           const ey = eyeCenter[1] + ctx.headOffsetY
           const px = (x - ex) * ctx.cbW
           const py = (y - ey) * ctx.cbH
-          const uLoc = px * ctx.cosT + py * ctx.sinT
+          let uLoc = px * ctx.cosT + py * ctx.sinT
           let vLoc = -px * ctx.sinT + py * ctx.cosT
+
+          const eyeHalfW = Math.max(8, layer.meta.nw * ctx.cbW * 0.5)
+          const eyeHalfH = Math.max(6, layer.meta.nh * ctx.cbH * 0.5)
+          const uNorm = clamp(Math.abs(uLoc) / eyeHalfW, 0, 1)
+          const isLeftSide = rig === 'eye_l' || rig === 'iris_l'
+          const innerSign = isLeftSide ? clamp(-uLoc / eyeHalfW, -1, 1) : clamp(uLoc / eyeHalfW, -1, 1)
+
+          if (!ctx.hasDiffExpr) {
+            // Happy: warm curved smiling arch (lower rim rises gently into crescent)
+            if (ctx.emo.happy > 0.005) {
+              const arch = Math.cos(uNorm * Math.PI * 0.5)
+              const rimBias = vLoc > 0 ? 1.3 : 0.9
+              vLoc -= arch * 0.0038 * rimBias * ctx.cbH * ctx.emo.happy
+            }
+            // Spring-damped pupil contraction/dilation + subtle surprised tremor on iris
+            if (rig === 'iris_l' || rig === 'iris_r') {
+              uLoc *= ctx.pupilScale
+              vLoc *= ctx.pupilScale
+              if (ctx.emo.surprised > 0.005) {
+                uLoc += Math.sin(this.simTime * 28) * 0.00038 * ctx.cbW * ctx.emo.surprised
+              }
+            }
+            // Angry: fierce upper-lid press toward inner corner
+            if (ctx.emo.angry > 0.005) {
+              const topWeight = clamp((1 - vLoc / eyeHalfH) * 0.5, 0, 1)
+              vLoc += topWeight * (0.0022 + Math.max(0, innerSign) * 0.0028) * ctx.cbH * ctx.emo.angry
+            }
+            // Sad: outer corner droop + subtle watery iris tremor
+            if (ctx.emo.sad > 0.005) {
+              vLoc += Math.max(0, -innerSign) * 0.0034 * ctx.cbH * ctx.emo.sad
+              if (rig === 'iris_l' || rig === 'iris_r') {
+                uLoc += Math.sin(this.simTime * 18) * 0.00055 * ctx.cbW * ctx.emo.sad
+              }
+            }
+            // Shy: gentle upper lid lower
+            if (ctx.emo.shy > 0.005) {
+              const topWeight = clamp(-vLoc / eyeHalfH, 0, 1)
+              vLoc += topWeight * 0.0018 * ctx.cbH * ctx.emo.shy
+            }
+          }
 
           const vPivot = ctx.cbH * 0.0105
           const squishRate = ctx.hasClosedBlink ? 0.38 : 0.86
-          vLoc = vPivot + (vLoc - vPivot) * (1 - clamp(ctx.blinkAmt, -0.12, 0.94) * squishRate)
+          vLoc = vPivot + (vLoc - vPivot) * (1 - clamp(ctx.blinkAmt, -0.14, 0.94) * squishRate)
 
           x = ex + (uLoc * ctx.cosT - vLoc * ctx.sinT) / ctx.cbW
           y = ey + (uLoc * ctx.sinT + vLoc * ctx.cosT) / ctx.cbH
 
           if (rig === 'iris_l' || rig === 'iris_r') {
-            x += this.curEyeX * 0.0065
-            y += this.curEyeY * 0.0045
+            const shyGlanceX = !ctx.hasDiffExpr ? ctx.emo.shy * 0.0022 : 0
+            const shyGlanceY = !ctx.hasDiffExpr ? ctx.emo.shy * 0.0016 : 0
+            x += this.curEyeX * 0.0065 + shyGlanceX
+            y += this.curEyeY * 0.0045 + shyGlanceY
           }
         } else if (isClosedBlinkRig) {
           const settle = (1.0 - layerAlpha) * -0.002 + ctx.blinkAmt * 0.0012
@@ -1502,16 +1706,26 @@ export class Puppet2DRenderer {
           y += ctx.cosT * settle
         }
 
-        // 4. Eyebrow emotion offsets (fallback when no diff expression overlay)
+        // 4. Tilt-aligned eyebrow emotion deformation (fallback when no diff expression overlay)
         if (!ctx.hasDiffExpr && (rig === 'brow_l' || rig === 'brow_r')) {
-          if (cfg.emotion === 'surprised') y -= 0.008
-          else if (cfg.emotion === 'happy') y -= 0.004
-          else if (cfg.emotion === 'sad') {
-            const tilt = rig === 'brow_l' ? (u - 0.5) * 0.006 : (0.5 - u) * 0.006
-            y += 0.004 + tilt
-          } else if (cfg.emotion === 'shy') {
-            y += 0.002
-          }
+          const bx = layer.meta.nx + layer.meta.nw * 0.5 + ctx.headOffsetX
+          const by = layer.meta.ny + layer.meta.nh * 0.5 + ctx.headOffsetY
+          const bpx = (x - bx) * ctx.cbW
+          const bpy = (y - by) * ctx.cbH
+          let uLoc = bpx * ctx.cosT + bpy * ctx.sinT
+          let vLoc = -bpx * ctx.sinT + bpy * ctx.cosT
+
+          const innerSign = rig === 'brow_l' ? 1 - 2 * u : 2 * u - 1
+          const arch = Math.sin(u * Math.PI)
+          vLoc -= (0.0038 + 0.0032 * arch) * ctx.cbH * ctx.emo.happy
+          vLoc -= (0.0008 + innerSign * 0.0042) * ctx.cbH * ctx.emo.shy
+          vLoc -= (0.0075 + 0.0045 * arch) * ctx.cbH * ctx.emo.surprised
+          vLoc += (0.0035 + innerSign * 0.0075) * ctx.cbH * ctx.emo.angry
+          uLoc += (rig === 'brow_l' ? -1 : 1) * 0.0028 * ctx.cbW * ctx.emo.angry
+          vLoc += (0.0022 - innerSign * 0.0068) * ctx.cbH * ctx.emo.sad
+
+          x = bx + (uLoc * ctx.cosT - vLoc * ctx.sinT) / ctx.cbW
+          y = by + (uLoc * ctx.sinT + vLoc * ctx.cosT) / ctx.cbH
         }
 
         // 5. Tilt-aligned mouth lip-sync + fallback emotion curve
@@ -1520,9 +1734,12 @@ export class Puppet2DRenderer {
           const my = ctx.mouthY + ctx.headOffsetY
           const mpx = (x - mx) * ctx.cbW
           const mpy = (y - my) * ctx.cbH
-          const uLoc = mpx * ctx.cosT + mpy * ctx.sinT
+          let uLoc = mpx * ctx.cosT + mpy * ctx.sinT
           let vLoc = -mpx * ctx.sinT + mpy * ctx.cosT
-          const open = this.curMouth
+          const mouthHalfW = Math.max(8, layer.meta.nw * ctx.cbW * 0.5)
+          const uNorm = clamp(Math.abs(uLoc) / mouthHalfW, 0, 1.2)
+          const emoOpen = !ctx.hasDiffExpr ? ctx.emo.surprised * 0.45 + ctx.emo.happy * 0.08 : 0
+          const open = Math.max(this.curMouth, emoOpen)
 
           if (vLoc > -0.002 * ctx.cbH) {
             const lowerFactor = clamp(
@@ -1536,9 +1753,25 @@ export class Puppet2DRenderer {
           }
 
           if (!ctx.hasDiffExpr) {
-            if (cfg.emotion === 'happy') vLoc -= Math.abs(uLoc) * 0.14
-            else if (cfg.emotion === 'sad') vLoc += Math.abs(uLoc) * 0.12
-            else if (cfg.emotion === 'surprised') vLoc += vLoc * 0.25
+            if (ctx.emo.happy > 0.005) {
+              uLoc *= 1 + 0.09 * ctx.emo.happy
+              vLoc -= uNorm * uNorm * 0.24 * mouthHalfW * ctx.emo.happy
+            }
+            if (ctx.emo.shy > 0.005) {
+              uLoc *= 1 - 0.12 * ctx.emo.shy
+              vLoc -= uNorm * uNorm * 0.08 * mouthHalfW * ctx.emo.shy
+            }
+            if (ctx.emo.surprised > 0.005) {
+              uLoc *= 1 - 0.18 * ctx.emo.surprised
+            }
+            if (ctx.emo.angry > 0.005) {
+              vLoc += uNorm * uNorm * 0.16 * mouthHalfW * ctx.emo.angry
+            }
+            if (ctx.emo.sad > 0.005) {
+              vLoc +=
+                uNorm * uNorm * 0.24 * mouthHalfW * ctx.emo.sad +
+                Math.sin(this.simTime * 16) * 0.00045 * ctx.cbH * ctx.emo.sad
+            }
           }
 
           x = mx + (uLoc * ctx.cosT - vLoc * ctx.sinT) / ctx.cbW
@@ -1580,9 +1813,26 @@ export class Puppet2DRenderer {
     gl.activeTexture(gl.TEXTURE0)
     gl.bindTexture(gl.TEXTURE_2D, layer.tex)
     gl.uniform1f(this.alphaLoc, layerAlpha)
-    const applyBlush = rig === 'face' && ctx.blushLevel > 0.005
+
+    const isFace = rig === 'face'
+    const isIris = rig === 'iris_l' || rig === 'iris_r'
+    const isEyePart = rig === 'eye_l' || rig === 'eye_r' || isIris
+    const applyBlush = isFace && ctx.blushLevel > 0.005
+    const applyFaceMood = isFace && (ctx.faceMood[0] > 0.005 || ctx.faceMood[1] > 0.005)
+    const sadIrisDim = isIris && !ctx.hasDiffExpr ? ctx.emo.sad : 0
+    const applyEyeMood =
+      isEyePart && (ctx.eyeMood[0] > 0.005 || ctx.eyeMood[1] > 0.005 || sadIrisDim > 0.005)
+    const mouthOpenVal =
+      rig === 'mouth'
+        ? clamp(
+            Math.max(this.curMouth, !ctx.hasDiffExpr ? ctx.emo.surprised * 0.45 + ctx.emo.happy * 0.08 : 0),
+            0,
+            1,
+          )
+        : 0
+
     gl.uniform1f(this.blushLoc, applyBlush ? ctx.blushLevel : 0)
-    if (applyBlush) {
+    if (applyBlush || applyFaceMood) {
       gl.uniform4f(this.layerRectLoc, layer.meta.nx, layer.meta.ny, layer.meta.nw, layer.meta.nh)
       gl.uniform2f(this.cheekRLoc, ctx.cheekR[0], ctx.cheekR[1])
       gl.uniform2f(this.cheekLLoc, ctx.cheekL[0], ctx.cheekL[1])
@@ -1593,7 +1843,28 @@ export class Puppet2DRenderer {
         ctx.cheekAxes[2],
         ctx.cheekAxes[3],
       )
+      gl.uniform4f(
+        this.eyeAnchorsLoc,
+        ctx.anchors.eyeR[0],
+        ctx.anchors.eyeR[1],
+        ctx.anchors.eyeL[0],
+        ctx.anchors.eyeL[1],
+      )
     }
+    gl.uniform3f(
+      this.faceMoodLoc,
+      isFace ? ctx.faceMood[0] : 0,
+      isFace ? ctx.faceMood[1] : 0,
+      isFace ? ctx.faceMood[2] : 0,
+    )
+    gl.uniform4f(
+      this.eyeMoodLoc,
+      applyEyeMood ? ctx.eyeMood[0] : 0,
+      applyEyeMood ? ctx.eyeMood[1] : 0,
+      ctx.eyeMood[2],
+      sadIrisDim,
+    )
+    gl.uniform1f(this.mouthOpenLoc, mouthOpenVal)
     gl.drawElements(gl.TRIANGLES, this.indexCount, gl.UNSIGNED_SHORT, 0)
   }
 
@@ -1657,19 +1928,25 @@ export class Puppet2DRenderer {
     const hasDiffExpr = Array.from(this.exprWeights.keys()).some(
       (id) => id !== '' && (this.exprWeights.get(id) ?? 0) > 0.01,
     )
-    const squint =
-      !hasDiffExpr && cfg.emotion === 'happy'
-        ? 0.16
-        : !hasDiffExpr && cfg.emotion === 'shy'
-          ? 0.14
-          : !hasDiffExpr && cfg.emotion === 'surprised'
-            ? -0.1
-            : 0
+    const emo = this.emoWeights
+    const squint = !hasDiffExpr
+      ? emo.happy * 0.2 + emo.shy * 0.16 + emo.angry * 0.08 - emo.surprised * 0.14
+      : 0
 
     const breathLift = cfg.motionEnabled
       ? -(this.breathLagWave - 0.45 * cfg.breathAmp) * 0.0032
       : 0
     const petSquint = cfg.motionEnabled ? this.petIntensity * 0.13 : 0
+    const effectiveBlush = cfg.motionEnabled
+      ? this.blushLevel
+      : !hasDiffExpr
+        ? emo.shy * 0.68 + emo.happy * 0.2
+        : 0
+    const gloomLevel = !hasDiffExpr ? clamp(emo.angry * 0.72 + emo.sad * 0.58, 0, 1) : 0
+    const sadFlush = !hasDiffExpr ? emo.sad : 0
+    const blushStripe = clamp((effectiveBlush - 0.35) / 0.5, 0, 1)
+    const tearGlint = !hasDiffExpr ? clamp(emo.sad * 0.85 + emo.shy * 0.2, 0, 1) : 0
+    const happySparkle = !hasDiffExpr ? emo.happy : 0
 
     const aspect = cbW / cbH
     const eRx = anchors.eyeR[0] * aspect
@@ -1710,7 +1987,7 @@ export class Puppet2DRenderer {
       breathWave: this.breathWave,
       breathLagWave: this.breathLagWave,
       chestRecoil: cfg.motionEnabled ? this.chestRecoil : 0,
-      blushLevel: cfg.motionEnabled ? this.blushLevel : 0,
+      blushLevel: effectiveBlush,
       cheekR,
       cheekL,
       cheekAxes: [uHatX, uHatY, dIso, aspect],
@@ -1721,9 +1998,14 @@ export class Puppet2DRenderer {
       headOffsetY: cfg.motionEnabled
         ? this.curPostureY + this.reactY + this.petCurY + this.dodgeCurY + breathLift
         : 0,
-      blinkAmt: clamp(this.blinkValue + squint + petSquint, -0.12, 1.0),
+      blinkAmt: clamp(this.blinkValue + squint + petSquint, -0.14, 1.0),
+      blinkClose: this.blinkPhase > 0 ? clamp(this.blinkValue, 0, 1) : 0,
       hasClosedBlink: this.layers.some((l) => l.isBlink && l.loaded),
       hasDiffExpr,
+      emo,
+      faceMood: [gloomLevel, sadFlush, blushStripe],
+      eyeMood: [tearGlint, happySparkle, this.simTime, 0],
+      pupilScale: this.pupilScale,
       anchors,
     }
 

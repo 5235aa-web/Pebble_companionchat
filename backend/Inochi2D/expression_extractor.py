@@ -839,13 +839,28 @@ def _fix_neck_topwear_occlusion(
     cb = manifest["contentBounds"]
     cb_x, cb_y = int(cb["x"]), int(cb["y"])
     cb_w, cb_h = max(1, int(cb["width"])), max(1, int(cb["height"]))
-    top_rel_dir = Path(str(top_item.get("relPath") or "layers/topwear.png")).parent.as_posix().strip("/")
-    top_disk_dir = puppet_dir / top_rel_dir
+
+    def _local_rel_dir(rel_path: str) -> str:
+        rel_dir = Path(str(rel_path or "layers/x.png")).parent.as_posix().strip("/")
+        if rel_base and rel_dir.startswith(rel_base + "/"):
+            rel_dir = rel_dir[len(rel_base) + 1 :]
+        elif rel_base and rel_dir == rel_base:
+            rel_dir = "layers"
+        else:
+            for marker in ("layers", "outfits"):
+                pos = rel_dir.find(marker)
+                if pos > 0 and rel_dir[pos - 1] == "/":
+                    rel_dir = rel_dir[pos:]
+                    break
+        return rel_dir or "layers"
+
+    top_local_dir = _local_rel_dir(str(top_item.get("relPath") or "layers/topwear.png"))
+    top_disk_dir = puppet_dir / top_local_dir
 
     def _load(item: Dict[str, Any]) -> np.ndarray:
         arr = np.zeros((ch, cw, 4), dtype=np.uint8)
-        item_rel_dir = Path(str(item.get("relPath") or "layers/x.png")).parent.as_posix().strip("/")
-        patch = np.array(Image.open(puppet_dir / item_rel_dir / Path(item["relPath"]).name).convert("RGBA"))
+        item_local_dir = _local_rel_dir(str(item.get("relPath") or "layers/x.png"))
+        patch = np.array(Image.open(puppet_dir / item_local_dir / Path(item["relPath"]).name).convert("RGBA"))
         x, y, h, w = int(item["x"]), int(item["y"]), patch.shape[0], patch.shape[1]
         arr[y:y + h, x:x + w] = patch
         return arr
@@ -905,15 +920,6 @@ def _fix_neck_topwear_occlusion(
 
     v_dil = cv2.dilate(v_skin.astype(np.uint8), np.ones((3, 3), np.uint8)) > 0
 
-    # Extend neck cleanly down to bottom tip of V-opening so breathing/sway never opens a cleavage gap
-    ext_mask = v_dil & (neck[:, :, 3] < 200) & t_a
-    if ext_mask.any():
-        dark_in_ext = ext_mask & ((r + g + b) < 520)
-        inpaint_rgb = cv2.inpaint(top[:, :, :3], (dark_in_ext.astype(np.uint8) * 255), 5, cv2.INPAINT_TELEA)
-        take = v_dil & (neck[:, :, 3] < 180) & t_a
-        neck[take, :3] = inpaint_rgb[take]
-        neck[take, 3] = np.maximum(neck[take, 3], top[take, 3])
-
     # Extract purple back-collar strictly across upper neck span (measured above front lapel folds)
     ref_y = min(ch - 1, int(ty_all.min()) + 8)
     neck_throat_xs = np.where(neck[ref_y, :, 3] > 20)[0]
@@ -929,18 +935,45 @@ def _fix_neck_topwear_occlusion(
                 if t_a[y, x] and not v_skin[y, x]:
                     back_collar_mask[y, x] = True
 
+    # Extend neck generously (7px) underneath topwear skin past the carved edge so
+    # feathering and breathing/sway motion never expose a semi-transparent seam slit.
+    v_ext = (
+        (cv2.dilate(v_dil.astype(np.uint8), np.ones((15, 15), np.uint8)) > 0)
+        & t_a
+        & (~back_collar_mask)
+        & (~shirt_wall)
+    )
+    ext_mask = (v_dil | v_ext) & (neck[:, :, 3] < 250) & t_a
+    if ext_mask.any():
+        dark_in_ext = ext_mask & ((r + g + b) < 380)
+        inpaint_rgb = cv2.inpaint(top[:, :, :3], (dark_in_ext.astype(np.uint8) * 255), 5, cv2.INPAINT_TELEA)
+        take = (v_dil | v_ext) & (neck[:, :, 3] < 250) & t_a
+        a_n = neck[take, 3:4].astype(np.float32) / 255.0
+        blended_rgb = neck[take, :3].astype(np.float32) * a_n + inpaint_rgb[take].astype(np.float32) * (1.0 - a_n)
+        neck[take, :3] = np.clip(blended_rgb, 0, 255).astype(np.uint8)
+        neck[take, 3] = np.maximum(neck[take, 3], top[take, 3])
+
     carve_from_top = v_dil | back_collar_mask
-    carve_blur = np.array(
-        Image.fromarray((carve_from_top.astype(np.uint8) * 255)).filter(ImageFilter.GaussianBlur(radius=0.9)),
+    soft_blur = np.array(
+        Image.fromarray((v_dil.astype(np.uint8) * 255)).filter(ImageFilter.GaussianBlur(radius=1.6)),
         dtype=np.float32,
     ) / 255.0
-    carve_f = np.maximum(carve_from_top.astype(np.float32), carve_blur)
+    collar_blur = np.array(
+        Image.fromarray((back_collar_mask.astype(np.uint8) * 255)).filter(ImageFilter.GaussianBlur(radius=0.9)),
+        dtype=np.float32,
+    ) / 255.0
+    # Only feather into pixels backed by extended neck (v_ext) so fabric/collar edges stay crisp
+    carve_f = np.maximum.reduce([
+        carve_from_top.astype(np.float32),
+        np.where(v_ext, soft_blur, 0.0),
+        collar_blur,
+    ])
 
     top_clean = top.copy()
     top_clean[:, :, 3] = np.clip(top[:, :, 3].astype(np.float32) * (1.0 - carve_f), 0, 255).astype(np.uint8)
 
     back_collar = np.zeros_like(top)
-    bc_dil = cv2.dilate(back_collar_mask.astype(np.uint8), np.ones((3, 3), np.uint8)) > 0
+    bc_dil = cv2.dilate(back_collar_mask.astype(np.uint8), np.ones((5, 5), np.uint8)) > 0
     back_collar[:, :, :3] = top[:, :, :3]
     back_collar[:, :, 3] = np.minimum(top[:, :, 3], (bc_dil.astype(np.uint8) * 255))
 
@@ -950,9 +983,9 @@ def _fix_neck_topwear_occlusion(
         if trimmed is None:
             continue
         crop, gx, gy, lw, lh = trimmed
-        item_rel_dir = Path(str(item.get("relPath") or "layers/x.png")).parent.as_posix().strip("/")
+        item_local_dir = _local_rel_dir(str(item.get("relPath") or "layers/x.png"))
         fname = Path(item["relPath"]).name
-        Image.fromarray(crop, mode="RGBA").save(puppet_dir / item_rel_dir / fname)
+        Image.fromarray(crop, mode="RGBA").save(puppet_dir / item_local_dir / fname)
         item["x"] = gx
         item["y"] = gy
         item["width"] = lw
@@ -988,7 +1021,7 @@ def _fix_neck_topwear_occlusion(
             "parallaxY": float(top_item.get("parallaxY", 0.01)),
             "physics": float(top_item.get("physics", 0.18)),
             "visible": True,
-            "relPath": f"{rel_base}/{top_rel_dir}/{bc_fname}",
+            "relPath": f"{rel_base}/{top_local_dir}/{bc_fname}" if rel_base else f"{top_local_dir}/{bc_fname}",
         }
         if outfit_id:
             bc_entry["outfit"] = outfit_id

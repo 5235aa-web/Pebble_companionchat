@@ -190,6 +190,20 @@ def build_puppet_from_psd(
     if max_x <= min_x or max_y <= min_y:
         min_x, min_y, max_x, max_y = 0, 0, canvas_w, canvas_h
 
+    # Ensure back hair never renders in front of head/face/ears when forward side-locks skew median depth.
+    head_front_rigs = {"head", "face", "eye_l", "eye_r", "iris_l", "iris_r", "brow_l", "brow_r", "mouth", "hair_front"}
+    front_zs = [float(l["zIndex"]) for l in raw_layers if l.get("rig") in head_front_rigs]
+    if front_zs:
+        min_front_z = min(front_zs)
+        moved = False
+        for offset, l in enumerate([x for x in raw_layers if x.get("rig") == "hair_back" and float(x["zIndex"]) >= min_front_z]):
+            l["zIndex"] = min_front_z - 0.5 + offset * 0.01
+            moved = True
+        if moved:
+            raw_layers.sort(key=lambda l: float(l["zIndex"]))
+            for new_idx, l in enumerate(raw_layers):
+                l["zIndex"] = new_idx
+
     # Derive normalized anatomical anchors in [0..1] of contentBounds
     cb_w = max(1, max_x - min_x)
     cb_h = max(1, max_y - min_y)

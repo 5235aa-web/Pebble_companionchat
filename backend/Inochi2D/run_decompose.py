@@ -16,6 +16,10 @@ import sys
 from pathlib import Path
 from typing import Optional, Tuple
 
+# On AMD ROCm, default MIOpen exhaustive find mode spends 15-60s benchmarking
+# Conv2d algorithms on first forward pass in every subprocess; FAST cuts warmup sharply.
+os.environ.setdefault("MIOPEN_FIND_MODE", "FAST")
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -92,7 +96,13 @@ def _detect_runtime(requested_device: str = "auto", requested_dtype: str = "auto
 
 
 def _configure_sdpa(runtime: dict) -> None:
-    """Use chunked math SDPA on ROCm to avoid hipErrorInvalidValue & 12GB OOM; keep native SDPA on CUDA."""
+    """Use smart chunked math SDPA on ROCm to avoid hipErrorInvalidValue & 12GB OOM; keep native SDPA on CUDA.
+
+    Note: On Windows ROCm (including RDNA4 / 7.14.1), both flash_sdp and mem_efficient_sdp can
+    leave asynchronous hipErrorInvalidValue state across calls. Using math_sdp while skipping
+    unnecessary Python chunking on small-sequence temporal/cross attention keeps both 100% stability
+    and high throughput.
+    """
     force_math = os.getenv("PEBBLE_FORCE_MATH_SDPA", "").strip() == "1"
     if not runtime["is_rocm"] and not force_math:
         return
@@ -110,16 +120,23 @@ def _configure_sdpa(runtime: dict) -> None:
         dropout_p: float = 0.0,
         is_causal: bool = False,
         scale=None,
-        chunk_size: int = 512,
+        chunk_size: int = 1024,
         batch_chunk_size: int = 4,
         **kwargs,
     ) -> torch.Tensor:
-        lq = query.shape[-2]
         if attn_mask is not None or is_causal:
             return _ORIG_SDPA(
                 query, key, value, attn_mask=attn_mask, dropout_p=dropout_p, is_causal=is_causal, scale=scale, **kwargs
             )
+        lq = query.shape[-2]
+        lk = key.shape[-2]
         batch = query.shape[0] if query.ndim >= 3 else 1
+        # Temporal attention (batch=2304, lq=13, lk=13) and cross-attention (lk=77) have tiny Q*K matrices:
+        # run in a single kernel instead of hundreds of Python loop iterations.
+        if lq * lk <= 512 * 512:
+            return _ORIG_SDPA(
+                query, key, value, attn_mask=None, dropout_p=dropout_p, is_causal=False, scale=scale, **kwargs
+            )
         if lq <= chunk_size and (query.ndim < 3 or batch <= batch_chunk_size):
             return _ORIG_SDPA(
                 query, key, value, attn_mask=None, dropout_p=dropout_p, is_causal=False, scale=scale, **kwargs
@@ -157,6 +174,79 @@ def _configure_sdpa(runtime: dict) -> None:
         return _run_q_chunks(query, key, value)
 
     F.scaled_dot_product_attention = _chunked_math_sdpa
+
+
+class _QuantLinear(nn.Module):
+    """Pure-PyTorch symmetric per-output-channel INT8 weight-only Linear layer.
+
+    Shrinks Linear weights by 2x vs bf16/fp16 (e.g. 6.96 GB -> 3.48 GB on LayerDiff3D UNet)
+    with zero external dependencies (works natively on AMD ROCm, CUDA, MPS, and CPU).
+    """
+
+    def __init__(self, weight_q: torch.Tensor, weight_scale: torch.Tensor, bias: Optional[torch.Tensor]):
+        super().__init__()
+        self.register_buffer("weight_q", weight_q)
+        self.register_buffer("weight_scale", weight_scale)
+        if bias is not None:
+            self.register_buffer("bias", bias)
+        else:
+            self.bias = None
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        w = self.weight_q.to(dtype=x.dtype)
+        y = F.linear(x, w, None) * self.weight_scale.to(dtype=x.dtype)
+        if self.bias is not None:
+            y = y + self.bias.to(dtype=x.dtype)
+        return y
+
+
+def _quantize_linears_int8(
+    root: nn.Module,
+    dtype: torch.dtype,
+    min_numel: int = 65536,
+    target_device: Optional[str] = None,
+) -> Tuple[int, int]:
+    """Replace large nn.Linear modules in-place to cut both RAM and VRAM usage.
+
+    When ``target_device`` is provided (e.g. ``'cuda'``), each weight is quantized one layer
+    at a time on the GPU and kept there directly, cutting quantization + transfer from ~16s to ~1-2s.
+    """
+    targets = []
+    for name, mod in root.named_modules():
+        if isinstance(mod, nn.Linear) and mod.weight is not None and mod.weight.numel() >= min_numel:
+            targets.append((name, mod))
+
+    replaced = 0
+    saved_bytes = 0
+    for idx, (full_name, mod) in enumerate(targets):
+        parent_path, _, attr = full_name.rpartition(".")
+        parent = root.get_submodule(parent_path) if parent_path else root
+        with torch.no_grad():
+            src_w = mod.weight.data.detach()
+            orig_bytes = src_w.numel() * src_w.element_size()
+            if target_device:
+                w = src_w.to(device=target_device, dtype=torch.float32)
+            else:
+                w = src_w.to(dtype=torch.float32)
+            scale = (w.abs().amax(dim=1).clamp_min(1e-8) / 127.0).to(dtype=dtype)
+            w_q = torch.round(w / scale.to(torch.float32).unsqueeze(1)).clamp(-127, 127).to(torch.int8)
+            bias = None
+            if mod.bias is not None:
+                bias = mod.bias.data.detach().to(device=target_device or mod.bias.device, dtype=dtype).clone()
+            new_bytes = w_q.numel() * w_q.element_size() + scale.numel() * scale.element_size()
+            del w, src_w
+
+        qmod = _QuantLinear(w_q, scale, bias)
+        setattr(parent, attr, qmod)
+        mod.weight = None  # type: ignore[assignment]
+        mod.bias = None
+        replaced += 1
+        saved_bytes += max(0, orig_bytes - new_bytes)
+        if (idx + 1) % 128 == 0:
+            gc.collect()
+
+    gc.collect()
+    return replaced, saved_bytes
 
 
 def _empty_device_cache(device: str) -> None:
@@ -250,7 +340,7 @@ def _patch_clip_eager() -> None:
         cls.from_pretrained = _wrapped_from_pretrained  # type: ignore[assignment]
 
 
-def _patch_pipeline_vram_swap(runtime: dict) -> None:
+def _patch_pipeline_vram_swap(runtime: dict, offload_active: bool = False) -> None:
     """Keep active weights on target device/dtype and flush VRAM cleanly between stages."""
     from modules.layerdiffuse.diffusers_kdiffusion_sdxl import KDiffusionStableDiffusionXLPipeline
     from modules.layerdiffuse.vae import TransparentVAEDecoder
@@ -259,17 +349,38 @@ def _patch_pipeline_vram_swap(runtime: dict) -> None:
     dev = runtime["device"]
     dt = runtime["dtype"]
 
+    def _is_group_offloaded(mod: object) -> bool:
+        return offload_active or getattr(mod, "_diffusers_hook", None) is not None
+
+    def _on_target_device(mod: object) -> bool:
+        target_type = torch.device(dev).type
+        if hasattr(mod, "device"):
+            return torch.device(mod.device).type == target_type
+        p = next(mod.parameters(), None) if hasattr(mod, "parameters") else None
+        return p is not None and p.device.type == target_type
+
+    active_layerdiff_pipe = None
+
     orig_call = KDiffusionStableDiffusionXLPipeline.__call__
 
     def _wrapped_call(self, *args, **kwargs):
-        if getattr(self, "unet", None) is not None:
-            self.unet.to(dev, dtype=dt)
-        if getattr(self, "vae", None) is not None:
-            self.vae.to(dev, dtype=dt)
-        if getattr(self, "trans_vae", None) is not None:
-            self.trans_vae.to(dev, dtype=dt)
+        nonlocal active_layerdiff_pipe
+        if getattr(self, "unet", None) is not None and not _is_group_offloaded(self.unet):
+            if not _on_target_device(self.unet):
+                self.unet.to(dev)
+        if getattr(self, "vae", None) is not None and not _is_group_offloaded(self.vae):
+            if not _on_target_device(self.vae):
+                self.vae.to(dev, dtype=dt)
+        if getattr(self, "trans_vae", None) is not None and not _is_group_offloaded(self.trans_vae):
+            if not _on_target_device(self.trans_vae):
+                self.trans_vae.to(dev, dtype=dt)
         _empty_device_cache(dev)
-        out = orig_call(self, *args, **kwargs)
+        prev_pipe = active_layerdiff_pipe
+        active_layerdiff_pipe = self
+        try:
+            out = orig_call(self, *args, **kwargs)
+        finally:
+            active_layerdiff_pipe = prev_pipe
         _sync_device(dev)
         _empty_device_cache(dev)
         return out
@@ -280,8 +391,21 @@ def _patch_pipeline_vram_swap(runtime: dict) -> None:
 
     @torch.no_grad()
     def _wrapped_dec(self, sd_vae, latent, *args, **kwargs):
-        sd_vae.to(dev, dtype=dt)
-        self.to(dev, dtype=dt)
+        # Free the 4.1 GB UNet from VRAM once before decoding layers so TransVAE (UNet1024)
+        # stays well inside 12 GB VRAM without Windows WDDM shared-memory throttling.
+        if (
+            not offload_active
+            and active_layerdiff_pipe is not None
+            and getattr(active_layerdiff_pipe, "unet", None) is not None
+            and not _is_group_offloaded(active_layerdiff_pipe.unet)
+            and _on_target_device(active_layerdiff_pipe.unet)
+        ):
+            active_layerdiff_pipe.unet.to("cpu")
+            _empty_device_cache(dev)
+        if not _is_group_offloaded(sd_vae) and not _on_target_device(sd_vae):
+            sd_vae.to(dev, dtype=dt)
+        if not _is_group_offloaded(self) and not _on_target_device(self):
+            self.to(dev, dtype=dt)
         return orig_dec(self, sd_vae, latent, *args, **kwargs)
 
     TransparentVAEDecoder.forward = _wrapped_dec  # type: ignore[assignment]
@@ -290,7 +414,11 @@ def _patch_pipeline_vram_swap(runtime: dict) -> None:
 
     @torch.no_grad()
     def _wrapped_marigold(self, cond_latent, num_inference_steps, generator):
-        self.to(dev, dtype=dt)
+        if not offload_active and not _is_group_offloaded(self.unet):
+            if not _on_target_device(self.unet):
+                self.unet.to(dev, dtype=dt)
+            if getattr(self, "vae", None) is not None and not _on_target_device(self.vae):
+                self.vae.to(dev, dtype=dt)
         cond_latent = cond_latent.to(device=dev, dtype=dt)
         _empty_device_cache(dev)
         return orig_marigold(self, cond_latent, num_inference_steps, generator)
@@ -307,16 +435,164 @@ def _setup_paths(seethrough_root: Path) -> None:
         sys.path.insert(0, str(scripts_dir))
 
 
-def _resolve_offload(mode: str, no_offload_flag: bool, runtime: dict) -> bool:
+def _resolve_quant(mode: str, runtime: dict) -> bool:
+    req = (mode or "auto").strip().lower()
+    if req == "none":
+        return False
+    if req == "int8":
+        return True
+    env_override = os.getenv("PEBBLE_INOCHI_QUANT", "").strip().lower()
+    if env_override in ("0", "false", "none", "off"):
+        return False
+    if env_override in ("1", "true", "int8", "on"):
+        return True
+    if runtime["device"] not in ("cuda", "mps"):
+        return False
+    vram = float(runtime.get("vram_gb") or 0.0)
+    return vram <= 0.0 or vram < 20.0
+
+
+def _resolve_offload(mode: str, no_offload_flag: bool, runtime: dict, use_int8: bool) -> bool:
     if no_offload_flag or mode == "off":
         return False
     if runtime["device"] != "cuda":
         return False
     if mode == "on":
         return True
-    # Auto: enable group_offload below 20 GB VRAM (e.g. 8/12/16 GB GPUs) to prevent OOM/stalls
     vram = float(runtime.get("vram_gb") or 0.0)
+    if use_int8:
+        # Quantized UNet (~4.1 GB) + VAE (~0.36 GB) fits comfortably in >= 8 GB VRAM without offload
+        return vram <= 0.0 or vram < 7.5
     return vram <= 0.0 or vram < 20.0
+
+
+def _build_layerdiff_staged(pretrained: str, runtime: dict, use_int8: bool, use_offload: bool):
+    """Load LayerDiff3D in memory-frugal stages so 16 GB system RAM + 12 GB VRAM never thrash.
+
+    1. Load text encoders alone -> cache the fixed 24 tag embeddings -> immediately free text encoders (1.56 GB).
+    2. Load UNet on CPU -> optionally quantize Linear layers to INT8 (7.58 GB -> ~4.10 GB) -> move to GPU.
+    3. Load VAE + TransVAE (~0.36 GB) -> attach cached embeddings.
+    """
+    from diffusers import AutoencoderKL
+    from transformers import CLIPTextModel, CLIPTextModelWithProjection, CLIPTokenizer
+    from modules.layerdiffuse.diffusers_kdiffusion_sdxl import KDiffusionStableDiffusionXLPipeline
+    from modules.layerdiffuse.layerdiff3d import UNetFrameConditionModel
+    from modules.layerdiffuse.vae import TransparentVAE
+
+    dev = runtime["device"]
+    dt = runtime["dtype"]
+
+    # Stage 1: Text encoders only -> cache tag embeddings -> delete encoders before UNet loads
+    tok1 = CLIPTokenizer.from_pretrained(pretrained, subfolder="tokenizer")
+    tok2 = CLIPTokenizer.from_pretrained(pretrained, subfolder="tokenizer_2")
+    te1 = CLIPTextModel.from_pretrained(pretrained, subfolder="text_encoder", torch_dtype=dt).to(dev)
+    te2 = CLIPTextModelWithProjection.from_pretrained(pretrained, subfolder="text_encoder_2", torch_dtype=dt).to(dev)
+
+    tag_groups = [
+        ['front hair', 'back hair', 'head', 'neck', 'neckwear', 'topwear', 'handwear', 'bottomwear', 'legwear', 'footwear', 'tail', 'wings', 'objects'],
+        ['headwear', 'face', 'irides', 'eyebrow', 'eyewhite', 'eyelash', 'eyewear', 'ears', 'earwear', 'nose', 'mouth'],
+        ['hair', 'headwear', 'face', 'eyes', 'eyewear', 'ears', 'earwear', 'nose', 'mouth', 'neck', 'neckwear', 'topwear', 'handwear', 'bottomwear', 'legwear', 'footwear', 'tail', 'wings', 'objects'],
+    ]
+    cached_embeds = {}
+    with torch.inference_mode():
+        for tag_list in tag_groups:
+            unseen = [t for t in tag_list if t not in cached_embeds]
+            if not unseen:
+                continue
+            embeds_list = []
+            pooled = None
+            for tok, te in ((tok1, te1), (tok2, te2)):
+                ids = tok(unseen, padding="max_length", max_length=tok.model_max_length, truncation=True, return_tensors="pt").input_ids
+                out = te(ids.to(dev), output_hidden_states=True, return_dict=False)
+                pooled = out[0]
+                hid = out[-1][-2]
+                embeds_list.append(hid.view(hid.shape[0], hid.shape[1], -1))
+            cat_embeds = torch.concat(embeds_list, dim=-1).to(dtype=dt)
+            pooled_v = pooled.view(cat_embeds.shape[0], -1).to(dtype=dt)
+            for idx, tag in enumerate(unseen):
+                cached_embeds[tag] = [cat_embeds[[idx]].cpu(), pooled_v[[idx]].cpu()]
+
+    del te1, te2
+    gc.collect()
+    _empty_device_cache(dev)
+
+    # Stage 2: Load UNet with low_cpu_mem_usage (0.36s), quantize Linear layers on GPU directly
+    unet = UNetFrameConditionModel.from_pretrained(pretrained, subfolder="unet", torch_dtype=dt, low_cpu_mem_usage=True)
+    if use_int8:
+        qdev = dev if (not use_offload and dev in ("cuda", "mps")) else None
+        n_rep, saved_b = _quantize_linears_int8(unet, dtype=dt, target_device=qdev)
+        print(
+            f"[Inochi2D] LayerDiff3D UNet INT8 quantized {n_rep} Linear layers (saved {saved_b / (1024 ** 3):.2f} GB)",
+            flush=True,
+        )
+
+    # Stage 3: Load lightweight VAEs and assemble pipeline
+    vae = AutoencoderKL.from_pretrained(pretrained, subfolder="vae", torch_dtype=dt, low_cpu_mem_usage=True)
+    trans_vae = TransparentVAE.from_pretrained(pretrained, subfolder="trans_vae", torch_dtype=dt, low_cpu_mem_usage=True)
+
+    pipeline = KDiffusionStableDiffusionXLPipeline(
+        vae=vae,
+        text_encoder=nn.Identity(),
+        tokenizer=tok1,
+        text_encoder_2=nn.Identity(),
+        tokenizer_2=tok2,
+        unet=unet,
+        scheduler=None,
+        trans_vae=trans_vae,
+    )
+    pipeline._cached_prompt_embeds = cached_embeds
+
+    vae.to(device=dev, dtype=dt)
+    trans_vae.to(device=dev, dtype=dt)
+    if use_offload:
+        pipeline.enable_group_offload(dev, num_blocks_per_group=1)
+    else:
+        unet.to(device=dev)
+    _empty_device_cache(dev)
+    return pipeline
+
+
+def _build_marigold_staged(pretrained: str, runtime: dict, use_offload: bool):
+    """Load Marigold depth pipeline, cache & unload its text encoder, and keep UNet resident when VRAM allows."""
+    from diffusers import AutoencoderKL, DDIMScheduler
+    from transformers import CLIPTextModel, CLIPTokenizer
+    from modules.layerdiffuse.layerdiff3d import UNetFrameConditionModel
+    from modules.marigold import MarigoldDepthPipeline
+
+    dev = runtime["device"]
+    dt = runtime["dtype"]
+    vram = float(runtime.get("vram_gb") or 0.0)
+
+    # Encode empty prompt first & drop CLIP text_encoder (avoiding transformers 5 low_cpu_mem bug)
+    tok = CLIPTokenizer.from_pretrained(pretrained, subfolder="tokenizer")
+    te = CLIPTextModel.from_pretrained(pretrained, subfolder="text_encoder", torch_dtype=dt).to(dev)
+    text_inputs = tok("", padding="do_not_pad", max_length=tok.model_max_length, truncation=True, return_tensors="pt")
+    with torch.inference_mode():
+        empty_embed = te(text_inputs.input_ids.to(dev))[0].to(dtype=dt).cpu()
+    del te
+    gc.collect()
+    _empty_device_cache(dev)
+
+    unet = UNetFrameConditionModel.from_pretrained(pretrained, subfolder="unet", torch_dtype=dt, low_cpu_mem_usage=True)
+    vae = AutoencoderKL.from_pretrained(pretrained, subfolder="vae", torch_dtype=dt, low_cpu_mem_usage=True)
+    scheduler = DDIMScheduler.from_pretrained(pretrained, subfolder="scheduler")
+    pipe = MarigoldDepthPipeline(
+        unet=unet,
+        vae=vae,
+        scheduler=scheduler,
+        text_encoder=nn.Identity(),
+        tokenizer=tok,
+    )
+    pipe.empty_text_embed = empty_embed.to(device=dev, dtype=dt)
+    pipe.vae.to(device=dev, dtype=dt)
+
+    marigold_offload = use_offload and (vram <= 0.0 or vram < 5.0)
+    if marigold_offload:
+        pipe.enable_group_offload(dev, num_blocks_per_group=1)
+    else:
+        pipe.unet.to(device=dev, dtype=dt)
+    _empty_device_cache(dev)
+    return pipe
 
 
 def main() -> int:
@@ -331,6 +607,7 @@ def main() -> int:
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--device", default="auto", choices=["auto", "cuda", "mps", "cpu"])
     parser.add_argument("--dtype", default="auto", choices=["auto", "bf16", "fp16", "fp32"])
+    parser.add_argument("--quant", default="auto", choices=["auto", "int8", "none"])
     parser.add_argument("--offload", default="auto", choices=["auto", "on", "off"])
     parser.add_argument("--group_offload", action="store_true", default=True)
     parser.add_argument("--no_group_offload", action="store_true")
@@ -346,6 +623,9 @@ def main() -> int:
     args = parser.parse_args()
 
     runtime = _detect_runtime(args.device, args.dtype)
+    use_int8 = _resolve_quant(args.quant, runtime)
+    use_offload = _resolve_offload(args.offload, args.no_group_offload, runtime, use_int8)
+
     _configure_sdpa(runtime)
     _patch_cross_device_shims(runtime)
 
@@ -355,25 +635,26 @@ def main() -> int:
     seethrough_root = here / "see-through"
     _setup_paths(seethrough_root)
     _patch_clip_eager()
-    _patch_pipeline_vram_swap(runtime)
+    _patch_pipeline_vram_swap(runtime, offload_active=use_offload)
     os.chdir(seethrough_root)
 
+    import utils.inference_utils as iu
     from utils.inference_utils import apply_layerdiff, apply_marigold, further_extr
     from utils.torch_utils import seed_everything
 
-    use_offload = _resolve_offload(args.offload, args.no_group_offload, runtime)
     srcp = str(Path(args.srcp).resolve())
     save_dir = str(Path(args.save_dir).resolve())
 
     print(
         f"[Inochi2D] Runtime: device={runtime['device']} backend={runtime['backend']} "
         f"gpu={runtime['gpu_name'] or 'cpu'} vram={runtime['vram_gb']}GB "
-        f"dtype={runtime['dtype_name']} offload={use_offload}",
+        f"dtype={runtime['dtype_name']} quant={'int8' if use_int8 else 'none'} offload={use_offload}",
         flush=True,
     )
 
     seed_everything(args.seed)
-    print(f"[Inochi2D] Running LayerDiff3D on {srcp} (res={args.resolution}, steps={args.inference_steps}, offload={use_offload}) ...", flush=True)
+    print(f"[Inochi2D] Running LayerDiff3D on {srcp} (res={args.resolution}, steps={args.inference_steps}, quant={'int8' if use_int8 else 'none'}, offload={use_offload}) ...", flush=True)
+    iu.layerdiff_pipeline = _build_layerdiff_staged(args.layerdiff_model, runtime, use_int8=use_int8, use_offload=use_offload)
     apply_layerdiff(
         srcp,
         args.layerdiff_model,
@@ -384,13 +665,13 @@ def main() -> int:
         group_offload=use_offload,
     )
 
-    import utils.inference_utils as iu
     if getattr(iu, "layerdiff_pipeline", None) is not None:
         del iu.layerdiff_pipeline
         iu.layerdiff_pipeline = None
     _empty_device_cache(runtime["device"])
 
     print("[Inochi2D] Running Marigold depth ...", flush=True)
+    iu.marigold_pipeline = _build_marigold_staged(args.marigold_model, runtime, use_offload=use_offload)
     apply_marigold(
         srcp,
         args.marigold_model,

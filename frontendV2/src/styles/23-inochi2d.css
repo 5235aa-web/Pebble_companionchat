@@ -367,14 +367,80 @@
   padding: 8px;
   border: 1px solid var(--line);
   background: rgb(var(--ink-rgb) / 0.02);
-  max-height: 130px;
+  max-height: 248px;
   overflow-y: auto;
 }
 
-.puppet-asset-chips {
+.puppet-asset-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(76px, 1fr));
+  gap: 6px;
+}
+
+.puppet-asset-card {
+  position: relative;
   display: flex;
-  flex-wrap: wrap;
-  gap: 5px;
+  flex-direction: column;
+  padding: 4px;
+  border: 1px solid var(--line-2);
+  background: rgb(var(--ink-rgb) / 0.02);
+  text-align: left;
+  transition: border-color 0.2s ease, background-color 0.2s ease;
+}
+
+.puppet-asset-card:hover {
+  border-color: rgb(var(--accent-rgb) / 0.5);
+}
+
+.puppet-asset-card.on {
+  border-color: rgb(var(--accent-rgb) / 0.78);
+  background: rgb(var(--accent-rgb) / 0.14);
+}
+
+.puppet-asset-thumb {
+  display: block;
+  width: 100%;
+  aspect-ratio: 3 / 4;
+  background: rgb(var(--ink-rgb) / 0.05);
+  overflow: hidden;
+}
+
+.puppet-asset-thumb img {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  display: block;
+}
+
+.puppet-asset-check {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  width: 16px;
+  height: 16px;
+  display: grid;
+  place-items: center;
+  font-size: 10px;
+  font-weight: 600;
+  color: var(--accent-ink);
+  background: rgb(var(--accent-rgb) / 0.9);
+  border: 1px solid rgb(var(--bg-rgb) / 0.5);
+}
+
+.puppet-asset-name {
+  margin-top: 4px;
+  font-size: 10px;
+  line-height: 1.25;
+  color: var(--ink-2);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.puppet-asset-more {
+  display: flex;
+  justify-content: center;
+  padding-top: 8px;
 }
 
 .puppet-pack-list {
