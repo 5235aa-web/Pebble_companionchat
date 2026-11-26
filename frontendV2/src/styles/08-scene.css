@@ -36,26 +36,6 @@ html[data-theme="day"] .scene-photo img.scene-backdrop{
   filter:blur(28px) saturate(1.08) brightness(1.06);
   opacity:.34;
 }
-.scene-photo img.scene-backdrop.scene-backdrop-live{
-  inset:-6px;width:calc(100% + 12px);height:calc(100% + 12px);
-  transform:scale(1.02);
-  filter:blur(1.5px) saturate(1.06) brightness(.76);
-  opacity:.95;
-}
-html[data-theme="day"] .scene-photo img.scene-backdrop.scene-backdrop-live{
-  filter:blur(1px) saturate(1.04) brightness(.94);
-  opacity:.9;
-}
-.scene:hover .scene-photo img.scene-backdrop.scene-backdrop-live{
-  transform:scale(1.042);
-}
-.scene-backdrop-scrim{
-  position:absolute;inset:0;z-index:0;pointer-events:none;
-  background:radial-gradient(ellipse at 50% 42%,transparent 36%,rgb(var(--shadow-rgb) / .5) 100%);
-}
-html[data-theme="day"] .scene-backdrop-scrim{
-  background:radial-gradient(ellipse at 50% 42%,transparent 48%,rgb(var(--shadow-rgb) / .18) 100%);
-}
 .scene-mood-aura{
   position:absolute;inset:0;z-index:2;pointer-events:none;
   background:

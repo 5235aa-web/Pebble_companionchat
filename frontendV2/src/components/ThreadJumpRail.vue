@@ -126,7 +126,7 @@ function bindScroller(): void {
 
 function jump(entry: JumpEntry): void {
   activeId.value = entry.id
-  scrollLockUntil = Date.now() + 800
+  scrollLockUntil = Date.now() + 1500
   hovered.value = null
   chat.jumpToBeat(entry.id)
 }

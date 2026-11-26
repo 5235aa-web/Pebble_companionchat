@@ -18,13 +18,28 @@ _SLASH_REGEX_RE = re.compile(r"^/([\s\S]*)/([a-zA-Z]*)$")
 _SUPPORTED_JS_FLAGS = frozenset("gimsuyd")
 _REPLACE_TOKEN_RE = re.compile(r"\{\{\s*match\s*\}\}|\$(&|\d{1,2})", re.IGNORECASE)
 _IMG_TAG_SHORTHAND_REF_RE = re.compile(
-    r"""(<img\s*=\s*)(?:"([^"]+)"|'([^']+)'|([^\s"'=<>`]+))""",
+    r"""(<img\s*=\s*)(?:"([^"]+)"|'([^']+)'|([^"'\n=<>`]+?)(?=\s*/?>))""",
+    re.IGNORECASE,
+)
+_HTML_IMG_SRC_REF_RE = re.compile(
+    r"""(<img\b[^>]*?\bsrc\s*=\s*)(?:"([^"\n<>]+)"|'([^'\n<>]+)')""",
     re.IGNORECASE,
 )
 _ASSET_MACRO_REF_RE = re.compile(r"(\{\{\s*(?:img|image|asset|raw)\s*::\s*)([^}]+?)(\s*\}\})", re.IGNORECASE)
 _MALFORMED_IMG_TAG_RE = re.compile(
-    r"""<(?:(?:mg|mgr|imb|imgr|im|img)\s*\(\s*(?:"([^"\n<>]*)"|'([^'\n<>]*)'|([^()\n<>]+?))\s*\)\s*/?|(?:mg|mgr|imb|imgr|im)\s*=\s*(?:"([^"\n<>]*)"|'([^'\n<>]*)'|([^\s"'=<>`]+))(?:\s*/?))>""",
+    r"""<("""
+    r"""([a-zA-Z][a-zA-Z0-9_-]{0,15})\s*\(\s*(?:"([^"\n<>]*)"|'([^'\n<>]*)'|([^()\n<>]+?))\s*\)\s*/?"""
+    r"""|([a-zA-Z][a-zA-Z0-9_-]{1,15})\s*=\s*(?:"([^"\n<>]*)"|'([^'\n<>]*)'|([^"'\n=<>`]+?))(?:\s*/?)"""
+    r"""|([a-zA-Z][a-zA-Z0-9_-]{1,15})\s+\bsrc\s*=\s*(?:"([^"\n<>]*)"|'([^'\n<>]*)')(?:\s*/?)"""
+    r"""|([a-zA-Z][a-zA-Z0-9_-]{1,15})\s+(?:"([^"\n<>]+)"|'([^'\n<>]+)')\s*/?"""
+    r""")>""",
+)
+_MALFORMED_MACRO_TAG_RE = re.compile(
+    r"""\{\{\s*(?:mg|mgr|imb|imgr|im|irm|firm|fimg|ig|pic|cg|emote|sprite)\s*::\s*([^}\n]+?)\s*\}\}""",
     re.IGNORECASE,
+)
+_INLINE_BACKTICK_TAG_RE = re.compile(
+    r"""`(<[^`\n<>]+>|\{\{\s*[a-zA-Z0-9_-]+\s*::[^`\n{}]+\}\})`"""
 )
 _PRECEDING_VALID_IMAGE_RE = re.compile(
     r"""(?:<img\b[^>]*>|\{\{\s*(?:img|image|asset|raw)\s*::[^}]+\}\}|!\[[^\]]*\]\([^)]+\))\s*$""",
@@ -34,6 +49,15 @@ _FENCED_CODE_BLOCK_RE = re.compile(
     r"""(^|\n)([ \t]*)(`{3,}|~{3,})[^\n]*\n[\s\S]*?\n\2\3[ \t]*(?=\n|$)""",
 )
 _COMPACT_SEP_RE = re.compile(r"[\s_\-]+")
+_SNAKE_SEP_RE = re.compile(r"[\s\-]+")
+_NON_PAREN_PROTOCOLS = frozenset({"http", "https", "ftp", "mailto"})
+_HTML_SRC_TAGS = frozenset({
+    "img", "audio", "video", "source", "track", "iframe", "embed", "input", "script", "frame",
+})
+_KNOWN_IMAGE_TAG_TYPOS = frozenset({
+    "mg", "mgr", "imb", "imgr", "im", "irm", "firm", "fimg", "ig",
+    "img_", "image", "pic", "cg", "em", "emo", "emote", "sprite", "asset",
+})
 _NON_REF_PREFIX_RE = re.compile(r"^(?:https?:|data:|blob:|pebble-asset:)", re.IGNORECASE)
 
 
@@ -521,6 +545,17 @@ def resolve_fuzzy_asset_name(ref: str, asset_names: Sequence[str]) -> Optional[s
         if compact_exact:
             return compact_exact
 
+    # Unique suffix match when the model drops a shared card prefix (e.g. `fellatio_penetration` -> `Motoko_fellatio_penetration`).
+    q_snake = _SNAKE_SEP_RE.sub("_", q).strip("_")
+    if len(q_snake) >= 4:
+        suffix_hits = [
+            c_orig
+            for c_low, c_orig, _ in candidates
+            if c_low.endswith("_" + q_snake) or c_low.endswith("-" + q_snake)
+        ]
+        if len(suffix_hits) == 1:
+            return suffix_hits[0]
+
     best_score = 0.0
     best_prefix = -1
     best_name: Optional[str] = None
@@ -569,9 +604,25 @@ def resolve_fuzzy_asset_name(ref: str, asset_names: Sequence[str]) -> Optional[s
 
 
 def _normalize_asset_segment(text: str, asset_names: Sequence[str]) -> str:
+    def _unwrap_inline_backtick(match: re.Match) -> str:
+        inner = match.group(1)
+        if (
+            _IMG_TAG_SHORTHAND_REF_RE.match(inner)
+            or _HTML_IMG_SRC_REF_RE.match(inner)
+            or _ASSET_MACRO_REF_RE.match(inner)
+            or _MALFORMED_MACRO_TAG_RE.match(inner)
+        ):
+            return inner
+        m_bad = _MALFORMED_IMG_TAG_RE.fullmatch(inner)
+        if m_bad:
+            src_tag = m_bad.group(10)
+            if not src_tag or src_tag.lower() not in _HTML_SRC_TAGS:
+                return inner
+        return match.group(0)
+
     def _fix_shorthand(match: re.Match) -> str:
         prefix = match.group(1)
-        raw_ref = next((g for g in match.groups()[1:] if g is not None), "")
+        raw_ref = next((g for g in match.groups()[1:] if g is not None), "").strip()
         if match.group(2) is not None:
             quote = '"'
         elif match.group(3) is not None:
@@ -583,6 +634,17 @@ def _normalize_asset_segment(text: str, asset_names: Sequence[str]) -> str:
             return match.group(0)
         return f"{prefix}{quote}{fixed}{quote}"
 
+    def _fix_html_src(match: re.Match) -> str:
+        prefix = match.group(1)
+        raw_ref = (match.group(2) if match.group(2) is not None else match.group(3) or "").strip()
+        if not raw_ref or "{{" in raw_ref or _NON_REF_PREFIX_RE.match(raw_ref):
+            return match.group(0)
+        quote = '"' if match.group(2) is not None else "'"
+        fixed = resolve_fuzzy_asset_name(raw_ref, asset_names)
+        if not fixed or fixed == raw_ref:
+            return match.group(0)
+        return f"{prefix}{quote}{fixed}{quote}"
+
     def _fix_macro(match: re.Match) -> str:
         raw_ref = match.group(2)
         fixed = resolve_fuzzy_asset_name(raw_ref, asset_names)
@@ -590,31 +652,99 @@ def _normalize_asset_segment(text: str, asset_names: Sequence[str]) -> str:
             return match.group(0)
         return f"{match.group(1)}{fixed}{match.group(3)}"
 
-    out = _IMG_TAG_SHORTHAND_REF_RE.sub(_fix_shorthand, text)
+    out = _INLINE_BACKTICK_TAG_RE.sub(_unwrap_inline_backtick, text)
+    out = _IMG_TAG_SHORTHAND_REF_RE.sub(_fix_shorthand, out)
+    out = _HTML_IMG_SRC_REF_RE.sub(_fix_html_src, out)
     out = _ASSET_MACRO_REF_RE.sub(_fix_macro, out)
+
+    removed_any = False
 
     if _MALFORMED_IMG_TAG_RE.search(out):
         parts: List[str] = []
         cursor = 0
-        removed_any = False
         for m in _MALFORMED_IMG_TAG_RE.finditer(out):
             parts.append(out[cursor:m.start()])
             cursor = m.end()
+            paren_tag = m.group(2)
+            equals_tag = m.group(6)
+            src_tag = m.group(10)
+            quoted_tag = m.group(13)
+
+            if equals_tag and equals_tag.lower() == "img":
+                parts.append(m.group(0))
+                continue
+            if paren_tag and paren_tag.lower() in _NON_PAREN_PROTOCOLS:
+                parts.append(m.group(0))
+                continue
+            if src_tag and src_tag.lower() in _HTML_SRC_TAGS:
+                parts.append(m.group(0))
+                continue
+
+            raw_ref = next(
+                (
+                    g
+                    for g in (
+                        m.group(3), m.group(4), m.group(5),
+                        m.group(7), m.group(8), m.group(9),
+                        m.group(11), m.group(12),
+                        m.group(14), m.group(15),
+                    )
+                    if g is not None
+                ),
+                "",
+            ).strip()
             preceding = "".join(parts)
-            raw_ref = next((g for g in m.groups() if g is not None), "").strip()
             if _PRECEDING_VALID_IMAGE_RE.search(preceding):
                 removed_any = True
                 continue
             fixed = resolve_fuzzy_asset_name(raw_ref, asset_names)
             if fixed:
                 parts.append(f'<img="{fixed}">')
+                continue
+
+            if equals_tag:
+                is_quoted = m.group(7) is not None or m.group(8) is not None
+                looks_like_asset_ref = (
+                    is_quoted
+                    or bool(re.search(r"[\s_/-]", raw_ref))
+                    or equals_tag.lower() in _KNOWN_IMAGE_TAG_TYPOS
+                )
+                if not looks_like_asset_ref:
+                    parts.append(m.group(0))
+                    continue
+            elif src_tag and src_tag.lower() not in _KNOWN_IMAGE_TAG_TYPOS:
+                parts.append(m.group(0))
+                continue
+            elif quoted_tag and quoted_tag.lower() != "img" and quoted_tag.lower() not in _KNOWN_IMAGE_TAG_TYPOS:
+                parts.append(m.group(0))
+                continue
+
+            removed_any = True
+        parts.append(out[cursor:])
+        out = "".join(parts)
+
+    if _MALFORMED_MACRO_TAG_RE.search(out):
+        parts = []
+        cursor = 0
+        for m in _MALFORMED_MACRO_TAG_RE.finditer(out):
+            parts.append(out[cursor:m.start()])
+            cursor = m.end()
+            preceding = "".join(parts)
+            raw_ref = (m.group(1) or "").strip()
+            if _PRECEDING_VALID_IMAGE_RE.search(preceding):
+                removed_any = True
+                continue
+            fixed = resolve_fuzzy_asset_name(raw_ref, asset_names)
+            if fixed:
+                parts.append(f"{{{{img::{fixed}}}}}")
             else:
                 removed_any = True
         parts.append(out[cursor:])
         out = "".join(parts)
-        if removed_any:
-            out = re.sub(r"[ \t]+\n", "\n", out)
-            out = re.sub(r"\n{3,}", "\n\n", out).rstrip()
+
+    if removed_any:
+        out = re.sub(r"[ \t]+\n", "\n", out)
+        out = re.sub(r"\n{3,}", "\n\n", out).rstrip()
 
     return out
 

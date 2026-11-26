@@ -129,9 +129,6 @@ export const useCardHudStore = defineStore('cardHud', () => {
   /** Foreground portrait/expression override (empty = default slide). */
   const stageExpressionRelPath = ref('')
   const activeExpressionLabel = ref('')
-  /** Background scene backdrop override (empty = soft blurred portrait glow). */
-  const stageSceneRelPath = ref('')
-  const activeSceneLabel = ref('')
   const stageExpressionSeq = ref(0)
   const stageOverrideRelPath = computed(() => stageExpressionRelPath.value)
   let explicitExpressionLocked = false
@@ -202,29 +199,19 @@ export const useCardHudStore = defineStore('cardHud', () => {
     })
   }
 
-  function hasExplicitBackgroundAssets(): boolean {
-    return session.imageAssets.some((a) => (a.asset_type || '').toLowerCase() === 'background')
-  }
-
   function hasExplicitExpressionAssets(): boolean {
     return session.imageAssets.some((a) =>
       ['emotion', 'portrait', 'icon'].includes((a.asset_type || '').toLowerCase()),
     )
   }
 
-  function matchImageAsset(
-    cue: string,
-    mode: 'expression' | 'scene' = 'expression',
-  ): CompanionAsset | undefined {
+  function matchImageAsset(cue: string): CompanionAsset | undefined {
     const images = session.imageAssets
     const cleaned = cue.trim().toLowerCase()
     if (!images.length || !cleaned) return undefined
 
     const rank = (x: CompanionAsset) => {
       const t = (x.asset_type || '').toLowerCase()
-      if (mode === 'scene') {
-        return t === 'background' ? 0 : t === 'image' ? 1 : t === 'emotion' || t === 'portrait' ? 8 : 3
-      }
       return t === 'emotion' ? 0 : t === 'portrait' ? 1 : t === 'icon' ? 2 : t === 'background' ? 8 : 3
     }
     const sorted = [...images].sort((a, b) => rank(a) - rank(b))
@@ -236,18 +223,14 @@ export const useCardHudStore = defineStore('cardHud', () => {
     const exact = session.findAssetByRef(cue)
     if (exact && exact.mime_type.startsWith('image/')) {
       const t = (exact.asset_type || '').toLowerCase()
-      if (mode === 'scene' && (t === 'background' || !hasExplicitBackgroundAssets())) return exact
-      if (mode === 'expression' && (t !== 'background' || !hasExplicitExpressionAssets())) return exact
+      if (t !== 'background' || !hasExplicitExpressionAssets()) return exact
     }
 
     const terms = expandTerms(cue)
     for (const term of terms) {
       const hit = sorted.find((a) => {
         const t = (a.asset_type || '').toLowerCase()
-        if (mode === 'scene' && (t === 'emotion' || t === 'portrait') && hasExplicitBackgroundAssets()) {
-          return false
-        }
-        if (mode === 'expression' && t === 'background' && hasExplicitExpressionAssets()) {
+        if (t === 'background' && hasExplicitExpressionAssets()) {
           return false
         }
         return a.name.toLowerCase().includes(term)
@@ -262,21 +245,15 @@ export const useCardHudStore = defineStore('cardHud', () => {
     activeExpressionLabel.value = ''
   }
 
-  function clearSceneOverride() {
-    stageSceneRelPath.value = ''
-    activeSceneLabel.value = ''
-  }
-
   function clearStageOverride() {
     clearExpressionOverride()
-    clearSceneOverride()
   }
 
   function syncVisualLayersFromHud(
     hudData: Record<string, unknown>,
     mediaCue: Record<string, unknown> = {},
   ) {
-    // 1) Foreground expression portrait layer (avoid empty "" blocking fallback to mood)
+    // Foreground expression portrait layer (avoid empty "" blocking fallback to mood)
     const cueExprRaw = String(mediaCue.expression ?? '').trim()
     const cueExprLow = cueExprRaw.toLowerCase()
     if (cueExprLow === 'none' || cueExprLow === 'default') {
@@ -286,7 +263,7 @@ export const useCardHudStore = defineStore('cardHud', () => {
     } else {
       const explicitExpr = firstNonEmpty(mediaCue.expression, hudData.expression)
       if (explicitExpr) {
-        const matched = matchImageAsset(explicitExpr, 'expression')
+        const matched = matchImageAsset(explicitExpr)
         if (matched) {
           explicitExpressionLocked = true
           stageExpressionRelPath.value = matched.rel_path
@@ -302,7 +279,7 @@ export const useCardHudStore = defineStore('cardHud', () => {
       if (!explicitExpressionLocked) {
         const moodCue = String(hudData.mood ?? '').trim()
         if (moodCue) {
-          const matchedMood = matchImageAsset(moodCue, 'expression')
+          const matchedMood = matchImageAsset(moodCue)
           if (matchedMood) {
             stageExpressionRelPath.value = matchedMood.rel_path
             activeExpressionLabel.value = matchedMood.name || moodCue
@@ -311,28 +288,6 @@ export const useCardHudStore = defineStore('cardHud', () => {
         } else if (!explicitExpr) {
           clearExpressionOverride()
         }
-      }
-    }
-
-    // 2) Background scene layer ("人在景中")
-    const cueSceneRaw = String(mediaCue.scene ?? '').trim()
-    const cueSceneLow = cueSceneRaw.toLowerCase()
-    if (cueSceneLow === 'none' || cueSceneLow === 'default' || cueSceneLow === 'off') {
-      clearSceneOverride()
-    } else {
-      const sceneCue = firstNonEmpty(
-        mediaCue.scene,
-        hudData.scene,
-        hasExplicitBackgroundAssets() ? hudData.location : '',
-      )
-      if (sceneCue) {
-        const matchedBg = matchImageAsset(sceneCue, 'scene')
-        if (matchedBg) {
-          stageSceneRelPath.value = matchedBg.rel_path
-          activeSceneLabel.value = matchedBg.name || sceneCue
-        }
-      } else {
-        clearSceneOverride()
       }
     }
   }
@@ -353,14 +308,10 @@ export const useCardHudStore = defineStore('cardHud', () => {
     const asset =
       exact && exact.mime_type.startsWith('image/')
         ? exact
-        : matchImageAsset(ref, 'expression')
+        : matchImageAsset(ref)
     if (!asset) return
     const aType = (asset.asset_type || '').toLowerCase()
-    if (aType === 'background') {
-      stageSceneRelPath.value = asset.rel_path
-      activeSceneLabel.value = asset.name || ref
-      return
-    }
+    if (aType === 'background') return
     stageExpressionRelPath.value = asset.rel_path
     activeExpressionLabel.value = asset.name || ref
     stageExpressionSeq.value += 1
@@ -485,14 +436,6 @@ export const useCardHudStore = defineStore('cardHud', () => {
     return [...session.imageAssets].sort((a, b) => rank(a) - rank(b))
   })
 
-  const sceneCandidates = computed(() => {
-    const rank = (a: CompanionAsset) => {
-      const t = (a.asset_type || '').toLowerCase()
-      return t === 'background' ? 0 : t === 'image' ? 1 : t === 'emotion' || t === 'portrait' ? 8 : 3
-    }
-    return [...session.imageAssets].sort((a, b) => rank(a) - rank(b))
-  })
-
   async function setManualExpression(asset: CompanionAsset | null) {
     if (!asset) {
       await saveHudFields({ expression: '' })
@@ -502,17 +445,6 @@ export const useCardHudStore = defineStore('cardHud', () => {
     stageExpressionRelPath.value = asset.rel_path
     activeExpressionLabel.value = asset.name
     await saveHudFields({ expression: asset.name })
-  }
-
-  async function setManualScene(asset: CompanionAsset | null) {
-    if (!asset) {
-      await saveHudFields({ scene: '' })
-      clearSceneOverride()
-      return
-    }
-    stageSceneRelPath.value = asset.rel_path
-    activeSceneLabel.value = asset.name
-    await saveHudFields({ scene: asset.name })
   }
 
   async function setEnabled(next: boolean) {
@@ -580,11 +512,8 @@ export const useCardHudStore = defineStore('cardHud', () => {
     togglePinVar,
     savePinnedVar,
     expressionCandidates,
-    sceneCandidates,
     stageExpressionRelPath,
     activeExpressionLabel,
-    stageSceneRelPath,
-    activeSceneLabel,
     stageExpressionSeq,
     stageOverrideRelPath,
     load,
@@ -593,11 +522,9 @@ export const useCardHudStore = defineStore('cardHud', () => {
     saveHudFields,
     removeHudField,
     setManualExpression,
-    setManualScene,
     setEnabled,
     reset,
     clearExpressionOverride,
-    clearSceneOverride,
     clearStageOverride,
   }
 })

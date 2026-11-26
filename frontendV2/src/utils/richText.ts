@@ -357,7 +357,6 @@ function hardenLinksAndMedia(root: DocumentFragment, assetUrls?: Record<number, 
       img.remove()
       continue
     }
-    img.setAttribute('loading', 'lazy')
     img.setAttribute('decoding', 'async')
     img.classList.add('rich-img')
   }

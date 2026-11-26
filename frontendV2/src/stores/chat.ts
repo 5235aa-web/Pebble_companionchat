@@ -201,11 +201,14 @@ export const useChatStore = defineStore('chat', () => {
   const showJump = ref(false)
   /** Bumped when something outside the thread asks it to scroll down. */
   const scrollRequest = ref(0)
+  /** Target beat jump request handled by MessageThread with image-layout settling. */
+  const jumpRequest = ref<{ id: number; nonce: number } | null>(null)
   const error = ref('')
 
   let controller: AbortController | null = null
   let tempId = -1
   let nextUid = 1
+  let jumpNonce = 0
   let buffer = ''
 
   const cast = computed(() => session.companions)
@@ -639,10 +642,9 @@ export const useChatStore = defineStore('chat', () => {
     }
   }
 
-  /** Scroll the thread to one beat, used by search results. */
+  /** Scroll the thread to one beat, used by search results and the jump rail. */
   function jumpToBeat(id: number) {
-    const el = document.querySelector(`[data-beat-id="${id}"]`)
-    if (el) el.scrollIntoView({ behavior: 'smooth', block: 'center' })
+    jumpRequest.value = { id, nonce: ++jumpNonce }
     window.clearTimeout(spotTimer)
     spotId.value = null
     // One frame between clearing and setting: Vue only restarts a CSS animation
@@ -724,6 +726,7 @@ export const useChatStore = defineStore('chat', () => {
     loading,
     showJump,
     scrollRequest,
+    jumpRequest,
     error,
     lastBeat,
     activeCast,

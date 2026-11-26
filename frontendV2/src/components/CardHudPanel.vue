@@ -20,7 +20,7 @@ const newFieldName = ref('')
 const newFieldValue = ref('')
 const newFieldInput = ref<HTMLInputElement | null>(null)
 
-type MediaPickerKind = '' | 'expression' | 'scene' | 'bgm'
+type MediaPickerKind = '' | 'expression' | 'bgm'
 const openPicker = ref<MediaPickerKind>('')
 const pickerQuery = ref('')
 const thoughtRevealed = ref(false)
@@ -62,7 +62,6 @@ const pillSummary = computed(() => {
 
 const rawPickerAssets = computed<CompanionAsset[]>(() => {
   if (openPicker.value === 'expression') return cardHud.expressionCandidates
-  if (openPicker.value === 'scene') return cardHud.sceneCandidates
   if (openPicker.value === 'bgm') return session.audioAssets
   return []
 })
@@ -95,12 +94,6 @@ function togglePicker(kind: Exclude<MediaPickerKind, ''>) {
 
 async function pickExpression(asset: CompanionAsset | null) {
   await cardHud.setManualExpression(asset)
-  openPicker.value = ''
-  pickerQuery.value = ''
-}
-
-async function pickScene(asset: CompanionAsset | null) {
-  await cardHud.setManualScene(asset)
   openPicker.value = ''
   pickerQuery.value = ''
 }
@@ -540,32 +533,6 @@ function cancelEdit() {
             </button>
           </div>
 
-          <div v-if="session.imageAssets.length" class="chud-chip" :class="{ active: openPicker === 'scene' }">
-            <span class="chud-chip-k">{{ t('hud.scene') }}</span>
-            <button
-              type="button"
-              class="chud-chip-pick"
-              :data-tip="t('hud.switchMedia')"
-              data-tip-float
-              @click="togglePicker('scene')"
-            >
-              <span class="chud-chip-v" :class="{ muted: !cardHud.activeSceneLabel }">
-                {{ cardHud.activeSceneLabel || t('hud.sceneNone') }}
-              </span>
-              <svg class="chud-chip-chev" viewBox="0 0 16 16" aria-hidden="true">
-                <path d="M4.5 6.5L8 10l3.5-3.5" />
-              </svg>
-            </button>
-            <button
-              v-if="cardHud.activeSceneLabel"
-              type="button"
-              class="chud-chip-act"
-              @click="cardHud.setManualScene(null)"
-            >
-              {{ t('hud.sceneReset') }}
-            </button>
-          </div>
-
           <div v-if="session.audioAssets.length" class="chud-chip" :class="{ active: openPicker === 'bgm' }">
             <span class="chud-chip-k">{{ t('hud.bgm') }}</span>
             <button
@@ -642,15 +609,6 @@ function cancelEdit() {
                 <span>{{ t('hud.expressionDefault') }}</span>
               </button>
               <button
-                v-else-if="openPicker === 'scene'"
-                type="button"
-                class="chud-pick-item"
-                :class="{ on: !cardHud.activeSceneLabel }"
-                @click="pickScene(null)"
-              >
-                <span>{{ t('hud.sceneNone') }}</span>
-              </button>
-              <button
                 v-else-if="openPicker === 'bgm' && cardAudio.bgmPlaying"
                 type="button"
                 class="chud-pick-item"
@@ -683,11 +641,9 @@ function cancelEdit() {
                   type="button"
                   class="chud-pick-item"
                   :class="{
-                    on:
-                      (openPicker === 'expression' && cardHud.stageExpressionRelPath === asset.rel_path) ||
-                      (openPicker === 'scene' && cardHud.stageSceneRelPath === asset.rel_path),
+                    on: openPicker === 'expression' && cardHud.stageExpressionRelPath === asset.rel_path,
                   }"
-                  @click="openPicker === 'expression' ? pickExpression(asset) : pickScene(asset)"
+                  @click="pickExpression(asset)"
                 >
                   <span class="chud-pick-name">{{ asset.name }}</span>
                   <span v-if="asset.asset_type" class="chud-pick-tag">{{ asset.asset_type }}</span>

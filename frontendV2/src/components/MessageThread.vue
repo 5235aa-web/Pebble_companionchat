@@ -90,6 +90,11 @@ function openGreetingImage(src: string) {
 const scroller = ref<HTMLElement | null>(null)
 const threadEl = ref<HTMLElement | null>(null)
 let stickToBottom = true
+let scrollMode: 'none' | 'bottom' | 'beat' = 'none'
+let activeJumpId: number | null = null
+let settleUntil = 0
+let settleTimer = 0
+let lastBottomScrollTop = 0
 
 function atBottom(): boolean {
   const el = scroller.value
@@ -97,17 +102,101 @@ function atBottom(): boolean {
   return el.scrollHeight - el.scrollTop - el.clientHeight < 60
 }
 
-function scrollToEnd(smooth = false) {
+function clearSettleTimer() {
+  if (settleTimer) {
+    window.clearTimeout(settleTimer)
+    settleTimer = 0
+  }
+}
+
+function computeBeatScrollTop(id: number): number | null {
+  const el = scroller.value
+  if (!el) return null
+  const target = el.querySelector(`[data-beat-id="${id}"]`) as HTMLElement | null
+  if (!target) return null
+  const sRect = el.getBoundingClientRect()
+  const eRect = target.getBoundingClientRect()
+  const maxTop = Math.max(0, el.scrollHeight - el.clientHeight)
+  const offset =
+    eRect.height > el.clientHeight * 0.72
+      ? 36
+      : Math.max(24, (el.clientHeight - eRect.height) / 2)
+  const rawTop = el.scrollTop + (eRect.top - sRect.top) - offset
+  return Math.max(0, Math.min(maxTop, rawTop))
+}
+
+function finishScrollSettle() {
+  clearSettleTimer()
+  const el = scroller.value
+  if (!el) {
+    scrollMode = 'none'
+    return
+  }
+  if (scrollMode === 'bottom' && stickToBottom) {
+    if (!atBottom()) {
+      el.scrollTop = el.scrollHeight
+    }
+    chat.showJump = false
+  } else if (scrollMode === 'beat' && activeJumpId !== null) {
+    const top = computeBeatScrollTop(activeJumpId)
+    if (top !== null && Math.abs(el.scrollTop - top) > 24) {
+      el.scrollTop = top
+    }
+    const bottom = atBottom()
+    chat.showJump = !bottom
+    stickToBottom = bottom
+  }
+  if (performance.now() >= settleUntil) {
+    scrollMode = 'none'
+    activeJumpId = null
+  }
+}
+
+function scheduleSettleCheck(ms = 900) {
+  clearSettleTimer()
+  settleTimer = window.setTimeout(() => {
+    settleTimer = 0
+    finishScrollSettle()
+  }, ms)
+}
+
+function scrollToEnd(smooth = false, settleWindowMs = 1500) {
   const el = scroller.value
   if (!el) return
+  stickToBottom = true
+  scrollMode = 'bottom'
+  activeJumpId = null
+  lastBottomScrollTop = el.scrollTop
+  settleUntil = performance.now() + settleWindowMs
   if (smooth) {
     el.scrollTo({ top: el.scrollHeight, behavior: 'smooth' })
+    scheduleSettleCheck(950)
   } else {
     // Assign scrollTop directly: scroll-behavior:smooth is set on .scroller, so
     // behavior:'auto' would animate and the stream would outrun it.
     el.scrollTop = el.scrollHeight
+    lastBottomScrollTop = el.scrollTop
+    scheduleSettleCheck(350)
   }
   chat.showJump = false
+}
+
+function scrollToBeat(id: number, smooth = true) {
+  const el = scroller.value
+  if (!el) return
+  const top = computeBeatScrollTop(id)
+  if (top === null) return
+  stickToBottom = false
+  scrollMode = 'beat'
+  activeJumpId = id
+  settleUntil = performance.now() + 1500
+  if (smooth) {
+    el.scrollTo({ top, behavior: 'smooth' })
+    scheduleSettleCheck(950)
+  } else {
+    el.scrollTop = top
+    scheduleSettleCheck(350)
+  }
 }
 
 /**
@@ -127,7 +216,27 @@ function markScrolling() {
 }
 
 function onWheel(e: WheelEvent) {
-  if (e.deltaY < 0) stickToBottom = false
+  if (e.deltaY < 0) {
+    stickToBottom = false
+    scrollMode = 'none'
+    activeJumpId = null
+    settleUntil = 0
+    clearSettleTimer()
+  } else if (scrollMode === 'beat') {
+    scrollMode = 'none'
+    activeJumpId = null
+    settleUntil = 0
+    clearSettleTimer()
+  }
+}
+
+function onTouchMove() {
+  if (scrollMode === 'beat') {
+    scrollMode = 'none'
+    activeJumpId = null
+    settleUntil = 0
+    clearSettleTimer()
+  }
 }
 
 /**
@@ -144,10 +253,30 @@ function onScroll() {
   if (raf) return
   raf = requestAnimationFrame(() => {
     raf = 0
+    const el = scroller.value
+    if (scrollMode === 'bottom' && stickToBottom && performance.now() < settleUntil && el) {
+      if (el.scrollTop >= lastBottomScrollTop - 4) {
+        lastBottomScrollTop = el.scrollTop
+        chat.showJump = false
+        return
+      }
+      // User dragged scrollbar / paged upward during programmatic scroll.
+      stickToBottom = false
+      scrollMode = 'none'
+      settleUntil = 0
+      clearSettleTimer()
+    }
     const bottom = atBottom()
     chat.showJump = !bottom
-    stickToBottom = bottom
+    if (scrollMode !== 'beat') {
+      stickToBottom = bottom
+    }
   })
+}
+
+function onScrollEnd() {
+  if (scrollMode === 'none') return
+  finishScrollSettle()
 }
 
 let resizeObserver: ResizeObserver | null = null
@@ -155,16 +284,17 @@ let resizeObserver: ResizeObserver | null = null
 onUnmounted(() => {
   resizeObserver?.disconnect()
   resizeObserver = null
+  clearSettleTimer()
   if (raf) cancelAnimationFrame(raf)
   window.clearTimeout(scrollbarTimer)
 })
 
 watch(
   () => chat.beats.length,
-  async () => {
+  async (len, prevLen) => {
     stickToBottom = true
     await nextTick()
-    scrollToEnd(true)
+    scrollToEnd(Boolean(prevLen && len > prevLen))
   },
 )
 
@@ -176,14 +306,41 @@ watch(
   },
 )
 
+watch(
+  () => chat.jumpRequest,
+  async (req) => {
+    if (!req) return
+    await nextTick()
+    scrollToBeat(req.id, true)
+  },
+)
+
 onMounted(async () => {
   await nextTick()
   scrollToEnd()
   if (threadEl.value && typeof ResizeObserver !== 'undefined') {
     // Follow height growth once per rendered frame rather than probing
-    // scrollHeight synchronously on every incoming token.
+    // scrollHeight synchronously on every incoming token or decoding image.
     resizeObserver = new ResizeObserver(() => {
-      if (stickToBottom && chat.busy) scrollToEnd()
+      const el = scroller.value
+      if (!el) return
+      if (stickToBottom && chat.busy) {
+        el.scrollTop = el.scrollHeight
+        chat.showJump = false
+        return
+      }
+      if (scrollMode === 'bottom' && stickToBottom && performance.now() < settleUntil) {
+        el.scrollTo({ top: el.scrollHeight, behavior: 'smooth' })
+        scheduleSettleCheck(700)
+        return
+      }
+      if (scrollMode === 'beat' && activeJumpId !== null && performance.now() < settleUntil) {
+        const top = computeBeatScrollTop(activeJumpId)
+        if (top !== null && Math.abs(el.scrollTop - top) > 12) {
+          el.scrollTo({ top, behavior: 'smooth' })
+          scheduleSettleCheck(700)
+        }
+      }
     })
     resizeObserver.observe(threadEl.value)
   }
@@ -196,7 +353,9 @@ onMounted(async () => {
     class="scroller"
     :class="{ scrolling }"
     @scroll.passive="onScroll"
+    @scrollend="onScrollEnd"
     @wheel.passive="onWheel"
+    @touchmove.passive="onTouchMove"
   >
     <div ref="threadEl" class="thread">
       <div class="axis"></div>

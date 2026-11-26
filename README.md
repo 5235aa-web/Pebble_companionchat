@@ -22,9 +22,9 @@
 
 ## 📋 Changelog
 
-**Current Version: `v1.0.1`** — View full release notes in [CHANGELOG.md](CHANGELOG.md).
+**Current Version: `v1.0.2`** — View full release notes in [CHANGELOG.md](CHANGELOG.md).
 
-`v1.0.1` introduces isolated **Character Card Translation** (`Original / 中文 / EN`) preserving original prompt fields, unifies themed **`data-tip` tooltips** across all views, and upgrades **Live2D** with Marigold depth relief, skeletal pose anchors, FFT vowel lip-sync, multi-pose slots, direct `.psd`/`.inx` import, source-grounded layer recovery, and immediate GPU worker cleanup on cancel or exit.
+`v1.0.2` hardens **CHARX asset tag recovery** (repairing or stripping malformed LLM image tags, inline backticks, and drifted asset names), fixes **scroll-to-bottom and message jumps** in image-heavy chats, restores the **right-hand stage & Stage HUD** to the clean Gaussian-blurred portrait backdrop, and **lazy-loads Inochi2D `numpy` imports** so CI and packaged builds pass without heavy ML dependencies.
 
 ---
 

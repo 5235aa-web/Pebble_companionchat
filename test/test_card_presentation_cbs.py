@@ -351,6 +351,8 @@ class BranchVariablesIntegrationTest(unittest.TestCase):
             'Motoko_seducing',
             'Motoko_lustful',
             'Motoko_touched',
+            'Motoko_spread_mouth',
+            'Motoko_fellatio_penetration',
             'Motoko_upright_straddle_penetration',
         ]
         sample = (
@@ -363,9 +365,15 @@ class BranchVariablesIntegrationTest(unittest.TestCase):
             '<img="Motoko_lustful">\n'
             '<mg("Moti koko upright_straddle")>\n\n'
             'Para 4.\n\n'
+            '<img="Motoko_spread_mouth">\n'
+            '<firm=fellatio_penetration>\n\n'
+            'Para 5.\n\n'
+            '<firm=fellatio_penetration>\n\n'
+            'Para 6.\n\n'
             '<mgr("Motoko_unknown_extra")>\n'
-            '<imb= Motoko_unknown_2>\n\n'
-            '```html\n<mg("Motoko_smile")>\n```'
+            '<imb= Motoko_unknown_2>\n'
+            '<fimg="unknown_card_tag">\n\n'
+            '```html\n<mg("Motoko_smile")>\n<firm=fellatio_penetration>\n```'
         )
         out = card_presentation.normalize_asset_tag_refs(sample, assets)
         # Duplicate malformed tag right after <img="Motoko_smile"> is dropped
@@ -373,14 +381,18 @@ class BranchVariablesIntegrationTest(unittest.TestCase):
         self.assertNotIn('Motoko_seducing', out)
         # Standalone resolvable <mg("Moti koko touched")> is repaired to <img="Motoko_touched">
         self.assertIn('<img="Motoko_touched">', out)
-        # Unresolvable <mg>, <mgr>, <imb=> outside code fences are stripped completely
+        # Standalone <firm=fellatio_penetration> is repaired via unique suffix match
+        self.assertEqual(out.count('<img="Motoko_fellatio_penetration">'), 1)
+        # Unresolvable <mg>, <mgr>, <imb=>, <firm=>, <fimg=> outside code fences are stripped completely
         prose_only = out.split('```html', 1)[0]
         self.assertNotIn('<mg(', prose_only)
         self.assertNotIn('<mgr(', prose_only)
         self.assertNotIn('<imb=', prose_only)
+        self.assertNotIn('<firm=', prose_only)
+        self.assertNotIn('<fimg=', prose_only)
         # Fenced code block stays untouched
-        self.assertIn('```html\n<mg("Motoko_smile")>\n```', out)
-        # Compact fuzzy match works for split character names
+        self.assertIn('```html\n<mg("Motoko_smile")>\n<firm=fellatio_penetration>\n```', out)
+        # Compact fuzzy match works for split character names; ambiguous suffix across two characters stays None
         self.assertEqual(
             card_presentation.resolve_fuzzy_asset_name('Moti koko upright_straddle_penetration', assets),
             'Motoko_upright_straddle_penetration',
@@ -388,6 +400,35 @@ class BranchVariablesIntegrationTest(unittest.TestCase):
         self.assertIsNone(
             card_presentation.resolve_fuzzy_asset_name('Moti koko upright_straddle', assets)
         )
+        self.assertIsNone(
+            card_presentation.resolve_fuzzy_asset_name('smile', ['Alice_smile', 'Bob_smile'])
+        )
+
+    def test_backticked_unquoted_space_src_and_macro_typo_variants(self):
+        assets = ['Motoko_smile', 'Motoko_fellatio_penetration', 'Motoko_touched']
+        sample = (
+            'Para 1.\n\n`<img="Motoki_smile">`\n\n'
+            'Para 2.\n\n<firm=Moti koko smile>\n\n'
+            'Para 3.\n\n<firm src="fellatio_penetration">\n\n'
+            'Para 4.\n\n<img "Moti koko touched">\n\n'
+            'Para 5.\n\n<img src="Moti koko smile">\n\n'
+            'Para 6.\n\n{{mg::Moti koko touched}}\n\n'
+            'Para 7.\n\n<img="Motoko_smile">\n{{pic::Motoko_touched}}\n\n'
+            '`<div>keep html</div>` `{{getvar::hp}}`'
+        )
+        out = card_presentation.normalize_asset_tag_refs(sample, assets)
+        self.assertEqual(out.count('<img="Motoko_smile">'), 3)
+        self.assertNotIn('`<img=', out)
+        self.assertIn('<img="Motoko_fellatio_penetration">', out)
+        self.assertIn('<img="Motoko_touched">', out)
+        self.assertIn('<img src="Motoko_smile">', out)
+        self.assertIn('{{img::Motoko_touched}}', out)
+        self.assertNotIn('<firm', out)
+        self.assertNotIn('<img "', out)
+        self.assertNotIn('{{mg::', out)
+        self.assertNotIn('{{pic::', out)
+        self.assertIn('`<div>keep html</div>`', out)
+        self.assertIn('`{{getvar::hp}}`', out)
 
 
 def _build_test_risum_bytes(module_dict, asset_blobs=()):

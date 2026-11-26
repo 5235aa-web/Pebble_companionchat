@@ -137,15 +137,28 @@ export function rewriteCssAssetUrls(
   return { css: rewritten, assets }
 }
 
-const IMG_TAG_SHORTHAND_REF_RE = /(<img\s*=\s*)(?:"([^"]+)"|'([^']+)'|([^\s"'=<>`]+))/gi
+const IMG_TAG_SHORTHAND_REF_RE = /(<img\s*=\s*)(?:"([^"]+)"|'([^']+)'|([^"'\n=<>`]+?)(?=\s*\/?>))/gi
+const HTML_IMG_SRC_REF_RE = /(<img\b[^>]*?\bsrc\s*=\s*)(?:"([^"\n<>]+)"|'([^'\n<>]+)')/gi
 const ASSET_MACRO_REF_RE = /(\{\{\s*(?:img|image|asset|raw)\s*::\s*)([^}]+?)(\s*\}\})/gi
 const MALFORMED_IMG_TAG_RE =
-  /<(?:(?:mg|mgr|imb|imgr|im|img)\s*\(\s*(?:"([^"\n<>]*)"|'([^'\n<>]*)'|([^()\n<>]+?))\s*\)\s*\/?|(?:mg|mgr|imb|imgr|im)\s*=\s*(?:"([^"\n<>]*)"|'([^'\n<>]*)'|([^\s"'=<>`]+))(?:\s*\/?))>/gi
+  /<(([a-zA-Z][a-zA-Z0-9_-]{0,15})\s*\(\s*(?:"([^"\n<>]*)"|'([^'\n<>]*)'|([^()\n<>]+?))\s*\)\s*\/?|([a-zA-Z][a-zA-Z0-9_-]{1,15})\s*=\s*(?:"([^"\n<>]*)"|'([^'\n<>]*)'|([^"'\n=<>`]+?))(?:\s*\/?)|([a-zA-Z][a-zA-Z0-9_-]{1,15})\s+\bsrc\s*=\s*(?:"([^"\n<>]*)"|'([^'\n<>]*)')(?:\s*\/?)|([a-zA-Z][a-zA-Z0-9_-]{1,15})\s+(?:"([^"\n<>]+)"|'([^'\n<>]+)')\s*\/?)>/g
+const MALFORMED_MACRO_TAG_RE =
+  /\{\{\s*(?:mg|mgr|imb|imgr|im|irm|firm|fimg|ig|pic|cg|emote|sprite)\s*::\s*([^}\n]+?)\s*\}\}/gi
+const INLINE_BACKTICK_TAG_RE = /`(<[^`\n<>]+>|\{\{\s*[a-zA-Z0-9_-]+\s*::[^`\n{}]+\}\})`/g
 const PRECEDING_VALID_IMAGE_RE =
   /(?:<img\b[^>]*>|\{\{\s*(?:img|image|asset|raw)\s*::[^}]+\}\}|!\[[^\]]*\]\([^)]+\))\s*$/i
 const FENCED_CODE_BLOCK_RE =
   /(^|\n)([ \t]*)(`{3,}|~{3,})[^\n]*\n[\s\S]*?\n\2\3[ \t]*(?=\n|$)/g
 const COMPACT_SEP_RE = /[\s_-]+/g
+const SNAKE_SEP_RE = /[\s-]+/g
+const NON_PAREN_PROTOCOLS = new Set(['http', 'https', 'ftp', 'mailto'])
+const HTML_SRC_TAGS = new Set([
+  'img', 'audio', 'video', 'source', 'track', 'iframe', 'embed', 'input', 'script', 'frame',
+])
+const KNOWN_IMAGE_TAG_TYPOS = new Set([
+  'mg', 'mgr', 'imb', 'imgr', 'im', 'irm', 'firm', 'fimg', 'ig',
+  'img_', 'image', 'pic', 'cg', 'em', 'emo', 'emote', 'sprite', 'asset',
+])
 const NON_REF_PREFIX_RE = /^(?:https?:|data:|blob:|pebble-asset:)/i
 
 function editDistance(a: string, b: string): number {
@@ -216,6 +229,14 @@ export function resolveFuzzyAssetName(ref: string, assetNames: string[]): string
     if (exactCompact) return exactCompact
   }
 
+  const qSnake = q.replace(SNAKE_SEP_RE, '_').replace(/^_+|_+$/g, '')
+  if (qSnake.length >= 4) {
+    const suffixHits = candidates
+      .filter(([cLow]) => cLow.endsWith('_' + qSnake) || cLow.endsWith('-' + qSnake))
+      .map(([, cOrig]) => cOrig)
+    if (suffixHits.length === 1) return suffixHits[0]
+  }
+
   let bestScore = 0
   let bestPrefix = -1
   let bestName: string | null = null
@@ -269,13 +290,46 @@ export function resolveFuzzyAssetName(ref: string, assetNames: string[]): string
 }
 
 function normalizeAssetSegment(text: string, assetNames: string[]): string {
-  let out = text.replace(
+  let out = text.replace(INLINE_BACKTICK_TAG_RE, (whole, inner: string) => {
+    IMG_TAG_SHORTHAND_REF_RE.lastIndex = 0
+    HTML_IMG_SRC_REF_RE.lastIndex = 0
+    ASSET_MACRO_REF_RE.lastIndex = 0
+    MALFORMED_MACRO_TAG_RE.lastIndex = 0
+    if (
+      IMG_TAG_SHORTHAND_REF_RE.test(inner) ||
+      HTML_IMG_SRC_REF_RE.test(inner) ||
+      ASSET_MACRO_REF_RE.test(inner) ||
+      MALFORMED_MACRO_TAG_RE.test(inner)
+    ) {
+      return inner
+    }
+    MALFORMED_IMG_TAG_RE.lastIndex = 0
+    const mBad = MALFORMED_IMG_TAG_RE.exec(inner)
+    if (mBad && mBad[0] === inner) {
+      const srcTag = mBad[10]
+      if (!srcTag || !HTML_SRC_TAGS.has(srcTag.toLowerCase())) return inner
+    }
+    return whole
+  })
+
+  out = out.replace(
     IMG_TAG_SHORTHAND_REF_RE,
     (whole, prefix: string, dq?: string, sq?: string, uq?: string) => {
-      const rawRef = dq ?? sq ?? uq ?? ''
+      const rawRef = (dq ?? sq ?? uq ?? '').trim()
       const quote = sq !== undefined ? "'" : '"'
       const fixed = resolveFuzzyAssetName(rawRef, assetNames)
       if (!fixed || (fixed === rawRef && uq === undefined)) return whole
+      return `${prefix}${quote}${fixed}${quote}`
+    },
+  )
+  out = out.replace(
+    HTML_IMG_SRC_REF_RE,
+    (whole, prefix: string, dq?: string, sq?: string) => {
+      const rawRef = (dq ?? sq ?? '').trim()
+      if (!rawRef || rawRef.includes('{{') || NON_REF_PREFIX_RE.test(rawRef)) return whole
+      const quote = sq !== undefined ? "'" : '"'
+      const fixed = resolveFuzzyAssetName(rawRef, assetNames)
+      if (!fixed || fixed === rawRef) return whole
       return `${prefix}${quote}${fixed}${quote}`
     },
   )
@@ -287,18 +341,49 @@ function normalizeAssetSegment(text: string, assetNames: string[]): string {
     },
   )
 
+  let removedAny = false
+
   MALFORMED_IMG_TAG_RE.lastIndex = 0
   if (MALFORMED_IMG_TAG_RE.test(out)) {
     MALFORMED_IMG_TAG_RE.lastIndex = 0
     const parts: string[] = []
     let cursor = 0
-    let removedAny = false
     let match: RegExpExecArray | null
     while ((match = MALFORMED_IMG_TAG_RE.exec(out)) !== null) {
       parts.push(out.slice(cursor, match.index))
       cursor = match.index + match[0].length
+      const parenTag = match[2]
+      const equalsTag = match[6]
+      const srcTag = match[10]
+      const quotedTag = match[13]
+
+      if (equalsTag && equalsTag.toLowerCase() === 'img') {
+        parts.push(match[0])
+        continue
+      }
+      if (parenTag && NON_PAREN_PROTOCOLS.has(parenTag.toLowerCase())) {
+        parts.push(match[0])
+        continue
+      }
+      if (srcTag && HTML_SRC_TAGS.has(srcTag.toLowerCase())) {
+        parts.push(match[0])
+        continue
+      }
+
+      const rawRef = (
+        match[3] ??
+        match[4] ??
+        match[5] ??
+        match[7] ??
+        match[8] ??
+        match[9] ??
+        match[11] ??
+        match[12] ??
+        match[14] ??
+        match[15] ??
+        ''
+      ).trim()
       const preceding = parts.join('')
-      const rawRef = (match[1] ?? match[2] ?? match[3] ?? match[4] ?? match[5] ?? match[6] ?? '').trim()
       if (PRECEDING_VALID_IMAGE_RE.test(preceding)) {
         removedAny = true
         continue
@@ -306,15 +391,63 @@ function normalizeAssetSegment(text: string, assetNames: string[]): string {
       const fixed = resolveFuzzyAssetName(rawRef, assetNames)
       if (fixed) {
         parts.push(`<img="${fixed}">`)
+        continue
+      }
+
+      if (equalsTag) {
+        const isQuoted = match[7] !== undefined || match[8] !== undefined
+        const looksLikeAssetRef =
+          isQuoted || /[\s_/-]/.test(rawRef) || KNOWN_IMAGE_TAG_TYPOS.has(equalsTag.toLowerCase())
+        if (!looksLikeAssetRef) {
+          parts.push(match[0])
+          continue
+        }
+      } else if (srcTag && !KNOWN_IMAGE_TAG_TYPOS.has(srcTag.toLowerCase())) {
+        parts.push(match[0])
+        continue
+      } else if (
+        quotedTag &&
+        quotedTag.toLowerCase() !== 'img' &&
+        !KNOWN_IMAGE_TAG_TYPOS.has(quotedTag.toLowerCase())
+      ) {
+        parts.push(match[0])
+        continue
+      }
+
+      removedAny = true
+    }
+    parts.push(out.slice(cursor))
+    out = parts.join('')
+  }
+
+  MALFORMED_MACRO_TAG_RE.lastIndex = 0
+  if (MALFORMED_MACRO_TAG_RE.test(out)) {
+    MALFORMED_MACRO_TAG_RE.lastIndex = 0
+    const parts: string[] = []
+    let cursor = 0
+    let match: RegExpExecArray | null
+    while ((match = MALFORMED_MACRO_TAG_RE.exec(out)) !== null) {
+      parts.push(out.slice(cursor, match.index))
+      cursor = match.index + match[0].length
+      const preceding = parts.join('')
+      const rawRef = (match[1] ?? '').trim()
+      if (PRECEDING_VALID_IMAGE_RE.test(preceding)) {
+        removedAny = true
+        continue
+      }
+      const fixed = resolveFuzzyAssetName(rawRef, assetNames)
+      if (fixed) {
+        parts.push(`{{img::${fixed}}}`)
       } else {
         removedAny = true
       }
     }
     parts.push(out.slice(cursor))
     out = parts.join('')
-    if (removedAny) {
-      out = out.replace(/[ \t]+\n/g, '\n').replace(/\n{3,}/g, '\n\n').replace(/\s+$/, '')
-    }
+  }
+
+  if (removedAny) {
+    out = out.replace(/[ \t]+\n/g, '\n').replace(/\n{3,}/g, '\n\n').replace(/\s+$/, '')
   }
 
   return out

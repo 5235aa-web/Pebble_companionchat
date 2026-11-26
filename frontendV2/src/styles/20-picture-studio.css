@@ -24,13 +24,6 @@
    The `.scene-photo img.scene-main` prefix is required, not decorative:
    08-scene.css sets its own `transition` and `filter` on that selector, and a
    bare class here would lose the cascade and animate nothing. */
-.scene-photo img.scene-backdrop.scene-backdrop-swap-enter-active,
-.scene-photo img.scene-backdrop.scene-backdrop-swap-leave-active{
-  transition:opacity .55s var(--ease-out);
-  will-change:opacity;
-}
-.scene-photo img.scene-backdrop.scene-backdrop-swap-enter-from,
-.scene-photo img.scene-backdrop.scene-backdrop-swap-leave-to{opacity:0;}
 .scene-photo img.scene-main.scene-swap-enter-active,
 .scene-photo img.scene-main.scene-swap-leave-active{
   transition:opacity .52s var(--ease-out), filter .52s ease;

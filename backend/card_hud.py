@@ -16,8 +16,8 @@ HUD_STATE_START = "<<<STATE>>>"
 HUD_STATE_END = "<<<END>>>"
 
 CORE_HUD_KEYS = ("mood", "affection", "location", "outfit")
-MEDIA_CUE_KEYS = ("expression", "scene", "bg", "bgm", "sfx")
-_IGNORED_CONTROL_KEYS = {"scene_done", "scenedone", "scene_finished"}
+MEDIA_CUE_KEYS = ("expression", "bgm", "sfx")
+_IGNORED_CONTROL_KEYS = {"scene_done", "scenedone", "scene_finished", "scene", "bg"}
 _THOUGHT_NULL_VALUES = frozenset({"none", "null", "off", "empty", "n/a", "-", "—", "无", "没有"})
 
 _MAX_VISUAL_TAGS = 40
@@ -64,11 +64,10 @@ def parse_hud_block(raw: str) -> Tuple[Dict[str, Any], Dict[str, str]]:
         if lowered in MEDIA_CUE_KEYS:
             val_str = value.strip()
             if val_str:
-                canonical = "scene" if lowered == "bg" else lowered
-                cue[canonical] = val_str
-                # Persist current expression/scene/bgm on HUD, but keep sfx one-shot.
-                if canonical != "sfx":
-                    hud[canonical] = "" if val_str.lower() in ("none", "stop", "off") else val_str
+                cue[lowered] = val_str
+                # Persist current expression/bgm on HUD, but keep sfx one-shot.
+                if lowered != "sfx":
+                    hud[lowered] = "" if val_str.lower() in ("none", "stop", "off") else val_str
             continue
         if lowered == "thought":
             val_str = value.strip().strip("\"'")
@@ -167,11 +166,11 @@ def _summarize_assets_for_prompt(assets: List[Dict]) -> Tuple[List[str], List[st
             if key not in seen_a and len(audios) < _MAX_AUDIO_TAGS:
                 seen_a.add(key)
                 audios.append(name)
-        elif mime.startswith("image/") or a_type in ("emotion", "icon", "background", "image"):
-            if key in seen_v:
+        elif mime.startswith("image/") or a_type in ("emotion", "icon", "portrait", "image"):
+            if key in seen_v or a_type == "background":
                 continue
             seen_v.add(key)
-            if a_type in ("emotion", "background"):
+            if a_type in ("emotion", "portrait", "icon"):
                 if len(emotions) < _MAX_VISUAL_TAGS:
                     emotions.append(name)
             else:
@@ -207,30 +206,24 @@ def _format_current_hud(hud: Optional[Dict[str, Any]], limit: int = 16) -> str:
     return "\n".join(lines)
 
 
-def _split_visual_roles(assets: Sequence[Dict]) -> Tuple[List[str], List[str]]:
-    """Collect capped expression/portrait names separately from background/scene names."""
+def _collect_expression_roles(assets: Sequence[Dict]) -> List[str]:
+    """Collect capped expression/portrait names for the [Stage HUD] prompt."""
     exprs: List[str] = []
-    bgs: List[str] = []
     seen_e = set()
-    seen_b = set()
     for asset in assets or []:
         mime = str(asset.get("mime_type") or "").lower()
         a_type = str(asset.get("asset_type") or "").lower()
         name = str(asset.get("name") or "").strip()
         if not name or re.fullmatch(r"\d+", name):
             continue
-        if not (mime.startswith("image/") or a_type in ("emotion", "icon", "portrait", "background", "image")):
+        if not (mime.startswith("image/") or a_type in ("emotion", "icon", "portrait", "image")):
             continue
-        key = name.lower()
-        if a_type == "background":
-            if key not in seen_b and len(bgs) < _MAX_VISUAL_TAGS:
-                seen_b.add(key)
-                bgs.append(name)
-        elif a_type in ("emotion", "portrait", "icon"):
+        if a_type in ("emotion", "portrait", "icon"):
+            key = name.lower()
             if key not in seen_e and len(exprs) < _MAX_VISUAL_TAGS:
                 seen_e.add(key)
                 exprs.append(name)
-    return exprs, bgs
+    return exprs
 
 
 def build_card_hud_prompt(
@@ -244,7 +237,7 @@ def build_card_hud_prompt(
     """Build the [Stage HUD] prompt block appended in normal single-chat mode."""
     asset_list = list(assets or [])
     visual_names, audio_names = _summarize_assets_for_prompt(asset_list)
-    expr_names, bg_names = _split_visual_roles(asset_list)
+    expr_names = _collect_expression_roles(asset_list)
     pinned = [str(k).strip() for k in (pinned_vars or ()) if str(k).strip()]
     vars_map = variables or {}
 
@@ -260,13 +253,10 @@ def build_card_hud_prompt(
         lines.append("Tracked story variables (CBS):")
         lines.extend(var_lines)
 
-    if bg_names:
-        lines.append("Available expression portraits: " + ", ".join(expr_names or visual_names))
-        lines.append("Available background scenes: " + ", ".join(bg_names))
+    if expr_names:
+        lines.append("Available expression portraits: " + ", ".join(expr_names))
     elif visual_names:
-        lines.append(
-            "Available expression/scene images: " + ", ".join(visual_names)
-        )
+        lines.append("Available expression images: " + ", ".join(visual_names))
     if audio_names:
         lines.append(
             "Available BGM/SFX tracks: " + ", ".join(audio_names)
@@ -281,12 +271,8 @@ def build_card_hud_prompt(
         "location: <current setting/place>",
         "outfit: <current clothing>",
     ])
-    if visual_names:
+    if expr_names or visual_names:
         lines.append("expression: <best matching portrait/expression name from above, or current mood>")
-        if bg_names:
-            lines.append("scene: <best matching background scene name from above, or omit to keep>")
-        else:
-            lines.append("scene: <optional background scene image name, or omit to keep>")
     if audio_names:
         lines.append("bgm: <track name to loop, 'none' to stop, or omit to keep>")
         lines.append("sfx: <optional one-shot sound effect name, or omit>")

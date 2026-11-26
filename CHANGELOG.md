@@ -4,6 +4,17 @@ All notable releases for Pebble Companion Chat are recorded here.
 Each `## x.y.z` section is used by `npm run release -- x.y.z` as both the
 GitHub Release description and the in-app update panel notes.
 
+## 1.0.2
+
+- **CHARX Asset Tag Repair & Deduplication**:
+  - Generalized `normalize_asset_tag_refs` / `normalizeAssetTagRefs` (`backend/card_presentation.py`, `frontendV2/src/utils/inlineMedia.ts`) to unwrap inline backticks around asset tags, recover space-separated or prefix-omitted unique asset names, repair standalone malformed LLM tags (`<mg(...)>`, `<firm=...>`, `<img "name">`, `<img src="typo">`, `{{mg::...}}`), and strip unresolvable or duplicate malformed tags before display and prompt replay.
+- **Image-Heavy Thread Scroll & Jump Fixes**:
+  - Removed `content-visibility: auto` height collapse on settled beats (`05-thread.css`) and eager-sized inline rich images (`richText.ts`), and added layout-settling scroll tracking in `MessageThread.vue`, `ThreadJumpRail.vue`, and `stores/chat.ts` so "Jump to present" and message jumps land accurately with images present.
+- **Stage Backdrop & Stage HUD Cleanup**:
+  - Simplified the static right-hand `ScenePanel` to always use the default Gaussian-blurred portrait backdrop (`08-scene.css`, `20-picture-studio.css`), and removed the Stage HUD `scene` picker and `scene:` prompt cue (`backend/card_hud.py`, `CardHudPanel.vue`, `stores/cardHud.ts`) while keeping Live2D stage behavior unchanged.
+- **Lazy Inochi2D Imports for CI & Packaged Builds**:
+  - Deferred `numpy`/`psd_tools` imports inside `backend/Inochi2D/service.py` with external-venv subprocess fallback for `.inx` imports (`inx_importer.py`, `pebble-backend.spec`), and guarded optional ML/CV tests in `test/test_inochi2d_upgrade.py` so core startup and CI pass without `numpy` or `cv2`.
+
 ## 1.0.1
 
 - **Character Card Translation (Chinese & English)**:

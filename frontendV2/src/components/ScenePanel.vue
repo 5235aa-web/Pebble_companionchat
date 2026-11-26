@@ -122,7 +122,6 @@ const canSlide = computed(() => slides.value.length > 1)
 // whole app down at mount time. 0 asks for the original bytes, because the
 // scene is the one image drawn large enough for a downscaled copy to look soft.
 const sceneUrl = useFileUrl(() => slide.value?.url, 0)
-const backdropSceneUrl = useFileUrl(() => cardHud.stageSceneRelPath || undefined, 0)
 
 /**
  * The image actually on screen.
@@ -142,23 +141,6 @@ watch(
     shownKey.value = next.key
     shownUrl.value = url
     shownKind.value = next.kind
-  },
-  { immediate: true },
-)
-
-const shownBackdropKey = ref('')
-const shownBackdropUrl = ref('')
-watch(
-  [() => cardHud.stageSceneRelPath, backdropSceneUrl],
-  ([relPath, url]) => {
-    if (!relPath) {
-      shownBackdropKey.value = ''
-      shownBackdropUrl.value = ''
-      return
-    }
-    if (!url) return
-    shownBackdropKey.value = relPath
-    shownBackdropUrl.value = url
   },
   { immediate: true },
 )
@@ -384,26 +366,15 @@ onMounted(() => {
     >
       <PuppetStage v-if="inochi.activeMode === 'live2d'" :active-slide-url="slide?.url" />
       <template v-else>
-        <div v-if="!shownUrl && !shownBackdropUrl" class="scene-glow"></div>
-        <Transition name="scene-backdrop-swap">
-          <img
-            v-if="shownBackdropUrl"
-            :key="'scene-' + shownBackdropKey"
-            :src="shownBackdropUrl"
-            alt=""
-            aria-hidden="true"
-            class="scene-backdrop scene-backdrop-live"
-          />
-          <img
-            v-else-if="shownUrl"
-            :key="shownKey + '-bg'"
-            :src="shownUrl"
-            alt=""
-            aria-hidden="true"
-            class="scene-backdrop"
-          />
-        </Transition>
-        <div v-if="shownBackdropUrl" class="scene-backdrop-scrim" aria-hidden="true"></div>
+        <div v-if="!shownUrl" class="scene-glow"></div>
+        <img
+          v-if="shownUrl"
+          :key="shownKey + '-bg'"
+          :src="shownUrl"
+          alt=""
+          aria-hidden="true"
+          class="scene-backdrop"
+        />
         <div v-if="showCardHud && cardHud.moodRgb" class="scene-mood-aura" aria-hidden="true"></div>
         <Transition name="scene-swap">
           <img
