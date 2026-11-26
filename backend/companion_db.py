@@ -699,6 +699,82 @@ def create_branch(companion_id: str, branch_name: str = "新分支", fork_from_m
         conn.close()
 
 
+def create_imported_branch(
+    companion_id: str,
+    branch_name: str,
+    messages: List[Dict[str, Any]],
+    variables: Optional[Dict[str, Any]] = None,
+) -> Optional[str]:
+    """Create a branch and populate imported messages/variables in one transaction."""
+    import uuid
+
+    clean_vars = {
+        str(k).strip(): ("" if v is None else str(v))
+        for k, v in (variables or {}).items()
+        if str(k).strip()
+    }
+    card_vars_json = json.dumps(clean_vars, ensure_ascii=False) if clean_vars else ""
+
+    conn = _get_conn()
+    try:
+        branch_id = f"branch_{uuid.uuid4().hex[:8]}"
+        conn.execute(
+            """
+            INSERT INTO companion_branches (companion_id, branch_id, branch_name, fork_from_message_id, card_vars)
+            VALUES (?, ?, ?, ?, ?)
+            """,
+            (companion_id, branch_id, branch_name, None, card_vars_json),
+        )
+
+        for msg in messages:
+            role = str(msg.get("role") or "assistant")
+            content = str(msg.get("content") or "")
+            swipes = msg.get("swipes")
+            if not isinstance(swipes, list) or not swipes:
+                swipes = [content]
+            swipe_id = int(msg.get("swipe_id") or 0)
+            if swipe_id < 0 or swipe_id >= len(swipes):
+                swipe_id = 0
+            message_type = str(msg.get("message_type") or "chat")
+            metadata = msg.get("metadata") if isinstance(msg.get("metadata"), dict) else {}
+            is_important = 1 if msg.get("is_important") else 0
+            is_compacted = 1 if msg.get("is_compacted") else 0
+            created_at = msg.get("created_at") or None
+
+            conn.execute(
+                """
+                INSERT INTO companion_messages
+                    (companion_id, branch_id, role, content, swipes, swipe_id,
+                     message_type, metadata, is_important, is_compacted, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, COALESCE(?, CURRENT_TIMESTAMP))
+                """,
+                (
+                    companion_id,
+                    branch_id,
+                    role,
+                    content,
+                    json.dumps(swipes, ensure_ascii=False),
+                    swipe_id,
+                    message_type,
+                    json.dumps(metadata, ensure_ascii=False),
+                    is_important,
+                    is_compacted,
+                    created_at,
+                ),
+            )
+
+        conn.commit()
+        return branch_id
+    except sqlite3.IntegrityError:
+        conn.rollback()
+        return None
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+
+
 def update_branch_name(companion_id: str, branch_id: str, branch_name: str) -> bool:
     """Rename a branch. The main branch can be renamed but never deleted."""
     conn = _get_conn()

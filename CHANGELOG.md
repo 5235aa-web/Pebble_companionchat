@@ -10,6 +10,8 @@ GitHub Release description and the in-app update panel notes.
   - Added per-branch export directly from the top-bar branch menu (next to each branch's rename action), saving all exported files to `.pebblecompanion/outputchat`.
   - Supports four formats: **Markdown (`.md`)** for clean reading, **HTML (`.html`)** with full restoration of status bars, card CSS, inline styles, and embedded images (including RisuAI/CHARX card templates), **Pebble JSON (`.json`)** for lossless backups, and **SillyTavern JSONL (`.jsonl`)** for ecosystem compatibility.
   - Added an option to include or exclude compacted message history alongside compaction and script-mode scene summaries.
+- **SillyTavern JSONL Conversation Import**:
+  - Added **+ import JSONL** in the top-bar branch menu to import SillyTavern (and Pebble-exported) `.jsonl` transcripts into a new branch, preserving multi-variant swipes, timestamps, and card variables while skipping `is_system` lines by default and warning if the source character name differs.
 
 ## 0.9.0
 

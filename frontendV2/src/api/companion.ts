@@ -367,6 +367,69 @@ export const exportBranchChat = (
     },
   )
 
+export interface BranchImportJsonlPreview {
+  status: string
+  companion_id: string
+  companion_name: string
+  source_character_name: string
+  source_user_name: string
+  character_mismatch: boolean
+  message_count: number
+  skipped_system_count: number
+  skipped_empty_count: number
+  swipe_total_count: number
+  variables_count: number
+}
+
+export interface BranchImportJsonlResult {
+  status: string
+  companion_id: string
+  companion_name: string
+  branch_id: string
+  branch_name: string
+  source_character_name: string
+  source_user_name: string
+  character_mismatch: boolean
+  imported_count: number
+  skipped_system_count: number
+  skipped_empty_count: number
+  swipe_total_count: number
+  variables_imported: number
+  imported_at: string
+}
+
+export const previewBranchJsonlImport = (
+  companionId: string,
+  jsonlText: string,
+  skipSystem = true,
+): Promise<BranchImportJsonlPreview> =>
+  post<BranchImportJsonlPreview>(
+    `${C}/${encodeURIComponent(companionId)}/branches/import-jsonl/preview`,
+    {
+      jsonl_text: jsonlText,
+      skip_system: skipSystem,
+    },
+  )
+
+export const importBranchJsonl = (
+  companionId: string,
+  jsonlText: string,
+  options?: {
+    branchName?: string
+    filename?: string
+    skipSystem?: boolean
+  },
+): Promise<BranchImportJsonlResult> =>
+  post<BranchImportJsonlResult>(
+    `${C}/${encodeURIComponent(companionId)}/branches/import-jsonl`,
+    {
+      jsonl_text: jsonlText,
+      branch_name: options?.branchName,
+      filename: options?.filename,
+      skip_system: options?.skipSystem ?? true,
+    },
+  )
+
 /* ---- messages ---- */
 
 export const getMessages = async (companionId: string, branchId: string): Promise<CompanionMessage[]> => {

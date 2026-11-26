@@ -44,7 +44,7 @@ Whether running local GGUF weights, calling cloud LLM APIs, holding live voice c
 ## 🌟 Core Features
 
 ### 1. Single Chat & Multiple Conversations
-Streaming narrative replies with candidate swipes, independent conversation threads per character card, and manual token-aware context compaction. Any branch can also be exported in one click to clean Markdown, rich self-contained HTML (preserving status bars and embedded images), Pebble JSON, or SillyTavern JSONL.
+Streaming narrative replies with candidate swipes, independent conversation threads per character card, and manual token-aware context compaction. Import SillyTavern JSONL logs directly into new branches with swipes and variables intact, or export any branch to Markdown, rich self-contained HTML, Pebble JSON, or SillyTavern JSONL.
 
 ### 2. Multi-Character Group Stage
 Bring up to 3 companions onto a fanned portrait stage with `@` speaker cues, autonomous multi-turn **Relay**, isolated room memories, and a one-click **Narration Mode** to steer scenes without polluting ongoing context.
@@ -241,3 +241,9 @@ You can override default locations with environment variables:
 
 - `PEBBLE_DATA_ROOT` — Override the root directory for writable user data and config files.
 - `PEBBLE_MODELS_ROOT` — Override the default root directory for local model weights (also configurable via **Backstage → Paths**).
+
+---
+
+## 💬 Support & Feedback
+
+This is an independent personal project. If you happen to be using it and find it enjoyable, a **Star** is a great way to support the author; and if you run into issues or have suggestions to make it better, feel free to open an **Issue** anytime!

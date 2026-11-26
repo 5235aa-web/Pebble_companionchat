@@ -11,6 +11,7 @@ from pydantic import BaseModel
 
 from . import token_engine
 from .chat_exporter import export_branch_chat
+from .chat_importer import import_jsonl_branch, inspect_jsonl_chat
 from .companion import Companion
 from .companion_db import get_companion, is_last_active_message
 from .picturesys import service as picture_service
@@ -280,3 +281,52 @@ async def export_companion_branch(
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+class BranchImportJsonlRequest(BaseModel):
+    """Import a SillyTavern / Pebble JSONL transcript into a new branch."""
+
+    jsonl_text: str
+    branch_name: Optional[str] = None
+    filename: Optional[str] = None
+    skip_system: bool = True
+
+
+@router.post("/{companion_id}/branches/import-jsonl/preview")
+async def preview_companion_jsonl_import(
+    companion_id: str,
+    request: BranchImportJsonlRequest,
+):
+    """Validate JSONL content and check character mismatch before creating a branch."""
+    try:
+        return inspect_jsonl_chat(
+            companion_id=companion_id,
+            jsonl_text=request.jsonl_text,
+            skip_system=request.skip_system,
+        )
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.post("/{companion_id}/branches/import-jsonl")
+async def import_companion_jsonl_branch(
+    companion_id: str,
+    request: BranchImportJsonlRequest,
+):
+    """Create a new conversation branch from a SillyTavern / Pebble JSONL transcript."""
+    try:
+        return import_jsonl_branch(
+            companion_id=companion_id,
+            jsonl_text=request.jsonl_text,
+            branch_name=request.branch_name,
+            filename=request.filename,
+            skip_system=request.skip_system,
+        )
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except RuntimeError as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc

@@ -11,6 +11,8 @@ import { useMemoryStore } from '@/stores/memory'
 import UpdateButton from './UpdateButton.vue'
 import {
   exportBranchChat,
+  importBranchJsonl,
+  previewBranchJsonlImport,
   searchMessages,
   type ChatExportFormat,
 } from '@/api/companion'
@@ -266,6 +268,88 @@ const draftName = ref('')
 const exportTarget = ref<Branch | null>(null)
 const exportIncludeCompacted = ref(true)
 const exportingFormat = ref<ChatExportFormat | null>(null)
+const importingJsonl = ref(false)
+const jsonlFileInput = ref<HTMLInputElement | null>(null)
+
+function triggerJsonlImport() {
+  if (!session.activeCompanionId || importingJsonl.value) return
+  const input = jsonlFileInput.value
+  if (!input) return
+  input.value = ''
+  input.click()
+}
+
+async function commitJsonlImport(cid: string, text: string, filename: string) {
+  importingJsonl.value = true
+  try {
+    const res = await importBranchJsonl(cid, text, { filename, skipSystem: true })
+    exportTarget.value = null
+    menuOpen.value = false
+    if (session.activeCompanionId === cid) {
+      await session.loadBranches()
+      session.selectBranch(res.branch_id)
+    }
+    let msg = t('rail.importDoneText', {
+      branch: res.branch_name,
+      count: String(res.imported_count),
+    })
+    if (res.skipped_system_count > 0) {
+      msg += t('rail.importDoneSkipped', { skipped: String(res.skipped_system_count) })
+    }
+    if (res.variables_imported > 0) {
+      msg += t('rail.importDoneVars', { vars: String(res.variables_imported) })
+    }
+    ui.askAlert({
+      title: t('rail.importDoneTitle'),
+      text: msg,
+    })
+  } catch (err) {
+    ui.askAlert({
+      title: t('rail.importFailedTitle'),
+      text: err instanceof Error ? err.message : String(err),
+    })
+  } finally {
+    importingJsonl.value = false
+  }
+}
+
+async function onJsonlFilePicked(ev: Event) {
+  const target = ev.target as HTMLInputElement | null
+  const file = target?.files?.[0]
+  const cid = session.activeCompanionId
+  if (!file || !cid || importingJsonl.value) return
+
+  importingJsonl.value = true
+  try {
+    const text = await file.text()
+    const preview = await previewBranchJsonlImport(cid, text, true)
+    if (preview.character_mismatch && preview.source_character_name) {
+      importingJsonl.value = false
+      menuOpen.value = false
+      ui.askConfirm({
+        title: t('rail.importMismatchTitle'),
+        text: t('rail.importMismatchText', {
+          source: preview.source_character_name,
+          target: preview.companion_name,
+          count: String(preview.message_count),
+        }),
+        confirmLabel: t('rail.importMismatchGo'),
+        danger: false,
+        onConfirm: () => {
+          void commitJsonlImport(cid, text, file.name)
+        },
+      })
+      return
+    }
+    await commitJsonlImport(cid, text, file.name)
+  } catch (err) {
+    importingJsonl.value = false
+    ui.askAlert({
+      title: t('rail.importFailedTitle'),
+      text: err instanceof Error ? err.message : String(err),
+    })
+  }
+}
 
 const exportFormats: Array<{ id: ChatExportFormat; labelKey: LabelKey; hintKey: LabelKey }> = [
   { id: 'md', labelKey: 'rail.exportFormatMd', hintKey: 'rail.exportFormatMdHint' },
@@ -444,8 +528,22 @@ function askDeleteBranch(id: string) {
             </div>
             <div class="menu-sep"></div>
             <button class="menu-item ghost" @click="addBranch">{{ t('rail.newBranch') }}</button>
+            <button
+              class="menu-item ghost"
+              :disabled="importingJsonl || !session.activeCompanionId"
+              @click="triggerJsonlImport"
+            >
+              {{ importingJsonl ? t('rail.importingJsonl') : t('rail.importJsonl') }}
+            </button>
           </template>
         </div>
+        <input
+          ref="jsonlFileInput"
+          type="file"
+          accept=".jsonl,.txt,application/x-ndjson,text/plain"
+          style="display: none"
+          @change="onJsonlFilePicked"
+        />
       </div>
     </div>
 
