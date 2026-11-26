@@ -604,7 +604,8 @@ watch(
                 <button
                   type="button"
                   class="album-video-stop"
-                  :title="t('card.assetStopVideo')"
+                  :data-tip="t('card.assetStopVideo')"
+                  data-tip-float
                   :aria-label="t('card.assetStopVideo')"
                   @click="stopGalleryVideo"
                 >
@@ -701,7 +702,8 @@ watch(
             class="album-lb-btn"
             :disabled="zoom <= MIN_ZOOM"
             :aria-label="t('picture.zoomOut')"
-            :title="t('picture.zoomOut')"
+            :data-tip="t('picture.zoomOut')"
+            data-tip-float
             @click="zoomBy(-ZOOM_STEP)"
           >
             <svg viewBox="0 0 24 24"><path d="M6 12h12" /></svg>
@@ -709,7 +711,8 @@ watch(
           <button
             type="button"
             class="album-lb-btn album-lb-pct"
-            :title="t('picture.zoomReset')"
+            :data-tip="t('picture.zoomReset')"
+            data-tip-float
             @click="resetZoom"
           >
             {{ Math.round(zoom * 100) }}%
@@ -719,7 +722,8 @@ watch(
             class="album-lb-btn"
             :disabled="zoom >= MAX_ZOOM"
             :aria-label="t('picture.zoomIn')"
-            :title="t('picture.zoomIn')"
+            :data-tip="t('picture.zoomIn')"
+            data-tip-float
             @click="zoomBy(ZOOM_STEP)"
           >
             <svg viewBox="0 0 24 24"><path d="M12 6v12M6 12h12" /></svg>
@@ -730,7 +734,8 @@ watch(
           type="button"
           class="album-lb-close"
           :aria-label="t('picture.closeViewer')"
-          :title="t('picture.closeViewer')"
+          :data-tip="t('picture.closeViewer')"
+          data-tip-float
           @click="closeLightbox"
         >
           <svg viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18" /></svg>

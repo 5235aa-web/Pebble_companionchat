@@ -182,7 +182,8 @@ onUnmounted(() => {
         <button
           class="upd-refresh"
           :class="{ spinning: phase === 'checking' }"
-          :title="t('update.refresh')"
+          :data-tip="t('update.refresh')"
+          data-tip-float
           :disabled="isBusy || phase === 'ready'"
           @click="checkNow(false)"
         >

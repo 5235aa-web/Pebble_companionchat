@@ -198,14 +198,14 @@ function cancelEdit() {
       <span v-if="cardHud.affectionDelta !== null" class="chud-delta" :class="{ neg: cardHud.affectionDelta < 0 }">
         {{ cardHud.affectionDelta > 0 ? `+${cardHud.affectionDelta}` : cardHud.affectionDelta }}
       </span>
-      <span v-if="cardHud.locationText" class="chud-pill-meta" :title="cardHud.locationText">
+      <span v-if="cardHud.locationText" class="chud-pill-meta" :data-tip="cardHud.locationText || undefined" data-tip-float>
         <svg viewBox="0 0 16 16" aria-hidden="true">
           <path d="M8 14s4.5-4.1 4.5-7.6A4.5 4.5 0 003.5 6.4C3.5 9.9 8 14 8 14z" />
           <circle cx="8" cy="6.4" r="1.5" />
         </svg>
         <span>{{ cardHud.locationText }}</span>
       </span>
-      <span v-if="cardHud.outfitText" class="chud-pill-meta chud-pill-outfit" :title="cardHud.outfitText">
+      <span v-if="cardHud.outfitText" class="chud-pill-meta chud-pill-outfit" :data-tip="cardHud.outfitText || undefined" data-tip-float>
         <svg viewBox="0 0 16 16" aria-hidden="true">
           <path d="M5.6 2.6a2.4 2.4 0 004.8 0l2.6 1.5-1.2 3.1-1.6-.7V13.5H5.8V6.5l-1.6.7L3 4.1z" />
         </svg>
@@ -217,7 +217,8 @@ function cancelEdit() {
       <span
         v-if="cardHud.thoughtEnabled && cardHud.thoughtText"
         class="chud-pill-thought"
-        :title="t('hud.thought')"
+        :data-tip="t('hud.thought')"
+        data-tip-float
         aria-hidden="true"
       >
         <svg viewBox="0 0 16 16"><path d="M8 3.2c-3 0-5.4 1.9-5.4 4.3 0 1.4.8 2.6 2 3.4l-.6 2.1 2.3-1.1c.5.1 1.1.2 1.7.2 3 0 5.4-1.9 5.4-4.3S11 3.2 8 3.2z" /></svg>
@@ -241,7 +242,8 @@ function cancelEdit() {
             type="button"
             class="chud-switch"
             :class="{ on: cardHud.effectiveEnabled }"
-            :title="t('hud.toggleTip')"
+            :data-tip="t('hud.toggleTip')"
+            data-tip-float
             @click="cardHud.setEnabled(!cardHud.effectiveEnabled)"
           >
             {{ cardHud.effectiveEnabled ? t('hud.on') : t('hud.off') }}
@@ -250,7 +252,8 @@ function cancelEdit() {
             type="button"
             class="chud-icon-btn"
             :class="{ on: cardHud.thoughtEnabled }"
-            :title="cardHud.thoughtEnabled ? t('hud.thoughtOffTip') : t('hud.thoughtOnTip')"
+            :data-tip="cardHud.thoughtEnabled ? t('hud.thoughtOffTip') : t('hud.thoughtOnTip')"
+            data-tip-float
             @click="cardHud.setThoughtEnabled(!cardHud.thoughtEnabled)"
           >
             <svg viewBox="0 0 24 24">
@@ -261,7 +264,8 @@ function cancelEdit() {
             type="button"
             class="chud-icon-btn"
             :class="{ on: cardHud.compact }"
-            :title="cardHud.compact ? t('hud.compactOff') : t('hud.compactOn')"
+            :data-tip="cardHud.compact ? t('hud.compactOff') : t('hud.compactOn')"
+            data-tip-float
             @click="cardHud.toggleCompact()"
           >
             <svg viewBox="0 0 24 24">
@@ -274,7 +278,8 @@ function cancelEdit() {
             v-if="hasAnyValue"
             type="button"
             class="chud-icon-btn"
-            :title="t('hud.resetTip')"
+            :data-tip="t('hud.resetTip')"
+            data-tip-float
             @click="cardHud.reset()"
           >
             <svg viewBox="0 0 24 24"><path d="M4 12a8 8 0 102.4-5.7M4 4v4h4" /></svg>
@@ -393,7 +398,7 @@ function cancelEdit() {
           </div>
 
           <div v-for="[k, v] in cardHud.extraEntries" :key="k" class="chud-row chud-extra-row">
-            <span class="chud-label" :title="k">{{ k }}</span>
+            <span class="chud-label" :data-tip="String(k)" data-tip-float>{{ k }}</span>
             <input
               v-if="editingKey === k"
               ref="editInput"
@@ -410,7 +415,8 @@ function cancelEdit() {
               <button
                 type="button"
                 class="chud-unpin chud-field-del"
-                :title="t('hud.fieldRemove')"
+                :data-tip="t('hud.fieldRemove')"
+                data-tip-float
                 @click="cardHud.removeHudField(k)"
               >
                 ×
@@ -471,7 +477,7 @@ function cancelEdit() {
         <div v-if="cardHud.pinnedVarEntries.length" class="chud-pvars">
           <div class="chud-section-k">{{ t('hud.pinnedVars') }}</div>
           <div v-for="pv in cardHud.pinnedVarEntries" :key="pv.key" class="chud-row chud-pvar-row">
-            <span class="chud-label" :title="pv.key">{{ pv.key }}</span>
+            <span class="chud-label" :data-tip="pv.key || undefined" data-tip-float>{{ pv.key }}</span>
             <input
               v-if="editingKey === `var:${pv.key}`"
               ref="editInput"
@@ -496,7 +502,8 @@ function cancelEdit() {
               <button
                 type="button"
                 class="chud-unpin"
-                :title="t('hud.unpinVar')"
+                :data-tip="t('hud.unpinVar')"
+                data-tip-float
                 @click="cardHud.togglePinVar(pv.key)"
               >
                 ×
@@ -512,7 +519,8 @@ function cancelEdit() {
             <button
               type="button"
               class="chud-chip-pick"
-              :title="t('hud.switchMedia')"
+              :data-tip="t('hud.switchMedia')"
+              data-tip-float
               @click="togglePicker('expression')"
             >
               <span class="chud-chip-v" :class="{ muted: !cardHud.activeExpressionLabel }">
@@ -537,7 +545,8 @@ function cancelEdit() {
             <button
               type="button"
               class="chud-chip-pick"
-              :title="t('hud.switchMedia')"
+              :data-tip="t('hud.switchMedia')"
+              data-tip-float
               @click="togglePicker('scene')"
             >
               <span class="chud-chip-v" :class="{ muted: !cardHud.activeSceneLabel }">
@@ -562,7 +571,8 @@ function cancelEdit() {
             <button
               type="button"
               class="chud-chip-pick"
-              :title="t('hud.switchMedia')"
+              :data-tip="t('hud.switchMedia')"
+              data-tip-float
               @click="togglePicker('bgm')"
             >
               <span class="chud-chip-v" :class="{ muted: !cardAudio.bgmPlaying }">
@@ -588,7 +598,8 @@ function cancelEdit() {
               type="button"
               class="chud-vol-btn"
               :class="{ muted: cardAudio.muted }"
-              :title="t('hud.mute')"
+              :data-tip="t('hud.mute')"
+              data-tip-float
               @click="cardAudio.toggleMute()"
             >
               <svg v-if="cardAudio.muted" viewBox="0 0 16 16" aria-hidden="true">

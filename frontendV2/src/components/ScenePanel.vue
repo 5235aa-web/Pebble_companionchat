@@ -525,7 +525,8 @@ onMounted(() => {
             :class="{ active: ui.sceneMotion }"
             type="button"
             :aria-pressed="ui.sceneMotion"
-            :title="t('scene.motionTip')"
+            :data-tip="t('scene.motionTip')"
+            data-tip-float
             @click="ui.toggleSceneMotion()"
           >
             <span class="sc-motion-dot" aria-hidden="true"></span>
@@ -535,7 +536,8 @@ onMounted(() => {
             v-if="ui.sceneMotion"
             class="sc-open sc-motion-level"
             type="button"
-            :title="t('scene.motionLevelTip')"
+            :data-tip="t('scene.motionLevelTip')"
+            data-tip-float
             @click="ui.toggleSceneMotionLevel()"
           >
             <span>{{ ui.sceneMotionLevel === 'vivid' ? t('scene.motionVivid') : t('scene.motionSubtle') }}</span>

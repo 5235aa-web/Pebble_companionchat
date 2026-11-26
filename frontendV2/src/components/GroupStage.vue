@@ -690,6 +690,8 @@ function clearDelta(): void {
 const scroller = ref<HTMLElement | null>(null)
 const thread = ref<HTMLElement | null>(null)
 const hoveredCardId = ref('')
+const hoveredCardPos = ref<{ x: number; y: number } | null>(null)
+const cardTipEl = ref<HTMLElement | null>(null)
 const showJump = ref(false)
 /** Whether the view should keep tracking the bottom as text arrives. */
 let followBottom = true
@@ -703,6 +705,18 @@ const hoveredCardTip = computed(() => {
   return draft.value.trim() || chips.value.length
     ? t('group.cardSelectTip', { name: card.name })
     : t('group.cardSpeakTip', { name: card.name })
+})
+
+const cardTipStyle = computed(() => {
+  const pos = hoveredCardPos.value
+  if (!pos || !hoveredCardTip.value) return {}
+  const tipW = cardTipEl.value?.offsetWidth ?? 220
+  const tipH = cardTipEl.value?.offsetHeight ?? 30
+  const margin = 8
+  const left = Math.max(margin, Math.min(pos.x - tipW / 2, window.innerWidth - tipW - margin))
+  let top = pos.y - tipH - 14
+  if (top < margin) top = Math.min(pos.y + 18, window.innerHeight - tipH - margin)
+  return { left: `${Math.round(left)}px`, top: `${Math.round(top)}px` }
 })
 
 /**
@@ -755,9 +769,12 @@ function onStageMouseDown(e: MouseEvent): void {
 function onStageMouseMove(e: MouseEvent): void {
   if (!cards.value.length || !canHitStageCard(e.target, e.clientX)) {
     if (hoveredCardId.value) hoveredCardId.value = ''
+    hoveredCardPos.value = null
     return
   }
-  hoveredCardId.value = findCardAt(e.clientX, e.clientY)
+  const id = findCardAt(e.clientX, e.clientY)
+  hoveredCardId.value = id
+  hoveredCardPos.value = id ? { x: e.clientX, y: e.clientY } : null
 }
 
 function onStageClick(e: MouseEvent): void {
@@ -1565,11 +1582,12 @@ onMounted(async () => {
           hovered: hoveredCardId === card.key,
         }"
         :style="cardStyle(i)"
-        :title="
+        :data-tip="
           draft.trim() || chips.length
             ? t('group.cardSelectTip', { name: card.name })
             : t('group.cardSpeakTip', { name: card.name })
         "
+        data-tip-float
         @click="onCardClick(card.key)"
       >
         <span class="gc-portrait">
@@ -1601,11 +1619,10 @@ onMounted(async () => {
       ref="scroller"
       class="gc-scroll"
       :class="{ 'card-hover': Boolean(hoveredCardId) }"
-      :title="hoveredCardTip || undefined"
       @scroll.passive="onScroll"
       @mousedown="onStageMouseDown"
       @mousemove="onStageMouseMove"
-      @mouseleave="hoveredCardId = ''"
+      @mouseleave="hoveredCardId = ''; hoveredCardPos = null"
       @click="onStageClick"
     >
       <div ref="thread" class="gc-thread">
@@ -2007,11 +2024,12 @@ onMounted(async () => {
           class="gc-cast-pill"
           :class="{ on: card.focused, speaking: card.speaking }"
           :disabled="busy"
-          :title="
+          :data-tip="
             draft.trim() || chips.length
               ? t('group.cardSelectTip', { name: card.name })
               : t('group.cardSpeakTip', { name: card.name })
           "
+          data-tip-float
           @click="onCardClick(card.key)"
         >
           <span class="gc-cast-dot" aria-hidden="true"></span>
@@ -2029,7 +2047,8 @@ onMounted(async () => {
             type="button"
             class="gc-hint-btn"
             :class="{ on: relayRounds > 0 }"
-            :title="t('group.relayTip')"
+            :data-tip="t('group.relayTip')"
+            data-tip-float
             @click="cycleRelay"
           >
             {{ t('group.relayLabel') }}: {{ relayRounds ? `+${relayRounds}` : t('group.relayOff') }}
@@ -2054,5 +2073,17 @@ onMounted(async () => {
       </div>
     </footer>
     </div>
+
+    <Teleport to="body">
+      <div
+        v-if="hoveredCardTip && hoveredCardPos"
+        ref="cardTipEl"
+        class="floating-tip show"
+        :style="cardTipStyle"
+        aria-hidden="true"
+      >
+        {{ hoveredCardTip }}
+      </div>
+    </Teleport>
   </section>
 </template>

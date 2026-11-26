@@ -62,7 +62,7 @@ function sttToggleLabel(c: PickedAttachment): string {
             <div v-if="c.uploading || c.transcribing" class="chip-scan"></div>
           </div>
           <div class="chip-video-foot">
-            <span class="chip-video-name" :title="c.name">{{ c.name }}</span>
+            <span class="chip-video-name" :data-tip="c.name || undefined" data-tip-float>{{ c.name }}</span>
             <div class="chip-video-bar">
               <span class="chip-video-meta">{{ videoMetaLabel(c) }}</span>
               <button
@@ -71,7 +71,8 @@ function sttToggleLabel(c: PickedAttachment): string {
                 class="chip-video-stt"
                 :class="{ on: c.sttEnabled, busy: c.transcribing }"
                 :disabled="c.transcribing"
-                :title="t('composer.videoSttTip')"
+                :data-tip="t('composer.videoSttTip')"
+                data-tip-float
                 @click.stop="emit('toggleStt', c.id)"
               >
                 {{ sttToggleLabel(c) }}

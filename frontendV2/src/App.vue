@@ -22,6 +22,7 @@ import DropOverlay from './components/DropOverlay.vue'
 import CallPanel from './components/CallPanel.vue'
 import GroupStage from './components/GroupStage.vue'
 import PuppetEditorPopup from './components/PuppetEditorPopup.vue'
+import FloatingTip from './components/FloatingTip.vue'
 import { useUiStore } from './stores/ui'
 import { useSessionStore } from './stores/session'
 import { useChatStore } from './stores/chat'
@@ -195,4 +196,5 @@ onUnmounted(() => {
   <CompactPanel />
   <ScriptPanel />
   <SceneCopyPanel />
+  <FloatingTip />
 </template>

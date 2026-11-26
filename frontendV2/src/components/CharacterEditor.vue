@@ -693,7 +693,7 @@ function removeGreeting(index: number) {
                       />
                     </div>
                     <div class="pf-asset-meta">
-                      <span class="pf-asset-name" :title="a.name">{{ a.name }}</span>
+                      <span class="pf-asset-name" :data-tip="a.name || undefined" data-tip-float>{{ a.name }}</span>
                       <span class="pf-asset-type">{{ a.asset_type }}</span>
                     </div>
                     <div class="pf-asset-actions">
@@ -741,7 +741,7 @@ function removeGreeting(index: number) {
               <div v-if="!collapsed.assetsAudio" class="pf-sub-body">
                 <div class="pf-audio-list">
                   <div v-for="a in session.audioAssets" :key="a.id" class="pf-audio-row">
-                    <span class="pf-audio-name" :title="a.name">{{ a.name }}</span>
+                    <span class="pf-audio-name" :data-tip="a.name || undefined" data-tip-float>{{ a.name }}</span>
                     <span class="pf-asset-type">{{ a.asset_type }}</span>
                     <button
                       type="button"

@@ -1,7 +1,7 @@
 /* ============================================================
    TOOLTIP
    ============================================================ */
-[data-tip]:not(.to-present){position:relative;}
+:where([data-tip]:not(.to-present):not([data-tip-float])){position:relative;}
 [data-tip]::after{
   content:attr(data-tip);
   position:absolute;bottom:calc(100% + 12px);left:50%;
@@ -15,6 +15,29 @@
   z-index:80;
 }
 [data-tip]:hover::after{opacity:1;transform:translateX(-50%) translateY(0);}
+[data-tip][data-tip-float]::after,
+[data-tip][data-tip-float]::before{content:none !important;display:none !important;}
+.floating-tip{
+  position:fixed;
+  z-index:6500;
+  pointer-events:none;
+  font-family:var(--mono);
+  font-size:11.5px;
+  letter-spacing:.12em;
+  line-height:1.55;
+  color:var(--ink-2);
+  background:var(--bg-3);
+  border:1px solid var(--line-2);
+  padding:5px 10px;
+  max-width:min(340px,calc(100vw - 16px));
+  white-space:normal;
+  overflow-wrap:anywhere;
+  opacity:0;
+  transform:translateY(4px);
+  transition:opacity .22s ease,transform .28s var(--ease);
+}
+.floating-tip.below{transform:translateY(-4px);}
+.floating-tip.show{opacity:1;transform:translateY(0);}
 .rail [data-tip]::after{
   bottom:auto;top:calc(100% + 16px);
   transform:translateX(-50%) translateY(-5px);

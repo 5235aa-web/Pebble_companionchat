@@ -641,7 +641,8 @@ async function onDeleteOutfit(oid: string): Promise<void> {
                 type="button"
                 class="puppet-pack-base-btn"
                 :class="{ on: baseIndex === idx }"
-                :title="t('live2d.setBaseTooltip')"
+                :data-tip="t('live2d.setBaseTooltip')"
+                data-tip-float
                 @click="baseIndex = idx"
               >
                 {{ baseIndex === idx ? '★' : '☆' }}
@@ -649,7 +650,8 @@ async function onDeleteOutfit(oid: string): Promise<void> {
               <input
                 v-model="item.label"
                 class="pf-input puppet-pack-label-in"
-                :title="item.sourceName"
+                :data-tip="item.sourceName || undefined"
+                data-tip-float
               />
               <button type="button" class="pf-asset-btn danger" @click="removePackItem(idx)">×</button>
             </div>

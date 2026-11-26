@@ -795,7 +795,7 @@ const activePromptInjections = computed(() =>
               </svg>
               {{ isZh ? '沉浸规则工坊' : 'Scene Rules' }}
             </span>
-            <span class="sd-char-pill" :title="session.activeCompanionId">
+            <span class="sd-char-pill" :data-tip="session.activeCompanionId || undefined" data-tip-float>
               {{ session.act || '—' }}
             </span>
             <span class="sd-count-pill">
@@ -835,7 +835,8 @@ const activePromptInjections = computed(() =>
             <button
               type="button"
               class="sd-link"
-              :title="isZh ? '打开完整角色卡编辑器' : 'Open full character editor'"
+              :data-tip="isZh ? '打开完整角色卡编辑器' : 'Open full character editor'"
+              data-tip-float
               @click="ui.openPanel('profile')"
             >
               {{ isZh ? '完整角色卡' : 'Card Editor' }}
@@ -1293,7 +1294,7 @@ const activePromptInjections = computed(() =>
                 </div>
                 <div v-else class="sd-var-list">
                   <div v-for="(_, k) in varDraft" :key="String(k)" class="sd-var-row">
-                    <span class="sd-var-k" :title="String(k)">{{ k }}</span>
+                    <span class="sd-var-k" :data-tip="String(k) || undefined" data-tip-float>{{ k }}</span>
                     <input
                       v-model="varDraft[k]"
                       class="sd-input sd-var-v"
@@ -1303,11 +1304,12 @@ const activePromptInjections = computed(() =>
                       type="button"
                       class="sd-pin"
                       :class="{ pinned: cardHud.isVarPinned(String(k)) }"
-                      :title="
+                      :data-tip="
                         cardHud.isVarPinned(String(k))
                           ? isZh ? '已钉选到 Stage HUD（点击取消）' : 'Pinned to Stage HUD (click to unpin)'
                           : isZh ? '钉选到 Stage HUD 实时追踪' : 'Pin to Stage HUD'
                       "
+                      data-tip-float
                       @click="cardHud.togglePinVar(String(k))"
                     >
                       <svg viewBox="0 0 16 16" aria-hidden="true">
@@ -1392,7 +1394,8 @@ const activePromptInjections = computed(() =>
                     :key="inj.id"
                     class="sd-inj-pill"
                     :class="{ live: inj.triggered }"
-                    :title="inj.text || (isZh ? '当前未触发' : 'Not triggered yet')"
+                    :data-tip="inj.text || (isZh ? '当前未触发' : 'Not triggered yet')"
+                    data-tip-float
                   >
                     {{ inj.triggered ? '●' : '○' }} {{ inj.name }}
                   </span>

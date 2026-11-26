@@ -152,13 +152,14 @@ onUnmounted(() => {
 <template>
   <div ref="rootEl" class="inline-video-card" :class="{ compact }">
     <div class="iv-head">
-      <span class="iv-title" :title="videoName">{{ videoName }}</span>
+      <span class="iv-title" :data-tip="videoName || undefined" data-tip-float>{{ videoName }}</span>
       <span v-if="metaLabel" class="iv-meta">{{ metaLabel }}</span>
       <button
         v-if="galleryTarget"
         type="button"
         class="iv-act"
-        :title="t('picture.openAlbum')"
+        :data-tip="t('picture.openAlbum')"
+        data-tip-float
         :aria-label="t('picture.openAlbum')"
         @click="openInGallery"
       >
@@ -171,7 +172,8 @@ onUnmounted(() => {
         v-if="active"
         type="button"
         class="iv-act"
-        :title="t('card.assetStopVideo')"
+        :data-tip="t('card.assetStopVideo')"
+        data-tip-float
         :aria-label="t('card.assetStopVideo')"
         @click="stopVideo"
       >

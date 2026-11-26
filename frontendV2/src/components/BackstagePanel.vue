@@ -1415,7 +1415,8 @@ function commitModel() {
                 :key="m.key"
                 class="mdl"
                 :class="{ on: m.key === llm.localSelection, missing: m.available === false }"
-                :title="m.path || ''"
+                :data-tip="m.path || undefined"
+                data-tip-float
                 @click="llm.selectLocalModel(m.key)"
               >
                 {{ m.label || m.key }}
@@ -1459,7 +1460,7 @@ function commitModel() {
 
           <div v-if="llm.isLocal && scannedGgufs.length" class="sub-box">
             <div v-for="s in scannedGgufs" :key="s.path" class="scan-row">
-              <span class="scan-name" :title="s.path">{{ s.relPath }} ({{ s.sizeGb }} GB)</span>
+              <span class="scan-name" :data-tip="s.path || undefined" data-tip-float>{{ s.relPath }} ({{ s.sizeGb }} GB)</span>
               <button class="mini-btn" @click="addScannedModel(s)">+ {{ t('backstage.addModel') }}</button>
             </div>
           </div>
