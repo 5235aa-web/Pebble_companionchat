@@ -7,7 +7,7 @@
  * click, and starting at zero each time would cut the previous one off.
  */
 
-import { setSpeechLevel } from './speechMonitor'
+import { setSpeechLevel, setSpeechSpectrum } from './speechMonitor'
 
 /** Lead-in before the first buffer, so a slow chunk cannot underrun. */
 const LEAD_S = 0.08
@@ -23,6 +23,7 @@ export class PcmPlayer {
   /** Taps the same signal the speakers get, for the call panel's waveform. */
   private analyser: AnalyserNode
   private levelBuf: Uint8Array
+  private freqBuf: Uint8Array
   /** Sits between the sources and the speakers so a barge-in can dip the volume. */
   private gain: GainNode
   private ducked = false
@@ -42,6 +43,7 @@ export class PcmPlayer {
     this.gain.connect(this.analyser)
     this.analyser.connect(this.ctx.destination)
     this.levelBuf = new Uint8Array(this.analyser.fftSize)
+    this.freqBuf = new Uint8Array(this.analyser.frequencyBinCount)
   }
 
   /**
@@ -137,7 +139,9 @@ export class PcmPlayer {
         setSpeechLevel(0)
         return
       }
-      setSpeechLevel(this.getLevel())
+      const level = this.getLevel()
+      const { wide, round } = this.getVowelShape(level)
+      setSpeechSpectrum(level, wide, round)
       this.levelRaf = window.requestAnimationFrame(tick)
     }
     this.levelRaf = window.requestAnimationFrame(tick)
@@ -161,6 +165,28 @@ export class PcmPlayer {
       sum += v * v
     }
     return Math.sqrt(sum / this.levelBuf.length)
+  }
+
+  private getVowelShape(level: number): { wide: number; round: number } {
+    if (this.closed || level < 0.02) return { wide: 0, round: 0 }
+    this.analyser.getByteFrequencyData(this.freqBuf as Uint8Array<ArrayBuffer>)
+    const n = this.freqBuf.length
+    if (n < 8) return { wide: 0, round: 0 }
+    const binHz = this.rate / Math.max(1, this.analyser.fftSize)
+    let low = 0
+    let mid = 0
+    let high = 0
+    for (let i = 1; i < n; i++) {
+      const hz = i * binHz
+      const v = this.freqBuf[i] / 255
+      if (hz < 700) low += v
+      else if (hz < 2200) mid += v
+      else high += v
+    }
+    const total = low + mid + high + 1e-4
+    const wide = Math.max(0, Math.min(1, ((mid + high * 1.15) / total) * 1.5 - 0.35))
+    const round = Math.max(0, Math.min(1, (low / total) * 1.9 - 0.45))
+    return { wide, round }
   }
 
   /**

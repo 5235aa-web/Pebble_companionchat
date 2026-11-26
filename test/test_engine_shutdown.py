@@ -94,6 +94,18 @@ class ModuleListTest(unittest.TestCase):
         self.assertNotIn('qwen3asr_stt_engine', listed)
         self.assertNotIn('confucius4_stt_engine', listed)
 
+    def test_shutdown_inochi2d_is_safe_and_calls_loaded_service(self):
+        from backend.Inochi2D import service as inochi_service
+
+        calls = []
+        orig = inochi_service.shutdown_workers
+        try:
+            inochi_service.shutdown_workers = lambda: calls.append('killed') or 1
+            self.assertEqual(engine_shutdown.shutdown_inochi2d(), 1)
+            self.assertEqual(calls, ['killed'])
+        finally:
+            inochi_service.shutdown_workers = orig
+
 
 if __name__ == '__main__':
     unittest.main()

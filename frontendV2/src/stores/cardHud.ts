@@ -8,6 +8,7 @@ import {
 } from '@/api/companion'
 import { useSessionStore } from './session'
 import { useCardAudioStore } from './cardAudio'
+import { useInochi2dStore } from './inochi2d'
 
 const MOOD_SYNONYMS: string[][] = [
   ['happy', 'joy', 'smile', 'cheerful', 'delighted', 'excited', 'contented', 'glad', '开心', '高兴', '微笑', '愉快'],
@@ -338,6 +339,13 @@ export const useCardHudStore = defineStore('cardHud', () => {
 
   function syncFromAssistantReply(replyText: string) {
     lastAssistantReplyText = replyText || ''
+    if (replyText) {
+      useInochi2dStore().applyChatCue(
+        replyText,
+        moodText.value,
+        activeExpressionLabel.value || String(hud.value.expression ?? ''),
+      )
+    }
     if (!replyText || explicitExpressionLocked || !session.imageAssets.length) return
     const ref = extractLastInlineImageRef(replyText)
     if (!ref) return
@@ -411,6 +419,11 @@ export const useCardHudStore = defineStore('cardHud', () => {
 
     // 1) Dual-layer visual stage sync (expression portrait + scene backdrop)
     syncVisualLayersFromHud(hud.value, mediaCue)
+    useInochi2dStore().applyChatCue(
+      '',
+      String(hud.value.mood ?? ''),
+      String(mediaCue.expression ?? hud.value.expression ?? ''),
+    )
 
     // 2) BGM loop switch
     const bgmCue = String(mediaCue.bgm ?? '').trim()

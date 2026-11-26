@@ -518,3 +518,164 @@
     max-height: 60vh;
   }
 }
+
+/* Visual rigging overlay & layer inspector controls */
+.puppet-rig-overlay {
+  position: absolute;
+  inset: 0;
+  z-index: 5;
+  pointer-events: auto;
+  background: rgb(var(--shadow-rgb) / 0.14);
+}
+
+.puppet-rig-bar {
+  position: absolute;
+  top: 10px;
+  left: 10px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 8px;
+  background: rgb(var(--bg-rgb) / 0.9);
+  border: 1px solid var(--line-2);
+  backdrop-filter: blur(8px);
+}
+
+.puppet-rig-badge {
+  font-family: var(--mono);
+  font-size: 9px;
+  letter-spacing: 0.1em;
+  color: var(--accent);
+}
+
+.puppet-rig-sel {
+  min-width: 88px;
+}
+
+.puppet-rig-sel .ui-select-btn {
+  padding: 2px 6px;
+  font-size: 10px;
+}
+
+.puppet-check {
+  appearance: none;
+  -webkit-appearance: none;
+  flex: none;
+  width: 14px;
+  height: 14px;
+  border: 1px solid var(--line-2);
+  background: rgb(var(--bg-rgb) / 0.65);
+  display: inline-grid;
+  place-items: center;
+  cursor: pointer;
+  transition: border-color 0.2s ease, background-color 0.2s ease;
+}
+
+.puppet-check:hover {
+  border-color: rgb(var(--accent-rgb) / 0.65);
+}
+
+.puppet-check:checked {
+  border-color: rgb(var(--accent-rgb) / 0.85);
+  background: rgb(var(--accent-rgb) / 0.2);
+}
+
+.puppet-check:checked::after {
+  content: '';
+  width: 7px;
+  height: 4px;
+  border-left: 1.6px solid var(--accent);
+  border-bottom: 1.6px solid var(--accent);
+  transform: rotate(-45deg) translate(0.5px, -0.5px);
+}
+
+.puppet-rig-handle {
+  position: absolute;
+  transform: translate(-50%, -50%);
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 6px 2px 3px;
+  border-radius: 999px;
+  border: 1px solid var(--rig-color, var(--accent));
+  background: rgb(var(--bg-rgb) / 0.88);
+  color: var(--ink);
+  cursor: grab;
+  user-select: none;
+  touch-action: none;
+  box-shadow: 0 2px 8px rgb(0 0 0 / 0.35);
+}
+
+.puppet-rig-handle.dragging {
+  cursor: grabbing;
+  transform: translate(-50%, -50%) scale(1.12);
+}
+
+.puppet-rig-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--rig-color, var(--accent));
+  flex: none;
+}
+
+.puppet-rig-lbl {
+  font-size: 10px;
+  line-height: 1;
+  white-space: nowrap;
+}
+
+.puppet-sec-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 6px;
+}
+
+.puppet-layer-rig-row {
+  flex-direction: column;
+  align-items: stretch;
+  gap: 6px;
+}
+
+.puppet-layer-top {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.puppet-layer-meta {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.puppet-rig-select {
+  width: 96px;
+  flex: none;
+}
+
+.puppet-rig-select .ui-select-btn {
+  padding: 3px 4px;
+  font-size: 10px;
+}
+
+.puppet-phys-ctrl {
+  flex: 1;
+  min-width: 120px;
+}
+
+.puppet-phys-ctrl .sl {
+  grid-template-columns: 32px 1fr 34px;
+  gap: 8px;
+  padding: 2px 0;
+}
+
+.puppet-phys-ctrl .sl-name {
+  font-size: 10.5px;
+}
+
+.puppet-phys-ctrl .sl-val {
+  font-size: 9.5px;
+}

@@ -14,6 +14,11 @@ GitHub Release description and the in-app update panel notes.
 - **Unified `data-tip` Tooltips**:
   - Replaced all remaining browser-native `title` tooltips across the frontend (`ScenePanel`, `CardHudPanel`, `GroupStage`, `SceneRulesDock`, `ImageGallery`, `InlineVideoCard`, `BackstagePanel`, `AttachmentChipStrip`, `CharacterEditor`, `PuppetEditorPopup`, and `UpdateButton`) with the app's themed `data-tip` style.
   - Added a viewport-clamped `FloatingTip` portal layer so tooltips inside scrollable, `overflow: hidden`, truncated-ellipsis, or edge-anchored containers never clip or spill off-screen.
+- **Live2D Rigging, Multi-Pose & Layer Recovery Upgrades**:
+  - Upgraded 2D puppet animation and rigging (`puppet2d.ts`, `puppetActions.ts`, `PuppetRigOverlay.vue`) with Marigold depth relief, skeletal anchors for whole-body pose reactions, live FFT vowel lip-sync (`speechMonitor.ts`, `pcmPlayer.ts`), and themed editor controls (`UiSelect`, `UiSlider`, `.puppet-check`).
+  - Added multi-pose slots with mood/keyword auto-matching (`pose_manager.py`, `api_routesV2.py`) alongside direct lossless layered imports from `.psd` and Inochi2D `.inx` files (`psd_importer.py`, `inx_importer.py`).
+  - Added source-grounded post-decomposition repair (`layer_repair.py`) to recover missing garments/shoulders via ink-barrier segmentation, fix source-contradicting `zIndex` overlaps and eye-layer order, prune hallucinated accessory blobs, and retain detached limb parts in `part_lr_split` / `load_part`.
+  - Hardened worker cleanup (`backend/Inochi2D/service.py`, `engine_shutdown.py`, `backend/main.py`) with Windows Kill-on-Job-Close binding, process-tree termination on cancel/exit, and ASGI lifespan/`atexit` shutdown hooks.
 
 ## 1.0.0
 

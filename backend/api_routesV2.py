@@ -14,6 +14,7 @@ from .chat_exporter import export_branch_chat
 from .chat_importer import import_jsonl_branch, inspect_jsonl_chat
 from .companion import Companion
 from .companion_db import get_companion, is_last_active_message
+from .Inochi2D import service as inochi2d_service
 from .picturesys import service as picture_service
 
 router = APIRouter(tags=["multi-companion-v2"])
@@ -330,3 +331,30 @@ async def import_companion_jsonl_branch(
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except RuntimeError as exc:
         raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+
+class Live2DCueRequest(BaseModel):
+    text: str = ""
+    mood: str = ""
+    expression: str = ""
+
+
+@router.get("/{companion_id}/live2d/poses")
+async def get_companion_live2d_poses(companion_id: str):
+    """List multi-pose Live2D slots configured for a companion."""
+    if not get_companion(companion_id):
+        raise HTTPException(status_code=404, detail="Companion not found")
+    return inochi2d_service.list_poses(companion_id)
+
+
+@router.post("/{companion_id}/live2d/cue")
+async def match_companion_live2d_cue(companion_id: str, request: Live2DCueRequest):
+    """Match a chat/HUD cue against configured multi-pose Live2D slots."""
+    if not get_companion(companion_id):
+        raise HTTPException(status_code=404, detail="Companion not found")
+    return inochi2d_service.match_pose_for_cue(
+        companion_id=companion_id,
+        text=request.text,
+        mood=request.mood,
+        expr_hint=request.expression,
+    )

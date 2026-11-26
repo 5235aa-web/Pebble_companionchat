@@ -7,6 +7,7 @@ import { useUiStore } from '@/stores/ui'
 import { useI18n } from '@/i18n'
 import { Puppet2DRenderer, type HitZone } from '@/lib/puppet2d'
 import { useFileUrl } from '@/composables/useFileUrl'
+import PuppetRigOverlay from './PuppetRigOverlay.vue'
 
 const props = defineProps<{
   activeSlideUrl?: string
@@ -23,9 +24,11 @@ const fileInputRef = ref<HTMLInputElement | null>(null)
 const ready = ref(false)
 const localError = ref('')
 const canvasCursor = ref('')
+const stageScale = ref({ scaleX: 0.92, scaleY: 0.92 })
 
 let renderer: Puppet2DRenderer | null = null
 let activePointerDown = false
+let loadedSignature = ''
 
 const who = computed(() => chat.activeCast)
 const sourcePreviewPath = computed(() => props.activeSlideUrl || who.value?.avatar || '')
@@ -45,9 +48,16 @@ const stageLabel = computed(() => {
 function ensureRenderer(): void {
   if (renderer || !canvasRef.value) return
   try {
-    renderer = new Puppet2DRenderer(canvasRef.value, inochi.config, (ok) => {
-      ready.value = ok
-    })
+    renderer = new Puppet2DRenderer(
+      canvasRef.value,
+      { ...inochi.config, emotion: inochi.effectiveEmotion },
+      (ok) => {
+        ready.value = ok
+        if (ok && renderer) {
+          stageScale.value = renderer.getStageScale()
+        }
+      },
+    )
   } catch (e) {
     localError.value = e instanceof Error ? e.message : String(e)
   }
@@ -56,26 +66,54 @@ function ensureRenderer(): void {
 watch(
   () => inochi.puppet,
   (manifest) => {
+    if (!manifest) {
+      ready.value = false
+      loadedSignature = ''
+      return
+    }
+    const sig = `${manifest.source}:${manifest.layers.map((l) => l.relPath).join(',')}:${(manifest.expressions || []).length}`
+    if (sig === loadedSignature && renderer) return
+    loadedSignature = sig
     ready.value = false
-    if (!manifest) return
     ensureRenderer()
     if (renderer) {
-      void renderer.loadManifest(manifest)
+      void renderer.loadManifest(manifest).then(() => {
+        if (renderer) stageScale.value = renderer.getStageScale()
+      })
     }
   },
   { immediate: true },
 )
 
 watch(
-  () => inochi.config,
-  (cfg) => {
-    renderer?.setConfig(cfg)
+  () => inochi.liveRigPatch,
+  (patch) => {
+    if (!patch || !renderer) return
+    renderer.updateLiveRig(patch.anchors, patch.subjects, patch.layers)
+  },
+)
+
+watch(
+  () => [inochi.config, inochi.effectiveEmotion] as const,
+  ([cfg, emotion]) => {
+    renderer?.setConfig({ ...cfg, emotion })
   },
   { deep: true },
 )
 
+watch(
+  () => inochi.actionCommand,
+  (cmd) => {
+    if (!cmd) return
+    ensureRenderer()
+    renderer?.triggerAction(cmd.id, cmd.intensity)
+  },
+)
+
 function cursorForZone(zone: HitZone | null, pressed: boolean): string {
-  if (zone === 'crown' || zone === 'cheek') return pressed ? 'grabbing' : 'grab'
+  if (zone === 'crown' || zone === 'cheek' || zone === 'arm_l' || zone === 'arm_r') {
+    return pressed ? 'grabbing' : 'grab'
+  }
   if (zone === 'chest') return 'pointer'
   return ''
 }
@@ -227,6 +265,12 @@ onBeforeUnmount(() => {
       @pointercancel="onCanvasPointerUp"
       @pointerleave="onCanvasPointerLeave"
     ></canvas>
+
+    <PuppetRigOverlay
+      v-if="inochi.rigEditMode && inochi.puppet && ready"
+      :scale-x="stageScale.scaleX"
+      :scale-y="stageScale.scaleY"
+    />
 
     <!-- Fallback / initial empty state before decomposition -->
     <div v-if="!inochi.puppet || !ready" class="puppet-empty">

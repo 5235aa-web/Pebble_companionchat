@@ -95,16 +95,73 @@ def _trim_rgba(rgba: np.ndarray, pad: int = 2) -> Optional[Tuple[np.ndarray, int
     return rgba[y1:y2, x1:x2], x1, y1, x2 - x1, y2 - y1
 
 
+def _extract_depth_layer_map(depth_psd_path: Path) -> Dict[str, Any]:
+    """Load per-layer grayscale depth images from ``<name>_depth.psd`` keyed by layer name."""
+    if not depth_psd_path.is_file():
+        return {}
+    try:
+        from psd_tools import PSDImage
+
+        dpsd = PSDImage.open(str(depth_psd_path))
+        by_name: Dict[str, Any] = {}
+        for dlayer in dpsd:
+            dname = str(dlayer.name or "").strip()
+            if dname:
+                by_name[dname] = dlayer
+        return by_name
+    except Exception:
+        return {}
+
+
+def _crop_aligned_depth(
+    dlayer: Any,
+    gx: int,
+    gy: int,
+    lw: int,
+    lh: int,
+    canvas_w: int,
+    canvas_h: int,
+) -> Optional[Image.Image]:
+    """Extract a grayscale depth crop aligned to color bounds ``(gx, gy, lw, lh)``."""
+    try:
+        pil_d = dlayer.topil()
+        if pil_d is None:
+            return None
+        d_arr = np.array(pil_d.convert("L"))
+        dl, dt = int(dlayer.left), int(dlayer.top)
+        dh, dw = d_arr.shape[:2]
+
+        # Handle matching layer bounds fast-path or arbitrary offset copy
+        out = np.full((lh, lw), 128, dtype=np.uint8)
+        sx0 = max(0, gx - dl)
+        sy0 = max(0, gy - dt)
+        sx1 = min(dw, gx + lw - dl)
+        sy1 = min(dh, gy + lh - dt)
+        if sx1 > sx0 and sy1 > sy0:
+            dx0 = (dl + sx0) - gx
+            dy0 = (dt + sy0) - gy
+            out[dy0:dy0 + (sy1 - sy0), dx0:dx0 + (sx1 - sx0)] = d_arr[sy0:sy1, sx0:sx1]
+        elif dw == canvas_w and dh == canvas_h:
+            cx0, cy0 = max(0, gx), max(0, gy)
+            cx1, cy1 = min(canvas_w, gx + lw), min(canvas_h, gy + lh)
+            if cx1 > cx0 and cy1 > cy0:
+                out[cy0 - gy:cy1 - gy, cx0 - gx:cx1 - gx] = d_arr[cy0:cy1, cx0:cx1]
+        return Image.fromarray(out, mode="L")
+    except Exception:
+        return None
+
+
 def build_puppet_from_psd(
     psd_path: Path,
     out_dir: Path,
     rel_prefix: str,
     source_image: Optional[Path] = None,
 ) -> Dict[str, Any]:
-    """Extract tight layer PNGs from ``psd_path`` and write ``puppet.json``."""
+    """Extract tight layer PNGs (and optional Marigold depth maps) from ``psd_path`` and write ``puppet.json``."""
     from psd_tools import PSDImage
 
     psd = PSDImage.open(str(psd_path))
+    depth_layers_by_name = _extract_depth_layer_map(psd_path.with_name(f"{psd_path.stem}_depth.psd"))
     json_meta_path = Path(str(psd_path) + ".json")
     part_meta: Dict[str, Any] = {}
     canvas_w, canvas_h = psd.width, psd.height
@@ -126,7 +183,7 @@ def build_puppet_from_psd(
         except OSError:
             pass
 
-    raw_layers: List[Dict[str, Any]] = []
+    raw_entries: List[Tuple[Dict[str, Any], np.ndarray]] = []
     anchors_acc: Dict[str, Tuple[float, float, Tuple[int, int, int, int]]] = {}
     min_x, min_y, max_x, max_y = canvas_w, canvas_h, 0, 0
 
@@ -142,15 +199,19 @@ def build_puppet_from_psd(
         gx = int(layer.left) + lx
         gy = int(layer.top) + ly
 
-        min_x = min(min_x, gx)
-        min_y = min(min_y, gy)
-        max_x = max(max_x, gx + lw)
-        max_y = max(max_y, gy + lh)
-
         tag = str(layer.name or f"layer_{idx}").strip()
         safe_name = "".join(c if c.isalnum() or c in ("_", "-") else "_" for c in tag)
         filename = f"{idx:02d}_{safe_name}.png"
         Image.fromarray(crop, mode="RGBA").save(layers_dir / filename)
+
+        depth_rel_path = ""
+        dlayer = depth_layers_by_name.get(tag)
+        if dlayer is not None:
+            dcrop = _crop_aligned_depth(dlayer, gx, gy, lw, lh, canvas_w, canvas_h)
+            if dcrop is not None:
+                dfname = f"{idx:02d}_{safe_name}_depth.png"
+                dcrop.save(layers_dir / dfname)
+                depth_rel_path = f"{rel_prefix.rstrip('/')}/layers/{dfname}"
 
         cinfo = _mask_centroid(crop)
         if cinfo is not None:
@@ -165,27 +226,57 @@ def build_puppet_from_psd(
         meta = _layer_meta(tag)
         depth_median = float(pinfo.get("depth_median", 0.5))
 
-        raw_layers.append(
-            {
-                "id": f"layer_{idx}_{safe_name}",
-                "tag": tag,
-                "label": meta["label"],
-                "labelEn": meta["labelEn"],
-                "category": meta["category"],
-                "rig": meta["rig"],
-                "x": gx,
-                "y": gy,
-                "width": lw,
-                "height": lh,
-                "zIndex": idx,
-                "depth": depth_median,
-                "parallaxX": meta["parallax"][0],
-                "parallaxY": meta["parallax"][1],
-                "physics": meta["physics"],
-                "visible": True,
-                "relPath": f"{rel_prefix.rstrip('/')}/layers/{filename}",
-            }
-        )
+        layer_entry: Dict[str, Any] = {
+            "id": f"layer_{idx}_{safe_name}",
+            "tag": tag,
+            "label": meta["label"],
+            "labelEn": meta["labelEn"],
+            "category": meta["category"],
+            "rig": meta["rig"],
+            "x": gx,
+            "y": gy,
+            "width": lw,
+            "height": lh,
+            "zIndex": idx,
+            "depth": depth_median,
+            "parallaxX": meta["parallax"][0],
+            "parallaxY": meta["parallax"][1],
+            "physics": meta["physics"],
+            "visible": True,
+            "relPath": f"{rel_prefix.rstrip('/')}/layers/{filename}",
+        }
+        if depth_rel_path:
+            layer_entry["depthRelPath"] = depth_rel_path
+
+        full_rgba = np.zeros((canvas_h, canvas_w, 4), dtype=np.uint8)
+        fx1, fy1 = max(0, gx), max(0, gy)
+        fx2, fy2 = min(canvas_w, gx + lw), min(canvas_h, gy + lh)
+        if fx2 > fx1 and fy2 > fy1:
+            full_rgba[fy1:fy2, fx1:fx2] = crop[fy1 - gy : fy2 - gy, fx1 - gx : fx2 - gx]
+        raw_entries.append((layer_entry, full_rgba))
+
+    try:
+        from layer_repair import repair_inmemory_layers
+    except ImportError:
+        from backend.Inochi2D.layer_repair import repair_inmemory_layers
+
+    repaired_entries = repair_inmemory_layers(
+        raw_entries,
+        source_image=source_image,
+        canvas_w=canvas_w,
+        canvas_h=canvas_h,
+        layers_dir=layers_dir,
+        rel_prefix=rel_prefix,
+    )
+    raw_layers: List[Dict[str, Any]] = []
+    for entry, _ in repaired_entries:
+        gx, gy = int(entry["x"]), int(entry["y"])
+        lw, lh = int(entry["width"]), int(entry["height"])
+        min_x = min(min_x, gx)
+        min_y = min(min_y, gy)
+        max_x = max(max_x, gx + lw)
+        max_y = max(max_y, gy + lh)
+        raw_layers.append(entry)
 
     if max_x <= min_x or max_y <= min_y:
         min_x, min_y, max_x, max_y = 0, 0, canvas_w, canvas_h
@@ -247,6 +338,42 @@ def build_puppet_from_psd(
     eye_r = _norm_pt(eye_r_a[0], eye_r_a[1]) if eye_r_a else [face_center[0] + 0.06, face_center[1] - 0.02]
     chest = _norm_pt(torso_a[0], torso_a[1]) if torso_a else [0.5, min(0.85, head_pivot[1] + 0.16)]
 
+    # Skeletal shoulder & waist anchors for hierarchical limb & upper-body articulation
+    arm_l_a = _pick("handwear_l", "handwear-l")
+    arm_r_a = _pick("handwear_r", "handwear-r")
+    lower_a = _pick("bottomwear", "legwear")
+
+    def _shoulder_anchor(arm_info: Optional[Tuple[float, float, Tuple[int, int, int, int]]], side_sign: float) -> List[float]:
+        if arm_info is not None:
+            _, _, ab = arm_info
+            # Anchor near the upper-inner corner of the arm bbox closest to chestCenter
+            inner_x = ab[0] + (ab[2] - ab[0]) * (0.22 if side_sign > 0 else 0.78)
+            upper_y = ab[1] + (ab[3] - ab[1]) * 0.14
+            return _norm_pt(inner_x, upper_y)
+        if torso_a is not None:
+            _, _, tb = torso_a
+            span_w = max(1.0, float(tb[2] - tb[0]))
+            return _norm_pt(
+                (tb[0] + tb[2]) * 0.5 + side_sign * span_w * 0.34,
+                tb[1] + (tb[3] - tb[1]) * 0.16,
+            )
+        return [round(max(0.05, min(0.95, chest[0] + side_sign * 0.14)), 4), round(max(0.05, head_pivot[1] + 0.08), 4)]
+
+    # Note: image-left is viewer-left (character's anatomical right, handwear-r)
+    shoulder_r = _shoulder_anchor(arm_r_a, -1.0)
+    shoulder_l = _shoulder_anchor(arm_l_a, 1.0)
+
+    if torso_a is not None:
+        _, _, tb = torso_a
+        waist_y = float(tb[3])
+        if lower_a is not None:
+            waist_y = float(tb[3] * 0.5 + lower_a[2][1] * 0.5)
+        waist_center = _norm_pt((tb[0] + tb[2]) * 0.5, waist_y)
+    elif lower_a is not None:
+        waist_center = _norm_pt((lower_a[2][0] + lower_a[2][2]) * 0.5, float(lower_a[2][1]))
+    else:
+        waist_center = [chest[0], round(min(0.96, chest[1] + 0.24), 4)]
+
     # Angle of the inter-eye line in content pixel coordinates (radians)
     dx_eye = (eye_l[0] - eye_r[0]) * cb_w
     dy_eye = (eye_l[1] - eye_r[1]) * cb_h
@@ -272,6 +399,9 @@ def build_puppet_from_psd(
             "mouthCenter": mouth_center,
             "mouthSize": mouth_size,
             "chestCenter": chest,
+            "shoulderL": shoulder_l,
+            "shoulderR": shoulder_r,
+            "waistCenter": waist_center,
         },
         "source": str(source_image.name) if source_image else "",
         "layers": raw_layers,

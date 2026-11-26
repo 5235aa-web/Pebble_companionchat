@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue'
-import type { PuppetEmotion } from '@/api/inochi2d'
+import type { PuppetActionId, PuppetEmotion } from '@/api/inochi2d'
 import { useFileUrls } from '@/composables/useFileUrl'
 import { useInochi2dStore } from '@/stores/inochi2d'
 import { useSessionStore } from '@/stores/session'
@@ -8,6 +8,7 @@ import { useUiStore } from '@/stores/ui'
 import { useI18n } from '@/i18n'
 import UiSlider from './ui/UiSlider.vue'
 import UiLever from './ui/UiLever.vue'
+import UiSelect, { type UiOption } from './ui/UiSelect.vue'
 
 const inochi = useInochi2dStore()
 const session = useSessionStore()
@@ -25,7 +26,17 @@ const resolution = ref(768)
 const steps = ref(20)
 const fileInputRef = ref<HTMLInputElement | null>(null)
 const packFilesInputRef = ref<HTMLInputElement | null>(null)
+const psdImportInputRef = ref<HTMLInputElement | null>(null)
+const inxImportInputRef = ref<HTMLInputElement | null>(null)
 const buildErr = ref('')
+
+// Multi-pose slot management state
+const targetPoseSlot = ref('')
+const newPoseLabel = ref('')
+const editingPoseTriggers = ref(false)
+const poseMoodsText = ref('')
+const poseKeywordsText = ref('')
+const rigSaving = ref(false)
 
 // Pack / incremental outfit builder state
 type PackItem = {
@@ -108,6 +119,18 @@ const emotions: { id: PuppetEmotion; label: string; labelEn: string }[] = [
   { id: 'sad', label: '委屈', labelEn: 'Sad' },
 ]
 
+const actions: { id: PuppetActionId; key: Parameters<typeof t>[0] }[] = [
+  { id: 'nod', key: 'live2d.actNod' },
+  { id: 'shake', key: 'live2d.actShake' },
+  { id: 'lean_in', key: 'live2d.actLeanIn' },
+  { id: 'hug_lean', key: 'live2d.actHugLean' },
+  { id: 'cheer', key: 'live2d.actCheer' },
+  { id: 'shy_hide', key: 'live2d.actShyHide' },
+  { id: 'sigh', key: 'live2d.actSigh' },
+  { id: 'startle', key: 'live2d.actStartle' },
+  { id: 'bow', key: 'live2d.actBow' },
+]
+
 const displayedEmotions = computed(() => {
   const list = inochi.puppet?.expressions
   if (list && list.length > 0) {
@@ -122,7 +145,7 @@ const displayedEmotions = computed(() => {
 })
 
 const activeEmotionId = computed(() => {
-  const cur = inochi.config.emotion
+  const cur = inochi.effectiveEmotion
   const list = displayedEmotions.value
   const exact = list.find((e) => e.id === cur)
   if (exact) return exact.id
@@ -154,6 +177,150 @@ const orderedLayers = computed(() => {
     .sort((a, b) => b.zIndex - a.zIndex)
 })
 
+const poseList = computed(() => inochi.posesIndex.poses ?? [])
+const activePoseSlot = computed(
+  () => poseList.value.find((p) => p.id === inochi.posesIndex.activePoseId) ?? null,
+)
+const RIG_CHOICES = [
+  'head',
+  'face',
+  'hair_front',
+  'hair_back',
+  'eye_l',
+  'eye_r',
+  'iris_l',
+  'iris_r',
+  'brow_l',
+  'brow_r',
+  'mouth',
+  'neck',
+  'torso',
+  'arm_l',
+  'arm_r',
+  'lower',
+  'prop',
+]
+
+const rigOptions = computed<UiOption[]>(() =>
+  RIG_CHOICES.map((rc) => ({ value: rc, label: rc })),
+)
+
+const subjectOptions = computed<UiOption[]>(() => [
+  { value: '', label: 'Global' },
+  ...(inochi.puppet?.subjects ?? []).map((sub) => ({
+    value: sub.id,
+    label: sub.label || sub.id,
+  })),
+])
+
+const targetPoseOptions = computed<UiOption[]>(() => [
+  { value: '', label: t('live2d.targetPoseCurrent') },
+  ...poseList.value.map((p) => ({
+    value: p.id,
+    label: locale.value === 'en' ? (p.labelEn || p.label) : p.label,
+  })),
+  { value: '__new__', label: t('live2d.targetPoseNew') },
+])
+
+function openPoseTriggerEditor(): void {
+  const cur = activePoseSlot.value
+  if (!cur) return
+  poseMoodsText.value = (cur.triggerMoods || []).join(', ')
+  poseKeywordsText.value = (cur.triggerKeywords || []).join(', ')
+  editingPoseTriggers.value = !editingPoseTriggers.value
+}
+
+async function savePoseTriggers(): Promise<void> {
+  const cur = activePoseSlot.value
+  if (!cur) return
+  const moods = poseMoodsText.value.split(/[,，]/).map((s) => s.trim()).filter(Boolean)
+  const keywords = poseKeywordsText.value.split(/[,，]/).map((s) => s.trim()).filter(Boolean)
+  await inochi.savePoseMeta(cur.id, { triggerMoods: moods, triggerKeywords: keywords })
+  editingPoseTriggers.value = false
+}
+
+function resolveTargetPose(): { poseId: string; poseLabel: string } {
+  if (targetPoseSlot.value === '__new__') {
+    const lbl = newPoseLabel.value.trim() || `Pose ${poseList.value.length + 1}`
+    const pid = lbl.replace(/[^A-Za-z0-9_-]+/g, '_').replace(/^[_-]+|[_-]+$/g, '') || `pose_${Date.now().toString(36).slice(-5)}`
+    return { poseId: pid, poseLabel: lbl }
+  }
+  const pid = targetPoseSlot.value || inochi.posesIndex.activePoseId || 'default'
+  const existing = poseList.value.find((p) => p.id === pid)
+  return { poseId: pid, poseLabel: existing?.label || '' }
+}
+
+function moveLayerOrder(layerId: string, delta: number): void {
+  const list = [...orderedLayers.value]
+  const idx = list.findIndex((l) => l.id === layerId)
+  if (idx < 0) return
+  const swapIdx = idx + delta
+  if (swapIdx < 0 || swapIdx >= list.length) return
+  const a = list[idx]
+  const b = list[swapIdx]
+  inochi.previewRigPatch(undefined, undefined, [
+    { id: a.id, zIndex: b.zIndex },
+    { id: b.id, zIndex: a.zIndex },
+  ])
+}
+
+function updateLayerField(
+  layerId: string,
+  patch: { rig?: string; physics?: number; subjectId?: string },
+): void {
+  inochi.previewRigPatch(undefined, undefined, [{ id: layerId, ...patch }])
+}
+
+async function commitLayerRig(): Promise<void> {
+  rigSaving.value = true
+  try {
+    const patches = (inochi.puppet?.layers ?? []).map((l) => ({
+      id: l.id,
+      zIndex: l.zIndex,
+      rig: l.rig,
+      physics: l.physics,
+      parallaxX: l.parallaxX,
+      parallaxY: l.parallaxY,
+      subjectId: l.subjectId,
+    }))
+    await inochi.commitRig(patches)
+  } finally {
+    rigSaving.value = false
+  }
+}
+
+async function onPsdPicked(e: Event): Promise<void> {
+  const input = e.target as HTMLInputElement
+  const file = input.files?.[0]
+  input.value = ''
+  if (!file) return
+  buildErr.value = ''
+  const { poseId, poseLabel } = resolveTargetPose()
+  try {
+    await inochi.importLayeredPsd(file, poseId, poseLabel || file.name.replace(/\.psd$/i, ''))
+    targetPoseSlot.value = ''
+    newPoseLabel.value = ''
+  } catch (err) {
+    buildErr.value = err instanceof Error ? err.message : String(err)
+  }
+}
+
+async function onInxPicked(e: Event): Promise<void> {
+  const input = e.target as HTMLInputElement
+  const file = input.files?.[0]
+  input.value = ''
+  if (!file) return
+  buildErr.value = ''
+  const { poseId, poseLabel } = resolveTargetPose()
+  try {
+    await inochi.importInochiInx(file, poseId, poseLabel || file.name.replace(/\.inx$/i, ''))
+    targetPoseSlot.value = ''
+    newPoseLabel.value = ''
+  } catch (err) {
+    buildErr.value = err instanceof Error ? err.message : String(err)
+  }
+}
+
 const effectivePackMode = computed<'outfit' | 'base'>(() => {
   if (packMode.value === 'outfit' && !inochi.puppet) return 'base'
   return packMode.value
@@ -177,8 +344,9 @@ function setAllClothesVisible(visible: boolean): void {
 
 async function rebuildFromPortrait(): Promise<void> {
   buildErr.value = ''
+  const { poseId, poseLabel } = resolveTargetPose()
   try {
-    await inochi.startBuild(undefined, resolution.value, steps.value)
+    await inochi.startBuild(undefined, resolution.value, steps.value, poseId, poseLabel)
   } catch (e) {
     buildErr.value = e instanceof Error ? e.message : String(e)
   }
@@ -190,8 +358,9 @@ async function onUploadPicked(e: Event): Promise<void> {
   input.value = ''
   if (!file) return
   buildErr.value = ''
+  const { poseId, poseLabel } = resolveTargetPose()
   try {
-    await inochi.startBuildFromFile(file, resolution.value, steps.value)
+    await inochi.startBuildFromFile(file, resolution.value, steps.value, poseId, poseLabel)
   } catch (err) {
     buildErr.value = err instanceof Error ? err.message : String(err)
   }
@@ -290,10 +459,13 @@ async function runPackBuild(): Promise<void> {
     reordered.findIndex((x) => x.key === chosenKey),
   )
 
+  const { poseId, poseLabel } = resolveTargetPose()
   try {
     await inochi.startBuildPack({
       mode: effectivePackMode.value,
       outfitLabel: outfitLabel.value.trim(),
+      poseId,
+      poseLabel,
       baseIndex: mappedBaseIdx,
       labels: reordered.map((x) => x.label.trim() || stripExt(x.sourceName)),
       assetIds: orderedAssets.map((x) => x.assetId as number),
@@ -368,7 +540,59 @@ async function onDeleteOutfit(oid: string): Promise<void> {
             :label="t('live2d.eyeTrack')"
             @update:model-value="inochi.updateConfig({ eyeTrack: $event })"
           />
+          <UiLever
+            :model-value="inochi.config.autoChatSync"
+            :label="t('live2d.autoChatSync')"
+            @update:model-value="inochi.updateConfig({ autoChatSync: $event })"
+          />
         </div>
+
+        <template v-if="poseList.length">
+          <div class="puppet-sec-head">
+            <span class="puppet-sec-label">{{ t('live2d.poses') }}</span>
+            <button
+              v-if="activePoseSlot"
+              type="button"
+              class="mini-btn"
+              @click="openPoseTriggerEditor"
+            >
+              {{ t('live2d.poseTriggersBtn') }}
+            </button>
+          </div>
+          <div class="puppet-emo-grid">
+            <span v-for="p in poseList" :key="p.id" class="puppet-outfit-chip">
+              <button
+                type="button"
+                class="puppet-emo-btn"
+                :class="{ on: inochi.posesIndex.activePoseId === p.id }"
+                @click="inochi.switchPose(p.id)"
+              >
+                {{ locale === 'en' ? (p.labelEn || p.label) : p.label }}
+              </button>
+              <button
+                v-if="!p.isDefault"
+                type="button"
+                class="pf-asset-btn danger"
+                @click="inochi.removePose(p.id)"
+              >×</button>
+            </span>
+          </div>
+          <div v-if="editingPoseTriggers" class="puppet-pack-box" style="margin-bottom: 12px">
+            <input
+              v-model="poseMoodsText"
+              class="pf-input puppet-pack-input"
+              :placeholder="t('live2d.poseMoodsPh')"
+            />
+            <input
+              v-model="poseKeywordsText"
+              class="pf-input puppet-pack-input"
+              :placeholder="t('live2d.poseKeywordsPh')"
+            />
+            <button type="button" class="mini-btn" @click="savePoseTriggers">
+              {{ t('live2d.rigSave') }}
+            </button>
+          </div>
+        </template>
 
         <template v-if="displayedOutfits.length > 1">
           <div class="puppet-sec-label">{{ t('live2d.outfit') }}</div>
@@ -397,6 +621,21 @@ async function onDeleteOutfit(oid: string): Promise<void> {
             @click="inochi.updateConfig({ emotion: e.id })"
           >
             {{ locale === 'en' ? e.labelEn : e.label }}
+          </button>
+        </div>
+
+        <div class="puppet-sec-label">{{ t('live2d.actions') }}</div>
+        <div class="puppet-emo-grid">
+          <button
+            v-for="act in actions"
+            :key="act.id"
+            type="button"
+            class="puppet-emo-btn"
+            :class="{ on: inochi.actionCommand?.id === act.id }"
+            :disabled="!inochi.config.motionEnabled"
+            @click="inochi.triggerAction(act.id)"
+          >
+            {{ t(act.key) }}
           </button>
         </div>
 
@@ -431,6 +670,22 @@ async function onDeleteOutfit(oid: string): Promise<void> {
           :max="2"
           :step="0.05"
           @update:model-value="inochi.updateConfig({ headParallax: $event })"
+        />
+        <UiSlider
+          :label="t('live2d.depthRelief')"
+          :model-value="inochi.config.depthRelief"
+          :min="0"
+          :max="2.5"
+          :step="0.05"
+          @update:model-value="inochi.updateConfig({ depthRelief: $event })"
+        />
+        <UiSlider
+          :label="t('live2d.limbMotion')"
+          :model-value="inochi.config.limbMotion"
+          :min="0"
+          :max="2"
+          :step="0.05"
+          @update:model-value="inochi.updateConfig({ limbMotion: $event })"
         />
         <UiSlider
           :label="t('live2d.blinkRate')"
@@ -482,6 +737,19 @@ async function onDeleteOutfit(oid: string): Promise<void> {
 
       <template v-else-if="tab === 'layers'">
         <div class="puppet-layer-toolbar">
+          <button
+            class="sc-open"
+            type="button"
+            :class="{ active: inochi.rigEditMode }"
+            @click="inochi.rigEditMode = !inochi.rigEditMode"
+          >
+            {{ inochi.rigEditMode ? t('live2d.rigDone') : t('live2d.rigModeBtn') }}
+          </button>
+          <button class="sc-open" type="button" :disabled="rigSaving" @click="commitLayerRig">
+            {{ rigSaving ? '...' : t('live2d.rigSave') }}
+          </button>
+        </div>
+        <div class="puppet-layer-toolbar">
           <button class="sc-open" type="button" @click="setAllClothesVisible(true)">
             {{ t('live2d.showClothes') }}
           </button>
@@ -493,20 +761,50 @@ async function onDeleteOutfit(oid: string): Promise<void> {
         <p v-if="!orderedLayers.length" class="cp-hint">{{ t('live2d.noLayers') }}</p>
 
         <div v-else class="puppet-layer-list">
-          <label
+          <div
             v-for="layer in orderedLayers"
             :key="layer.id"
-            class="puppet-layer-item"
+            class="puppet-layer-item puppet-layer-rig-row"
             :class="{ hidden: hiddenSet.has(layer.id) }"
           >
-            <input
-              type="checkbox"
-              :checked="!hiddenSet.has(layer.id)"
-              @change="inochi.toggleLayerVisibility(layer.id)"
-            />
-            <span class="puppet-layer-name">{{ layerTitle(layer.label, layer.labelEn) }}</span>
-            <span class="puppet-layer-tag">{{ layer.tag }}</span>
-          </label>
+            <div class="puppet-layer-top">
+              <input
+                class="puppet-check"
+                type="checkbox"
+                :checked="!hiddenSet.has(layer.id)"
+                @change="inochi.toggleLayerVisibility(layer.id)"
+              />
+              <span class="puppet-layer-name">{{ layerTitle(layer.label, layer.labelEn) }}</span>
+              <button type="button" class="mini-btn" @click="moveLayerOrder(layer.id, -1)">↑</button>
+              <button type="button" class="mini-btn" @click="moveLayerOrder(layer.id, 1)">↓</button>
+            </div>
+            <div class="puppet-layer-meta">
+              <div class="puppet-rig-select">
+                <UiSelect
+                  :model-value="layer.rig"
+                  :options="rigOptions"
+                  @update:model-value="updateLayerField(layer.id, { rig: $event })"
+                />
+              </div>
+              <div v-if="(inochi.puppet?.subjects?.length ?? 0) > 1" class="puppet-rig-select">
+                <UiSelect
+                  :model-value="layer.subjectId || ''"
+                  :options="subjectOptions"
+                  @update:model-value="updateLayerField(layer.id, { subjectId: $event })"
+                />
+              </div>
+              <div class="puppet-phys-ctrl">
+                <UiSlider
+                  :label="t('live2d.physShort')"
+                  :model-value="layer.physics"
+                  :min="0"
+                  :max="1.6"
+                  :step="0.05"
+                  @update:model-value="updateLayerField(layer.id, { physics: $event })"
+                />
+              </div>
+            </div>
+          </div>
         </div>
       </template>
 
@@ -560,6 +858,38 @@ async function onDeleteOutfit(oid: string): Promise<void> {
               → {{ inochi.env.expectedMarigoldDir }}
             </li>
           </ul>
+        </div>
+
+        <div class="puppet-pack-box" style="margin-bottom: 12px">
+          <div class="puppet-sec-label">{{ t('live2d.targetPoseSlot') }}</div>
+          <div class="puppet-pack-input">
+            <UiSelect v-model="targetPoseSlot" :options="targetPoseOptions" />
+          </div>
+          <input
+            v-if="targetPoseSlot === '__new__'"
+            v-model="newPoseLabel"
+            class="pf-input puppet-pack-input"
+            :placeholder="t('live2d.newPosePlaceholder')"
+          />
+          <div class="puppet-float-actions">
+            <button
+              type="button"
+              class="sc-open"
+              :disabled="!session.activeCompanionId"
+              @click="psdImportInputRef?.click()"
+            >
+              {{ t('live2d.importPsdBtn') }}
+            </button>
+            <button
+              type="button"
+              class="sc-open"
+              :disabled="!session.activeCompanionId"
+              @click="inxImportInputRef?.click()"
+            >
+              {{ t('live2d.importInxBtn') }}
+            </button>
+          </div>
+          <p class="cp-hint" style="margin-top: 6px; margin-bottom: 0">{{ t('live2d.directImportHint') }}</p>
         </div>
 
         <p class="cp-hint">{{ t('live2d.buildHint') }}</p>
@@ -717,7 +1047,7 @@ async function onDeleteOutfit(oid: string): Promise<void> {
           </div>
 
           <label v-if="packItems.some((i) => i.file)" class="puppet-pack-save">
-            <input v-model="saveToAssets" type="checkbox" />
+            <input v-model="saveToAssets" class="puppet-check" type="checkbox" />
             <span>{{ t('live2d.savePackToAssets') }}</span>
           </label>
 
@@ -767,6 +1097,20 @@ async function onDeleteOutfit(oid: string): Promise<void> {
           :multiple="effectivePackMode === 'base'"
           style="display: none"
           @change="onPackFilesPicked"
+        />
+        <input
+          ref="psdImportInputRef"
+          type="file"
+          accept=".psd"
+          style="display: none"
+          @change="onPsdPicked"
+        />
+        <input
+          ref="inxImportInputRef"
+          type="file"
+          accept=".inx"
+          style="display: none"
+          @change="onInxPicked"
         />
       </template>
     </div>

@@ -1057,7 +1057,7 @@ def add_outfit_from_psd(
     outfit into an existing ``puppet.json``, preserving shared head/face/hair/expressions.
     """
     from psd_tools import PSDImage
-    from puppet_builder import _layer_meta
+    from puppet_builder import _crop_aligned_depth, _extract_depth_layer_map, _layer_meta
 
     manifest_path = puppet_dir / "puppet.json"
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
@@ -1098,6 +1098,7 @@ def add_outfit_from_psd(
     outfit_dir.mkdir(parents=True, exist_ok=True)
 
     psd = PSDImage.open(str(psd_path))
+    depth_layers_by_name = _extract_depth_layer_map(psd_path.with_name(f"{psd_path.stem}_depth.psd"))
     json_meta_path = Path(str(psd_path) + ".json")
     part_meta: Dict[str, Any] = {}
     if json_meta_path.is_file():
@@ -1141,10 +1142,19 @@ def add_outfit_from_psd(
         filename = f"{idx:02d}_{safe_name}.png"
         Image.fromarray(crop, mode="RGBA").save(outfit_dir / filename)
 
+        depth_rel_path = ""
+        dlayer = depth_layers_by_name.get(tag)
+        if dlayer is not None and psd.width == cw and psd.height == ch:
+            dcrop = _crop_aligned_depth(dlayer, gx, gy, lw, lh, cw, ch)
+            if dcrop is not None:
+                dfname = f"{idx:02d}_{safe_name}_depth.png"
+                dcrop.save(outfit_dir / dfname)
+                depth_rel_path = f"{rel_base}/outfits/{safe_oid}/{dfname}"
+
         pinfo = part_meta.get(tag, {})
         depth_median = float(pinfo.get("depth_median", 0.5))
 
-        new_layers.append({
+        entry: Dict[str, Any] = {
             "id": f"layer_{safe_oid}_{idx}_{safe_name}",
             "tag": tag,
             "label": meta["label"],
@@ -1167,7 +1177,10 @@ def add_outfit_from_psd(
             "physics": meta["physics"],
             "visible": True,
             "relPath": f"{rel_base}/outfits/{safe_oid}/{filename}",
-        })
+        }
+        if depth_rel_path:
+            entry["depthRelPath"] = depth_rel_path
+        new_layers.append(entry)
 
     manifest["layers"] = kept_layers + new_layers
     existing_out = next((o for o in outfits if o.get("id") == safe_oid), None)

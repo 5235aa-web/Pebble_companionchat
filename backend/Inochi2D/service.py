@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import atexit
 import json
 import logging
 import os
@@ -13,7 +14,8 @@ import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
-from .. import companion_db
+from . import inx_importer, pose_manager, psd_importer
+from .. import audio_cpp_job, companion_db
 from ..paths import (
     DATA_ROOT,
     UPLOAD_ROOT,
@@ -50,17 +52,72 @@ _JOBS: Dict[str, Dict[str, Any]] = {}
 _PROCS: Dict[str, subprocess.Popen[bytes]] = {}
 _PROBE_CACHE: Dict[Tuple[str, float, int], Dict[str, Any]] = {}
 
+
+def _kill_proc_tree(proc: Optional[subprocess.Popen[bytes]]) -> None:
+    """Immediately terminate *proc* and any child processes so VRAM/ports are freed at once."""
+    if proc is None:
+        return
+    try:
+        if proc.poll() is not None:
+            return
+    except OSError:
+        return
+
+    if os.name == "nt":
+        try:
+            subprocess.run(
+                ["taskkill", "/F", "/T", "/PID", str(proc.pid)],
+                capture_output=True,
+                timeout=3,
+                creationflags=subprocess.CREATE_NO_WINDOW,
+            )
+        except Exception:
+            pass
+    try:
+        if proc.poll() is None:
+            proc.kill()
+        proc.wait(timeout=1.5)
+    except Exception:
+        pass
+
+
+def shutdown_workers() -> int:
+    """Synchronously kill every running Live2D decomposition worker. Safe to call repeatedly."""
+    stopped = 0
+    for cid, proc in list(_PROCS.items()):
+        _PROCS.pop(cid, None)
+        try:
+            was_alive = proc is not None and proc.poll() is None
+        except OSError:
+            was_alive = False
+        _kill_proc_tree(proc)
+        if was_alive:
+            stopped += 1
+        job = _JOBS.get(cid)
+        if job and job.get("status") == "running":
+            job["status"] = "idle"
+            job["stage"] = "cancelled"
+            job["progress"] = 0
+            job["error"] = ""
+    return stopped
+
+
+atexit.register(shutdown_workers)
+
 DEFAULT_PUPPET_CONFIG: Dict[str, Any] = {
     "motionEnabled": True,
     "breathAmp": 1.0,
     "breathSpeed": 1.0,
     "swayAmp": 0.9,
     "headParallax": 1.0,
+    "depthRelief": 1.0,
+    "limbMotion": 1.0,
     "eyeTrack": True,
     "blinkRate": 1.0,
     "mouthSens": 1.2,
     "physicsStrength": 1.0,
     "physicsDamping": 0.85,
+    "autoChatSync": True,
     "emotion": "neutral",
     "outfit": "",
     "testMouth": 0.0,
@@ -301,8 +358,12 @@ def get_environment_status(refresh: bool = False) -> Dict[str, Any]:
     }
 
 
-def load_puppet_manifest(companion_id: str) -> Optional[Dict[str, Any]]:
-    manifest_path = companion_puppet_dir(companion_id) / "puppet.json"
+def load_puppet_manifest(companion_id: str, pose_id: str = "") -> Optional[Dict[str, Any]]:
+    root = companion_puppet_dir(companion_id)
+    target_pose = pose_id.strip() or pose_manager.get_active_pose_id(root)
+    manifest_path = pose_manager.pose_dir_for(root, target_pose) / "puppet.json"
+    if not manifest_path.is_file() and target_pose != "default":
+        manifest_path = root / "puppet.json"
     if not manifest_path.is_file():
         return None
     try:
@@ -311,6 +372,153 @@ def load_puppet_manifest(companion_id: str) -> Optional[Dict[str, Any]]:
     except Exception:
         logger.warning("failed to read puppet manifest: %s", manifest_path, exc_info=True)
         return None
+
+
+def list_poses(companion_id: str) -> Dict[str, Any]:
+    return pose_manager.list_poses(companion_puppet_dir(companion_id))
+
+
+def select_pose(companion_id: str, pose_id: str) -> Dict[str, Any]:
+    root = companion_puppet_dir(companion_id)
+    idx = pose_manager.select_pose(root, pose_id)
+    return {
+        "posesIndex": idx,
+        "puppet": load_puppet_manifest(companion_id, idx["activePoseId"]),
+    }
+
+
+def update_pose_meta(
+    companion_id: str,
+    pose_id: str,
+    label: Optional[str] = None,
+    trigger_moods: Optional[List[str]] = None,
+    trigger_keywords: Optional[List[str]] = None,
+) -> Dict[str, Any]:
+    return pose_manager.update_pose_meta(
+        companion_puppet_dir(companion_id),
+        pose_id=pose_id,
+        label=label,
+        trigger_moods=trigger_moods,
+        trigger_keywords=trigger_keywords,
+    )
+
+
+def delete_pose(companion_id: str, pose_id: str) -> Dict[str, Any]:
+    root = companion_puppet_dir(companion_id)
+    idx = pose_manager.delete_pose(root, pose_id)
+    return {
+        "posesIndex": idx,
+        "puppet": load_puppet_manifest(companion_id, idx["activePoseId"]),
+    }
+
+
+def match_pose_for_cue(
+    companion_id: str,
+    text: str = "",
+    mood: str = "",
+    expr_hint: str = "",
+) -> Dict[str, Any]:
+    root = companion_puppet_dir(companion_id)
+    matched = pose_manager.match_pose_for_cue(root, text=text, mood=mood, expr_hint=expr_hint)
+    if matched:
+        idx = pose_manager.select_pose(root, matched)
+        return {
+            "matchedPoseId": matched,
+            "posesIndex": idx,
+            "puppet": load_puppet_manifest(companion_id, matched),
+        }
+    return {
+        "matchedPoseId": None,
+        "posesIndex": pose_manager.list_poses(root),
+        "puppet": None,
+    }
+
+
+def save_puppet_rig(
+    companion_id: str,
+    pose_id: str = "",
+    anchors_patch: Optional[Dict[str, Any]] = None,
+    subjects_patch: Optional[List[Dict[str, Any]]] = None,
+    layer_patches: Optional[List[Dict[str, Any]]] = None,
+) -> Dict[str, Any]:
+    root = companion_puppet_dir(companion_id)
+    target_pose = pose_id.strip() or pose_manager.get_active_pose_id(root)
+    return pose_manager.update_puppet_rig(
+        root,
+        pose_id=target_pose,
+        anchors_patch=anchors_patch,
+        subjects_patch=subjects_patch,
+        layer_patches=layer_patches,
+    )
+
+
+def import_psd_puppet(
+    companion_id: str,
+    psd_path: Path,
+    pose_id: str = "",
+    pose_label: str = "",
+    source_name: str = "",
+) -> Dict[str, Any]:
+    root = companion_puppet_dir(companion_id)
+    assert_safe_data_path(root)
+    pid = "default" if (not pose_id.strip() or pose_id.strip() == "default") else pose_id.strip()
+    out_dir = pose_manager.pose_dir_for(root, pid)
+    assert_safe_data_path(out_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    rel_prefix = pose_manager.pose_rel_prefix_for(_safe_companion_dir(companion_id), pid)
+
+    try:
+        import psd_tools  # noqa: F401
+        has_psd_tools = True
+    except ImportError:
+        has_psd_tools = False
+
+    if has_psd_tools:
+        manifest = psd_importer.import_layered_psd(psd_path, out_dir, rel_prefix, source_name)
+    else:
+        py = _find_python()
+        if py is None:
+            raise RuntimeError("当前环境缺少 psd_tools，请先在 Live2D 虚拟环境中安装依赖")
+        proc = subprocess.run(
+            [
+                str(py),
+                str(_runtime_dir() / "psd_importer.py"),
+                "--psd", str(psd_path),
+                "--out", str(out_dir),
+                "--rel-prefix", rel_prefix,
+                "--source-name", source_name or psd_path.name,
+            ],
+            capture_output=True,
+            text=True,
+            timeout=120,
+            creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0,
+        )
+        if proc.returncode != 0:
+            raise RuntimeError((proc.stderr or proc.stdout or "PSD 解析失败")[-500:])
+        manifest = json.loads((out_dir / "puppet.json").read_text(encoding="utf-8"))
+
+    idx = pose_manager.register_pose(root, pid, label=pose_label or Path(source_name or psd_path.name).stem, activate=True)
+    return {"puppet": manifest, "posesIndex": idx}
+
+
+def import_inx_puppet(
+    companion_id: str,
+    inx_path: Path,
+    pose_id: str = "",
+    pose_label: str = "",
+    source_name: str = "",
+) -> Dict[str, Any]:
+    root = companion_puppet_dir(companion_id)
+    assert_safe_data_path(root)
+    pid = "default" if (not pose_id.strip() or pose_id.strip() == "default") else pose_id.strip()
+    out_dir = pose_manager.pose_dir_for(root, pid)
+    assert_safe_data_path(out_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    rel_prefix = pose_manager.pose_rel_prefix_for(_safe_companion_dir(companion_id), pid)
+
+    manifest = inx_importer.import_inx_file(inx_path, out_dir, rel_prefix, source_name)
+    idx = pose_manager.register_pose(root, pid, label=pose_label or Path(source_name or inx_path.name).stem, activate=True)
+    return {"puppet": manifest, "posesIndex": idx}
 
 
 def load_puppet_config(companion_id: str) -> Dict[str, Any]:
@@ -347,8 +555,10 @@ def save_puppet_config(companion_id: str, incoming: Dict[str, Any]) -> Dict[str,
     return merged
 
 
-def delete_puppet_outfit(companion_id: str, outfit_id: str) -> Dict[str, Any]:
-    pdir = companion_puppet_dir(companion_id)
+def delete_puppet_outfit(companion_id: str, outfit_id: str, pose_id: str = "") -> Dict[str, Any]:
+    root = companion_puppet_dir(companion_id)
+    target_pose = pose_id.strip() or pose_manager.get_active_pose_id(root)
+    pdir = pose_manager.pose_dir_for(root, target_pose)
     assert_safe_data_path(pdir)
     manifest_path = pdir / "puppet.json"
     if not manifest_path.is_file():
@@ -434,6 +644,8 @@ async def start_build_job(
     outfit_id: str = "",
     outfit_label: str = "",
     no_complete_eye: bool = False,
+    pose_id: str = "",
+    pose_label: str = "",
 ) -> Dict[str, Any]:
     env = get_environment_status()
     if not env["ready"]:
@@ -443,7 +655,9 @@ async def start_build_job(
     if existing and existing.get("status") == "running":
         return dict(existing)
 
-    out_dir = companion_puppet_dir(companion_id)
+    root = companion_puppet_dir(companion_id)
+    target_pose = "default" if (not pose_id.strip() or pose_id.strip() == "default") else pose_id.strip()
+    out_dir = pose_manager.pose_dir_for(root, target_pose)
     assert_safe_data_path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
 
@@ -478,6 +692,8 @@ async def start_build_job(
             outfit_id=outfit_id,
             outfit_label=outfit_label,
             no_complete_eye=no_complete_eye,
+            pose_id=target_pose,
+            pose_label=pose_label,
         )
     )
     return dict(job)
@@ -496,6 +712,8 @@ async def _run_worker(
     outfit_id: str = "",
     outfit_label: str = "",
     no_complete_eye: bool = False,
+    pose_id: str = "default",
+    pose_label: str = "",
 ) -> None:
     async with _JOB_LOCK:
         job = _JOBS.get(companion_id)
@@ -513,7 +731,7 @@ async def _run_worker(
             else:
                 item.unlink(missing_ok=True)
 
-        rel_prefix = f"uploads/inochi2d/{_safe_companion_dir(companion_id)}"
+        rel_prefix = pose_manager.pose_rel_prefix_for(_safe_companion_dir(companion_id), pose_id)
         cmd = [
             env["pythonPath"],
             str(_runtime_dir() / "run_decompose.py"),
@@ -563,6 +781,7 @@ async def _run_worker(
                 stderr=subprocess.STDOUT,
                 creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0,
             )
+            audio_cpp_job.adopt(proc)
             _PROCS[companion_id] = proc
             tail_lines: List[str] = []
             assert proc.stdout is not None
@@ -606,20 +825,25 @@ async def _run_worker(
             # Remove temporary PSD / inference artifacts once puppet files are written
             shutil.rmtree(work_dir, ignore_errors=True)
 
+            if (out_dir / "puppet.json").is_file():
+                pose_manager.register_pose(
+                    companion_puppet_dir(companion_id),
+                    pose_id=pose_id,
+                    label=pose_label,
+                    activate=True,
+                )
+
             job["status"] = "done"
             job["stage"] = "done"
             job["progress"] = 100
             job["error"] = ""
         except asyncio.CancelledError:
             _PROCS.pop(companion_id, None)
-            if proc is not None and proc.poll() is None:
-                try:
-                    proc.terminate()
-                except OSError:
-                    pass
+            _kill_proc_tree(proc)
             raise
         except Exception as exc:
             _PROCS.pop(companion_id, None)
+            _kill_proc_tree(proc)
             logger.exception("inochi2d worker failed")
             job["status"] = "error"
             job["stage"] = "failed"
@@ -628,11 +852,7 @@ async def _run_worker(
 
 async def cancel_build_job(companion_id: str) -> Dict[str, Any]:
     proc = _PROCS.pop(companion_id, None)
-    if proc is not None and proc.poll() is None:
-        try:
-            proc.terminate()
-        except OSError:
-            pass
+    _kill_proc_tree(proc)
     job = _JOBS.get(companion_id)
     if job and job.get("status") == "running":
         job["status"] = "idle"

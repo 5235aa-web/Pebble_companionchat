@@ -539,7 +539,7 @@ def load_part(srcp: str, rotate=False, pad=0, min_width=64, min_sz=12, depth_min
         rst.update({'img': img, 'depth': depth, 'mask': mask, 'tag': tag})
         return rst
 
-    if np.sum(mask[:-p_test, :-p_test]) > 4:
+    if np.sum(mask) > 4:
         if rotate:
             img = np.rot90(img, 3)
             mask = np.rot90(mask, 3, )

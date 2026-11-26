@@ -28,11 +28,34 @@ class BuildRequest(BaseModel):
     steps: int = 20
     seed: int = 42
     noCompleteEye: bool = False
+    poseId: str = ""
+    poseLabel: str = ""
 
 
 class ConfigRequest(BaseModel):
     companionId: str
     config: Dict[str, Any]
+
+
+class PoseSelectRequest(BaseModel):
+    companionId: str
+    poseId: str
+
+
+class PoseMetaRequest(BaseModel):
+    companionId: str
+    poseId: str
+    label: Optional[str] = None
+    triggerMoods: Optional[List[str]] = None
+    triggerKeywords: Optional[List[str]] = None
+
+
+class RigUpdateRequest(BaseModel):
+    companionId: str
+    poseId: str = ""
+    anchors: Optional[Dict[str, Any]] = None
+    subjects: Optional[List[Dict[str, Any]]] = None
+    layers: Optional[List[Dict[str, Any]]] = None
 
 
 @router.get("/status")
@@ -41,12 +64,16 @@ async def inochi_status(refresh: bool = Query(False)):
 
 
 @router.get("/puppet")
-async def get_puppet(companion_id: str = Query(..., alias="companionId")):
+async def get_puppet(
+    companion_id: str = Query(..., alias="companionId"),
+    pose_id: str = Query("", alias="poseId"),
+):
     return {
         "companionId": companion_id,
         "env": service.get_environment_status(),
         "job": service.get_job_state(companion_id),
-        "puppet": service.load_puppet_manifest(companion_id),
+        "puppet": service.load_puppet_manifest(companion_id, pose_id=pose_id),
+        "posesIndex": service.list_poses(companion_id),
         "config": service.load_puppet_config(companion_id),
     }
 
@@ -62,6 +89,8 @@ async def build_puppet(req: BuildRequest):
             steps=req.steps,
             seed=req.seed,
             no_complete_eye=req.noCompleteEye,
+            pose_id=req.poseId,
+            pose_label=req.poseLabel,
         )
         return {"job": job}
     except FileNotFoundError as exc:
@@ -76,6 +105,8 @@ async def build_puppet_upload(
     resolution: int = Form(768),
     steps: int = Form(20),
     seed: int = Form(42),
+    poseId: str = Form(""),
+    poseLabel: str = Form(""),
     file: UploadFile = File(...),
 ):
     suffix = Path(file.filename or "portrait.png").suffix.lower()
@@ -83,7 +114,7 @@ async def build_puppet_upload(
         raise HTTPException(status_code=400, detail="仅支持 png/jpg/webp/bmp 图片")
     pdir = service.companion_puppet_dir(companionId)
     pdir.mkdir(parents=True, exist_ok=True)
-    dest = pdir / f"source{suffix}"
+    dest = pdir / f"source_upload_{uuid.uuid4().hex[:6]}{suffix}"
     data = await file.read()
     if not data:
         raise HTTPException(status_code=400, detail="上传图片为空")
@@ -95,6 +126,8 @@ async def build_puppet_upload(
             resolution=resolution,
             steps=steps,
             seed=seed,
+            pose_id=poseId,
+            pose_label=poseLabel or Path(file.filename or "").stem,
         )
         return {"job": job}
     except RuntimeError as exc:
@@ -112,6 +145,8 @@ async def build_puppet_pack(
     mode: str = Form("base"),
     outfitId: str = Form(""),
     outfitLabel: str = Form(""),
+    poseId: str = Form(""),
+    poseLabel: str = Form(""),
     baseIndex: int = Form(0),
     labelsJson: str = Form("[]"),
     assetIdsJson: str = Form("[]"),
@@ -232,10 +267,132 @@ async def build_puppet_pack(
             outfit_id=clean_oid,
             outfit_label=clean_olabel,
             no_complete_eye=noCompleteEye,
+            pose_id=poseId,
+            pose_label=poseLabel,
         )
         return {"job": job}
     except RuntimeError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
+
+
+@router.get("/poses")
+async def list_puppet_poses(companion_id: str = Query(..., alias="companionId")):
+    return service.list_poses(companion_id)
+
+
+@router.post("/poses/select")
+async def select_puppet_pose(req: PoseSelectRequest):
+    try:
+        return service.select_pose(req.companionId, req.poseId)
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+
+
+@router.post("/poses/meta")
+async def update_puppet_pose_meta(req: PoseMetaRequest):
+    try:
+        idx = service.update_pose_meta(
+            req.companionId,
+            req.poseId,
+            label=req.label,
+            trigger_moods=req.triggerMoods,
+            trigger_keywords=req.triggerKeywords,
+        )
+        return {"posesIndex": idx}
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+
+
+@router.delete("/poses")
+async def delete_puppet_pose(
+    companion_id: str = Query(..., alias="companionId"),
+    pose_id: str = Query(..., alias="poseId"),
+):
+    try:
+        return service.delete_pose(companion_id, pose_id)
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+
+@router.post("/import-psd")
+async def import_layered_psd_route(
+    companionId: str = Form(...),
+    poseId: str = Form(""),
+    poseLabel: str = Form(""),
+    file: UploadFile = File(...),
+):
+    orig = file.filename or "model.psd"
+    if Path(orig).suffix.lower() != ".psd":
+        raise HTTPException(status_code=400, detail="请上传 .psd 分层文件")
+    data = await file.read()
+    if not data:
+        raise HTTPException(status_code=400, detail="上传文件为空")
+    pdir = service.companion_puppet_dir(companionId)
+    tmp_dir = pdir / "_work"
+    tmp_dir.mkdir(parents=True, exist_ok=True)
+    tmp_psd = tmp_dir / f"import_{uuid.uuid4().hex[:8]}.psd"
+    tmp_psd.write_bytes(data)
+    try:
+        return service.import_psd_puppet(
+            companion_id=companionId,
+            psd_path=tmp_psd,
+            pose_id=poseId,
+            pose_label=poseLabel or Path(orig).stem,
+            source_name=orig,
+        )
+    except (ValueError, RuntimeError) as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    finally:
+        tmp_psd.unlink(missing_ok=True)
+
+
+@router.post("/import-inx")
+async def import_inx_route(
+    companionId: str = Form(...),
+    poseId: str = Form(""),
+    poseLabel: str = Form(""),
+    file: UploadFile = File(...),
+):
+    orig = file.filename or "model.inx"
+    if Path(orig).suffix.lower() != ".inx":
+        raise HTTPException(status_code=400, detail="请上传 Inochi2D .inx 模型文件")
+    data = await file.read()
+    if not data:
+        raise HTTPException(status_code=400, detail="上传文件为空")
+    pdir = service.companion_puppet_dir(companionId)
+    tmp_dir = pdir / "_work"
+    tmp_dir.mkdir(parents=True, exist_ok=True)
+    tmp_inx = tmp_dir / f"import_{uuid.uuid4().hex[:8]}.inx"
+    tmp_inx.write_bytes(data)
+    try:
+        return service.import_inx_puppet(
+            companion_id=companionId,
+            inx_path=tmp_inx,
+            pose_id=poseId,
+            pose_label=poseLabel or Path(orig).stem,
+            source_name=orig,
+        )
+    except (ValueError, RuntimeError) as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    finally:
+        tmp_inx.unlink(missing_ok=True)
+
+
+@router.put("/rig")
+async def update_puppet_rig_route(req: RigUpdateRequest):
+    try:
+        manifest = service.save_puppet_rig(
+            companion_id=req.companionId,
+            pose_id=req.poseId,
+            anchors_patch=req.anchors,
+            subjects_patch=req.subjects,
+            layer_patches=req.layers,
+        )
+        return {"puppet": manifest}
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
 
 
 @router.put("/config")
@@ -248,9 +405,10 @@ async def update_puppet_config(req: ConfigRequest):
 async def delete_outfit(
     companion_id: str = Query(..., alias="companionId"),
     outfit_id: str = Query(..., alias="outfitId"),
+    pose_id: str = Query("", alias="poseId"),
 ):
     try:
-        manifest = service.delete_puppet_outfit(companion_id, outfit_id)
+        manifest = service.delete_puppet_outfit(companion_id, outfit_id, pose_id=pose_id)
         return {"puppet": manifest, "config": service.load_puppet_config(companion_id)}
     except FileNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc))

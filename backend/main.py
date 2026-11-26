@@ -53,18 +53,22 @@ audio_cpp_job.ensure()
 
 
 def _shutdown_stt() -> None:
-    """End both STT servers on the way out.
+    """End both STT servers and any ephemeral Live2D worker on the way out.
 
-    STT only. Those two are the engines whose processes were being orphaned, and
-    they have no reuse path worth keeping across a worker swap. Stopping the TTS
-    and LLM engines here would make every `--reload` restart reload gigabytes of
-    weights; their exit path stays `run_backend` plus their own atexit hooks.
+    Those processes are either stateless or ephemeral build jobs with no reuse
+    path across a reload or exit. Keeping TTS and LLM engines out of lifespan
+    avoids reloading gigabytes of weights on `--reload`; their exit path stays
+    `run_backend` plus their own atexit hooks.
 
     Synchronous on purpose: the port is already closed and nothing else is
     waiting, while a background task could be cancelled before the child is gone.
     """
-    from .engine_shutdown import shutdown_stt
+    from .engine_shutdown import shutdown_inochi2d, shutdown_stt
 
+    try:
+        shutdown_inochi2d()
+    except Exception:
+        logger.warning("inochi2d shutdown failed", exc_info=True)
     try:
         shutdown_stt()
     except Exception:

@@ -20,6 +20,14 @@
 
 ---
 
+## 📋 Changelog
+
+**Current Version: `v1.0.1`** — View full release notes in [CHANGELOG.md](CHANGELOG.md).
+
+`v1.0.1` introduces isolated **Character Card Translation** (`Original / 中文 / EN`) preserving original prompt fields, unifies themed **`data-tip` tooltips** across all views, and upgrades **Live2D** with Marigold depth relief, skeletal pose anchors, FFT vowel lip-sync, multi-pose slots, direct `.psd`/`.inx` import, source-grounded layer recovery, and immediate GPU worker cleanup on cancel or exit.
+
+---
+
 ## ✨ Overview
 
 **Pebble Companion Chat (`P.C.C`)** is a desktop and web AI companion workspace driven by text, voice, and generated imagery. The backend is built with **FastAPI + SQLite + WebSockets**, paired with a **Vue 3 + Pinia + Vite** frontend (`frontendV2`) that can also be packaged as a lightweight **Tauri 2** desktop application (with standalone backend packaging supported via PyInstaller).

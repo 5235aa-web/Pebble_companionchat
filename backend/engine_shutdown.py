@@ -61,8 +61,25 @@ def shutdown_stt() -> list[str]:
         return []
 
 
+def shutdown_inochi2d() -> int:
+    """Kill any active Live2D decomposition worker without importing the module if unused."""
+    package = __package__ or 'backend'
+    module = sys.modules.get(f'{package}.Inochi2D.service') or sys.modules.get('Inochi2D.service')
+    if module is None:
+        return 0
+    try:
+        count = int(module.shutdown_workers() or 0)
+        if count:
+            logger.info('shutdown: killed %d Inochi2D worker(s)', count)
+        return count
+    except Exception:
+        logger.warning('shutdown inochi2d failed', exc_info=True)
+        return 0
+
+
 def shutdown_all() -> None:
     """End every local model process. Safe to call more than once."""
     for label, module_name, attr in _MODULE_ENGINES:
         _close_module_engine(label, module_name, attr)
+    shutdown_inochi2d()
     shutdown_stt()

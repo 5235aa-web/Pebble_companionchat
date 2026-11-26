@@ -438,6 +438,21 @@ def part_lr_split(tag, part_info):
         stats = np.array(stats)
         stats_order = np.argsort(stats[..., -1])[::-1][1:]
         arml_mask, armr_mask, statsl, statsr = label_lr_split(labels, stats, stats_order[0], stats_order[1])
+        # Assign any extra separated pieces (e.g. detached shoulder cuff or sleeve) to nearest L/R side instead of dropping them
+        cx_l = statsl[0] + statsl[2] / 2.0
+        cx_r = statsr[0] + statsr[2] / 2.0
+        for extra_id in stats_order[2:]:
+            if stats[extra_id, -1] < 16:
+                continue
+            cx_e = stats[extra_id, 0] + stats[extra_id, 2] / 2.0
+            if abs(cx_e - cx_l) <= abs(cx_e - cx_r):
+                arml_mask[labels == extra_id] = 255
+            else:
+                armr_mask[labels == extra_id] = 255
+        if np.any(arml_mask > 0):
+            statsl = np.array(cv2.boundingRect(cv2.findNonZero((arml_mask > 0).astype(np.uint8))))
+        if np.any(armr_mask > 0):
+            statsr = np.array(cv2.boundingRect(cv2.findNonZero((armr_mask > 0).astype(np.uint8))))
         depth_median = part_info.get('depth_median', 1)
 
         img, depth, xyxy, depth_median = process_cuts(part_info['img'], part_info['depth'], part_info['xyxy'], statsl, mask=arml_mask)

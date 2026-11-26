@@ -1,6 +1,22 @@
-import type { PuppetConfig, PuppetExpression, PuppetLayer, PuppetManifest } from '@/api/inochi2d'
+import type {
+  PuppetActionId,
+  PuppetAnchors,
+  PuppetConfig,
+  PuppetExpression,
+  PuppetLayer,
+  PuppetManifest,
+  PuppetSubject,
+  RigLayerPatch,
+} from '@/api/inochi2d'
 import { fileUrl } from '@/api/client'
-import { getSpeechLevel } from './speechMonitor'
+import { getSpeechSpectrum } from './speechMonitor'
+import {
+  ACTION_DURATIONS,
+  ZERO_ACTION_POSE,
+  sampleActionClip,
+  type ActionPose,
+  type ActiveActionClip,
+} from './puppetActions'
 
 const VERT_SRC = `#version 300 es
 precision highp float;
@@ -159,6 +175,7 @@ interface LayerRuntime {
   loaded: boolean
   isBlink: boolean
   expressionId?: string
+  depthGrid: Float32Array
   springX: number
   springY: number
   velX: number
@@ -167,6 +184,33 @@ interface LayerRuntime {
 
 const GRID_X = 18
 const GRID_Y = 22
+const DEPTH_VERT_COUNT = (GRID_X + 1) * (GRID_Y + 1)
+
+function buildSyntheticDepthGrid(meta: PuppetLayer): Float32Array {
+  const grid = new Float32Array(DEPTH_VERT_COUNT)
+  const base = clamp(meta.depth ?? 0.5, 0.05, 0.95)
+  const rig = meta.rig
+  let amp = 0.06
+  if (rig === 'face' || rig === 'head') amp = 0.14
+  else if (rig === 'hair_front') amp = 0.11
+  else if (rig === 'torso') amp = 0.12
+  else if (rig === 'arm_l' || rig === 'arm_r') amp = 0.08
+  else if (rig === 'hair_back') amp = -0.08
+
+  let ptr = 0
+  for (let gy = 0; gy <= GRID_Y; gy++) {
+    const v = gy / GRID_Y
+    const dy = (v - 0.5) * 2
+    for (let gx = 0; gx <= GRID_X; gx++) {
+      const u = gx / GRID_X
+      const dx = (u - 0.5) * 2
+      const dome = Math.max(0, 1 - (dx * dx * 0.85 + dy * dy * 0.75))
+      // Smaller depth value = closer to camera
+      grid[ptr++] = clamp(base - dome * amp, 0, 1)
+    }
+  }
+  return grid
+}
 
 function compileShader(gl: WebGL2RenderingContext, type: number, src: string): WebGLShader {
   const s = gl.createShader(type)!
@@ -459,7 +503,15 @@ const REPLACED_BASE_RIGS = new Set([
   'mouth',
 ])
 
-export type HitZone = 'crown' | 'cheek' | 'chest' | 'body'
+export type HitZone = 'crown' | 'cheek' | 'chest' | 'arm_l' | 'arm_r' | 'body'
+
+interface SkeletalAnchors {
+  waistCenter: [number, number]
+  shoulderL: [number, number]
+  shoulderR: [number, number]
+  armSpanL: number
+  armSpanR: number
+}
 
 interface LayerDrawContext {
   scaleX: number
@@ -472,10 +524,31 @@ interface LayerDrawContext {
   chestY: number
   mouthX: number
   mouthY: number
+  waistX: number
+  waistY: number
+  shoulderLX: number
+  shoulderLY: number
+  shoulderRX: number
+  shoulderRY: number
+  armSpanL: number
+  armSpanR: number
   cosT: number
   sinT: number
   cosZ: number
   sinZ: number
+  bodyCosZ: number
+  bodySinZ: number
+  bodyLeanX: number
+  bodyLeanY: number
+  headScale: number
+  stageScale: number
+  depthRelief: number
+  limbMotion: number
+  armInward: number
+  armSpread: number
+  armLift: number
+  armReactL: number
+  armReactR: number
   breathWave: number
   breathLagWave: number
   chestRecoil: number
@@ -596,6 +669,8 @@ export class Puppet2DRenderer {
   private curEyeX = 0
   private curEyeY = 0
   private curMouth = 0
+  private curMouthWide = 0
+  private curMouthRound = 0
 
   private breathPhase = 0
   private curBreathFreq = 1
@@ -637,6 +712,21 @@ export class Puppet2DRenderer {
   private blinkValue = 0
   private pupilScale = 1.0
   private pupilVel = 0
+
+  private activeAction: ActiveActionClip | null = null
+  private actionPose: ActionPose = { ...ZERO_ACTION_POSE }
+  private armReactL = 0
+  private armReactVelL = 0
+  private armReactR = 0
+  private armReactVelR = 0
+  private skel: SkeletalAnchors = {
+    waistCenter: [0.5, 0.72],
+    shoulderL: [0.64, 0.42],
+    shoulderR: [0.36, 0.42],
+    armSpanL: 0.25,
+    armSpanR: 0.25,
+  }
+  private subjectSkels = new Map<string, SkeletalAnchors>()
 
   private destroyed = false
   private onReady?: (ready: boolean) => void
@@ -721,6 +811,105 @@ export class Puppet2DRenderer {
     this.config = { ...next }
   }
 
+  triggerAction(id: PuppetActionId, intensity = 1): void {
+    if (!this.config.motionEnabled) return
+    const duration = ACTION_DURATIONS[id] ?? 1.4
+    this.activeAction = {
+      id,
+      elapsed: 0,
+      duration,
+      intensity: clamp(intensity, 0.2, 1.5),
+    }
+    if (id === 'startle') {
+      this.breathImpulse = Math.max(this.breathImpulse, 0.36 * intensity)
+      this.pupilVel -= 0.7 * intensity
+    } else if (id === 'sigh') {
+      this.breathImpulse = Math.max(this.breathImpulse, 0.22 * intensity)
+    } else if (id === 'hug_lean' || id === 'shy_hide') {
+      this.blushGoal = Math.max(this.blushGoal, id === 'shy_hide' ? 0.9 : 0.7)
+      this.blushHoldTimer = Math.max(this.blushHoldTimer, duration * 0.95)
+    }
+  }
+
+  private resolveSkeletalAnchors(
+    anchors: PuppetAnchors,
+    layers: PuppetLayer[],
+  ): SkeletalAnchors {
+    const a = anchors
+    const armL = layers.find((l) => l.rig === 'arm_l')
+    const armR = layers.find((l) => l.rig === 'arm_r')
+    const torso = layers.find((l) => l.rig === 'torso' && l.tag.toLowerCase() !== 'back collar')
+    const lower = layers.find((l) => l.rig === 'lower')
+
+    const shoulderL: [number, number] = a.shoulderL
+      ? [a.shoulderL[0], a.shoulderL[1]]
+      : armL
+        ? [armL.nx + armL.nw * 0.22, armL.ny + armL.nh * 0.14]
+        : [clamp(a.chestCenter[0] + 0.14, 0.08, 0.92), clamp(a.headPivot[1] + 0.08, 0.08, 0.85)]
+
+    const shoulderR: [number, number] = a.shoulderR
+      ? [a.shoulderR[0], a.shoulderR[1]]
+      : armR
+        ? [armR.nx + armR.nw * 0.78, armR.ny + armR.nh * 0.14]
+        : [clamp(a.chestCenter[0] - 0.14, 0.08, 0.92), clamp(a.headPivot[1] + 0.08, 0.08, 0.85)]
+
+    const waistCenter: [number, number] = a.waistCenter
+      ? [a.waistCenter[0], a.waistCenter[1]]
+      : torso
+        ? [torso.nx + torso.nw * 0.5, lower ? (torso.ny + torso.nh + lower.ny) * 0.5 : torso.ny + torso.nh]
+        : [a.chestCenter[0], clamp(a.chestCenter[1] + 0.24, 0.45, 0.96)]
+
+    const armSpanL = armL ? Math.max(0.12, Math.hypot(armL.nw * 0.85, armL.nh * 0.85)) : 0.24
+    const armSpanR = armR ? Math.max(0.12, Math.hypot(armR.nw * 0.85, armR.nh * 0.85)) : 0.24
+    return { waistCenter, shoulderL, shoulderR, armSpanL, armSpanR }
+  }
+
+  getStageScale(): { scaleX: number; scaleY: number } {
+    return this.getViewportScale()
+  }
+
+  updateLiveRig(
+    anchorsPatch?: Partial<PuppetAnchors>,
+    subjectsPatch?: PuppetSubject[],
+    layerPatches?: RigLayerPatch[],
+  ): void {
+    const m = this.manifest
+    if (!m) return
+    if (anchorsPatch) {
+      m.anchors = { ...m.anchors, ...anchorsPatch }
+      this.skel = this.resolveSkeletalAnchors(m.anchors, m.layers)
+    }
+    if (subjectsPatch) {
+      m.subjects = subjectsPatch
+      this.rebuildSubjectSkels(m)
+    }
+    if (layerPatches?.length) {
+      const byId = new Map(layerPatches.map((p) => [p.id, p]))
+      for (const rt of this.layers) {
+        const p = byId.get(rt.meta.id)
+        if (!p) continue
+        if (p.zIndex !== undefined) rt.meta.zIndex = p.zIndex
+        if (p.parallaxX !== undefined) rt.meta.parallaxX = p.parallaxX
+        if (p.parallaxY !== undefined) rt.meta.parallaxY = p.parallaxY
+        if (p.physics !== undefined) rt.meta.physics = p.physics
+        if (p.rig !== undefined) rt.meta.rig = p.rig
+        if (p.subjectId !== undefined) rt.meta.subjectId = p.subjectId || undefined
+      }
+      this.layers.sort((a, b) => a.meta.zIndex - b.meta.zIndex)
+    }
+  }
+
+  private rebuildSubjectSkels(manifest: PuppetManifest): void {
+    this.subjectSkels.clear()
+    for (const sub of manifest.subjects ?? []) {
+      const subLayers = manifest.layers.filter((l) => l.subjectId === sub.id)
+      this.subjectSkels.set(
+        sub.id,
+        this.resolveSkeletalAnchors(sub.anchors, subLayers.length ? subLayers : manifest.layers),
+      )
+    }
+  }
+
   private getViewportScale(): { scaleX: number; scaleY: number } {
     const cb = this.manifest?.contentBounds
     const w = Math.max(1, this.canvas.width || this.canvas.clientWidth)
@@ -766,10 +955,33 @@ export class Puppet2DRenderer {
     if (cy <= a.headPivot[1] + 0.035 && Math.abs(cx - a.faceCenter[0]) <= eyeDist * 1.32) {
       return 'cheek'
     }
+    // Check articulated arm layers before falling back to chest/body
+    const outfits = m.outfits ?? []
+    const activeOutfitId =
+      (this.config.outfit && outfits.some((o) => o.id === this.config.outfit)
+        ? this.config.outfit
+        : outfits[0]?.id) || ''
+    for (const rigName of ['arm_l', 'arm_r'] as const) {
+      const arm = m.layers.find(
+        (l) =>
+          l.rig === rigName &&
+          (!l.outfit || !activeOutfitId || l.outfit === activeOutfitId),
+      )
+      if (
+        arm &&
+        cx >= arm.nx - 0.01 &&
+        cx <= arm.nx + arm.nw + 0.01 &&
+        cy >= arm.ny + arm.nh * 0.18 &&
+        cy <= arm.ny + arm.nh + 0.02 &&
+        Math.abs(cx - a.chestCenter[0]) > 0.08
+      ) {
+        return rigName
+      }
+    }
     if (
       cy > a.headPivot[1] + 0.035 &&
       cy <= a.chestCenter[1] + 0.22 &&
-      Math.abs(cx - a.chestCenter[0]) <= 0.34
+      Math.abs(cx - a.chestCenter[0]) <= 0.24
     ) {
       return 'chest'
     }
@@ -952,6 +1164,17 @@ export class Puppet2DRenderer {
       if (reactExpr) {
         this.triggerTempExpression(reactExpr, useAngry ? 1.4 : 1.3)
       }
+    } else if (zone === 'arm_l' || zone === 'arm_r') {
+      // Interactive hand/arm tap: elastic arm swing + friendly head glance
+      if (zone === 'arm_l') {
+        this.armReactVelL += 0.34
+      } else {
+        this.armReactVelR -= 0.34
+      }
+      this.reactVelX += dir * 0.04
+      this.reactVelZ += dir * 0.12
+      this.blushGoal = Math.max(this.blushGoal, 0.38)
+      this.blushHoldTimer = Math.max(this.blushHoldTimer, 1.1)
     } else {
       // Subtle body reaction
       this.chestRecoilVel += 0.055
@@ -1003,10 +1226,43 @@ export class Puppet2DRenderer {
       loaded: false,
       isBlink,
       expressionId,
+      depthGrid: buildSyntheticDepthGrid(meta),
       springX: 0,
       springY: 0,
       velX: 0,
       velY: 0,
+    }
+  }
+
+  private async loadDepthGrid(layer: LayerRuntime, manifest: PuppetManifest): Promise<void> {
+    if (!layer.meta.depthRelPath) return
+    try {
+      const dUrl = await fileUrl(layer.meta.depthRelPath, 0)
+      if (!dUrl || this.destroyed || this.manifest !== manifest) return
+      const img = await new Promise<HTMLImageElement>((resolve, reject) => {
+        const el = new Image()
+        el.crossOrigin = 'anonymous'
+        el.onload = () => resolve(el)
+        el.onerror = () => reject(new Error('depth load failed'))
+        el.src = dUrl
+      })
+      if (this.destroyed || this.manifest !== manifest) return
+      const w = GRID_X + 1
+      const h = GRID_Y + 1
+      const c = document.createElement('canvas')
+      c.width = w
+      c.height = h
+      const ctx2d = c.getContext('2d')
+      if (!ctx2d) return
+      ctx2d.drawImage(img, 0, 0, w, h)
+      const data = ctx2d.getImageData(0, 0, w, h).data
+      const grid = new Float32Array(w * h)
+      for (let i = 0; i < w * h; i++) {
+        grid[i] = data[i * 4] / 255
+      }
+      layer.depthGrid = grid
+    } catch {
+      /* keep synthetic depth grid cleanly */
     }
   }
 
@@ -1027,6 +1283,9 @@ export class Puppet2DRenderer {
       gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, 0)
       gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, img)
       layer.loaded = true
+      if (layer.meta.depthRelPath) {
+        void this.loadDepthGrid(layer, manifest)
+      }
     } catch {
       /* skip broken layer cleanly */
     }
@@ -1035,6 +1294,8 @@ export class Puppet2DRenderer {
   async loadManifest(manifest: PuppetManifest): Promise<void> {
     this.clearLayers()
     this.manifest = manifest
+    this.skel = this.resolveSkeletalAnchors(manifest.anchors, manifest.layers)
+    this.rebuildSubjectSkels(manifest)
     const runtimes: LayerRuntime[] = []
 
     for (const meta of manifest.layers) {
@@ -1098,6 +1359,12 @@ export class Puppet2DRenderer {
     this.petHairForceX = 0
     this.petHairForceY = 0
     this.gazeFocusTimer = 0
+    this.activeAction = null
+    this.actionPose = { ...ZERO_ACTION_POSE }
+    this.armReactL = 0
+    this.armReactVelL = 0
+    this.armReactR = 0
+    this.armReactVelR = 0
     this.setPointerIdle()
     this.onReady?.(false)
   }
@@ -1422,6 +1689,24 @@ export class Puppet2DRenderer {
       }
     }
 
+    // Advance active keyframe action clip + arm springs
+    if (this.activeAction) {
+      this.activeAction.elapsed += dt
+      if (this.activeAction.elapsed >= this.activeAction.duration) {
+        this.activeAction = null
+        this.actionPose = { ...ZERO_ACTION_POSE }
+      } else {
+        this.actionPose = sampleActionClip(this.activeAction)
+      }
+    } else {
+      this.actionPose = { ...ZERO_ACTION_POSE }
+    }
+
+    this.armReactVelL += (-this.armReactL * 42 - this.armReactVelL * 7.5) * dt
+    this.armReactL = clamp(this.armReactL + this.armReactVelL * dt, -0.14, 0.14)
+    this.armReactVelR += (-this.armReactR * 42 - this.armReactVelR * 7.5) * dt
+    this.armReactR = clamp(this.armReactR + this.armReactVelR * dt, -0.14, 0.14)
+
     // Natural phase-continuous idle sway mixed with pointer tracking and emotional posture
     this.swayTime += dt * this.curSwayFreqMul
     const idleX = Math.sin(this.swayTime * 0.72) * 0.14 * cfg.swayAmp * this.curSwayMul
@@ -1429,21 +1714,26 @@ export class Puppet2DRenderer {
     const headTrackFade = pointerStale ? 0.35 : 1.0
     const focusPullX = this.gazeFocusTimer > 0 ? this.focusTargetX * 0.35 : 0
     const focusPullY = this.gazeFocusTimer > 0 ? this.focusTargetY * 0.25 : 0
+    const act = this.actionPose
     const targetX = clamp(
       (this.targetPointerX * headTrackFade + focusPullX) * cfg.headParallax +
         idleX +
         this.curEmoX +
-        this.dodgeCurAngleX,
+        this.dodgeCurAngleX +
+        act.headX,
       -1.25,
       1.25,
     )
     const targetY = clamp(
-      (this.targetPointerY * headTrackFade + focusPullY) * cfg.headParallax + idleY + this.curEmoY,
+      (this.targetPointerY * headTrackFade + focusPullY) * cfg.headParallax +
+        idleY +
+        this.curEmoY +
+        act.headY,
       -1.25,
       1.25,
     )
 
-    const headSmooth = 1 - Math.exp(-dt * (this.pointerInsideStage ? 7.2 : 5.4))
+    const headSmooth = 1 - Math.exp(-dt * (this.pointerInsideStage || this.activeAction ? 7.8 : 5.4))
     this.curAngleX = lerp(this.curAngleX, targetX, headSmooth)
     this.curAngleY = lerp(this.curAngleY, targetY, headSmooth)
 
@@ -1455,7 +1745,8 @@ export class Puppet2DRenderer {
       this.reactZ +
       this.petCurTilt +
       this.dodgeCurTilt +
-      breathTilt
+      breathTilt +
+      act.headTilt
     this.curAngleZ = lerp(this.curAngleZ, targetZ, headSmooth)
 
     // Eyes lead the head: crisp eye-origin gaze focus or calm ambient glance
@@ -1485,11 +1776,12 @@ export class Puppet2DRenderer {
             this.emoWeights.surprised * 0.12 -
             this.emoWeights.angry * 0.06 +
             this.emoWeights.happy * 0.04 +
-            this.emoWeights.shy * 0.03,
-          0.8,
-          1.08,
+            this.emoWeights.shy * 0.03 +
+            act.pupilBoost,
+          0.76,
+          1.12,
         )
-      : 1.0
+      : clamp(1 + act.pupilBoost, 0.76, 1.12)
     this.pupilVel += ((targetPupil - this.pupilScale) * 95 - this.pupilVel * 11) * dt
     this.pupilScale = clamp(this.pupilScale + this.pupilVel * dt, 0.76, 1.12)
 
@@ -1526,10 +1818,14 @@ export class Puppet2DRenderer {
       this.blinkPhase = 0
     }
 
-    // Mouth open driven by live TTS/Call audio OR manual editor test slider
-    const audioLevel = clamp(getSpeechLevel() * 3.4 * cfg.mouthSens, 0, 1)
+    // Mouth open + vowel formant shape driven by live TTS/Call audio OR manual editor test slider
+    const spec = getSpeechSpectrum()
+    const audioLevel = clamp(spec.level * 3.4 * cfg.mouthSens, 0, 1)
     const targetMouth = Math.max(clamp(cfg.testMouth || 0, 0, 1), audioLevel)
-    this.curMouth = lerp(this.curMouth, targetMouth, 1 - Math.exp(-dt * 24))
+    const mouthRate = 1 - Math.exp(-dt * 24)
+    this.curMouth = lerp(this.curMouth, targetMouth, mouthRate)
+    this.curMouthWide = lerp(this.curMouthWide, audioLevel > 0.04 ? spec.wide : 0, mouthRate)
+    this.curMouthRound = lerp(this.curMouthRound, audioLevel > 0.04 ? spec.round : 0, mouthRate)
 
     // Spring-chain physics per layer (excited by sway, breeze, and head reaction impulses)
     const stiffness = 28 * Math.max(0.2, cfg.physicsStrength)
@@ -1595,11 +1891,16 @@ export class Puppet2DRenderer {
         ? ctx.anchors.eyeR
         : ctx.anchors.eyeL
 
+    const isUpperBodyRig =
+      rig === 'torso' || rig === 'neck' || rig === 'arm_l' || rig === 'arm_r' || isHeadRig
+
     let ptr = 0
     for (let gy = 0; gy <= GRID_Y; gy++) {
       const v = gy / GRID_Y
       for (let gx = 0; gx <= GRID_X; gx++) {
         const u = gx / GRID_X
+        const vertIdx = gy * (GRID_X + 1) + gx
+        const vertDepth = layer.depthGrid[vertIdx] ?? layer.meta.depth ?? 0.5
         let x = layer.meta.nx + u * layer.meta.nw
         let y = layer.meta.ny + v * layer.meta.nh
 
@@ -1611,27 +1912,61 @@ export class Puppet2DRenderer {
           y -= (ctx.breathWave * 0.0085 - ctx.chestRecoil) * falloff
           x += dx * ctx.breathWave * 0.016 * falloff
         }
-        if (rig === 'torso' || rig === 'neck' || rig === 'arm_l' || rig === 'arm_r' || rig === 'head' || isHeadRig) {
+        if (isUpperBodyRig) {
           const topWeight = clamp(1.0 - y * 0.85, 0, 1)
           x += ctx.bodySwayX * topWeight
           y -= ctx.breathWave * 0.004 * topWeight
         }
+
+        // 1b. Articulated shoulder/arm rotation & lower-body waist-pinned drape sway
+        const isUnsplitHandwear = layer.meta.tag.toLowerCase() === 'handwear'
+        if (rig === 'arm_l' || rig === 'arm_r') {
+          const isLeftArm = isUnsplitHandwear ? x >= ctx.chestX : rig === 'arm_l'
+          const shX = isLeftArm ? ctx.shoulderLX : ctx.shoulderRX
+          const shY = isLeftArm ? ctx.shoulderLY : ctx.shoulderRY
+          const span = isLeftArm ? ctx.armSpanL : ctx.armSpanR
+          const ax = x - shX
+          const ay = y - shY
+          const reach = clamp(Math.hypot(ax, ay) / Math.max(0.08, span), 0, 1.25)
+          const bendW = smoothstep(reach)
+          const sideSign = isLeftArm ? 1 : -1
+          const breathArmAngle =
+            sideSign * ((ctx.breathLagWave - 0.45) * 0.024 + Math.sin(this.swayTime * 0.92) * 0.016) * ctx.limbMotion
+          const emoArmAngle =
+            sideSign *
+            (ctx.emo.shy * 0.05 - ctx.emo.happy * 0.032 - ctx.emo.surprised * 0.04 + ctx.emo.sad * 0.02) *
+            ctx.limbMotion
+          const actArmAngle =
+            sideSign * (ctx.armInward - ctx.armSpread) +
+            (isLeftArm ? ctx.armReactL : ctx.armReactR)
+          const theta = (breathArmAngle + emoArmAngle + actArmAngle) * bendW
+          const cA = Math.cos(theta)
+          const sA = Math.sin(theta)
+          x = shX + ax * cA - ay * sA
+          y = shY + ax * sA + ay * cA + ctx.armLift * bendW
+        } else if (rig === 'lower') {
+          const belowWaist = clamp((y - ctx.waistY) / Math.max(0.15, 1.0 - ctx.waistY), 0, 1)
+          const drapeW = Math.pow(belowWaist, 1.3)
+          x -= ctx.bodySwayX * 0.35 * drapeW
+        }
+
         // Keep top of neck smoothly welded under jaw when head posture/reaction shifts
         if (rig === 'neck') {
           const neckFollow = clamp(1.0 - v * 0.85, 0.1, 1.0)
-          x += ctx.headOffsetX * neckFollow * 0.65
-          y += ctx.headOffsetY * neckFollow * 0.78
+          x += ctx.headOffsetX * neckFollow * 0.72
+          y += ctx.headOffsetY * neckFollow * 0.82
         }
 
-        // 2. Emotional head rotation + posture offset + 2.5D parallax
+        // 2. Emotional head rotation + posture offset + perspective scale + 2.5D parallax
         if (isHeadRig) {
           const rx = x - ctx.headPivotX
           const ry = y - ctx.headPivotY
           const rotWeight = rig === 'hair_back' ? clamp(1.0 - v * 0.45, 0.35, 1.0) : 1.0
           const rCos = lerp(1, ctx.cosZ, rotWeight)
           const rSin = lerp(0, ctx.sinZ, rotWeight)
-          x = ctx.headPivotX + rx * rCos - ry * rSin
-          y = ctx.headPivotY + rx * rSin + ry * rCos
+          const hScale = 1 + ctx.headScale * (rig === 'hair_back' ? 0.65 : 1.0)
+          x = ctx.headPivotX + (rx * rCos - ry * rSin) * hScale
+          y = ctx.headPivotY + (rx * rSin + ry * rCos) * hScale
 
           const postureWeight = rig === 'hair_back' ? clamp(1.0 - v * 0.35, 0.65, 1.0) : 1.0
           x += ctx.headOffsetX * postureWeight + this.curAngleX * layer.meta.parallaxX * 0.032
@@ -1640,8 +1975,9 @@ export class Puppet2DRenderer {
 
         // 3. Tilt-aligned eye blink, gaze & procedural expression shaping
         if (isEyeOpenRig) {
-          const ex = eyeCenter[0] + ctx.headOffsetX
-          const ey = eyeCenter[1] + ctx.headOffsetY
+          const hScale = 1 + ctx.headScale
+          const ex = ctx.headPivotX + (eyeCenter[0] - ctx.headPivotX) * hScale + ctx.headOffsetX
+          const ey = ctx.headPivotY + (eyeCenter[1] - ctx.headPivotY) * hScale + ctx.headOffsetY
           const px = (x - ex) * ctx.cbW
           const py = (y - ey) * ctx.cbH
           let uLoc = px * ctx.cosT + py * ctx.sinT
@@ -1708,8 +2044,11 @@ export class Puppet2DRenderer {
 
         // 4. Tilt-aligned eyebrow emotion deformation (fallback when no diff expression overlay)
         if (!ctx.hasDiffExpr && (rig === 'brow_l' || rig === 'brow_r')) {
-          const bx = layer.meta.nx + layer.meta.nw * 0.5 + ctx.headOffsetX
-          const by = layer.meta.ny + layer.meta.nh * 0.5 + ctx.headOffsetY
+          const hScale = 1 + ctx.headScale
+          const baseBx = layer.meta.nx + layer.meta.nw * 0.5
+          const baseBy = layer.meta.ny + layer.meta.nh * 0.5
+          const bx = ctx.headPivotX + (baseBx - ctx.headPivotX) * hScale + ctx.headOffsetX
+          const by = ctx.headPivotY + (baseBy - ctx.headPivotY) * hScale + ctx.headOffsetY
           const bpx = (x - bx) * ctx.cbW
           const bpy = (y - by) * ctx.cbH
           let uLoc = bpx * ctx.cosT + bpy * ctx.sinT
@@ -1730,8 +2069,9 @@ export class Puppet2DRenderer {
 
         // 5. Tilt-aligned mouth lip-sync + fallback emotion curve
         if (rig === 'mouth') {
-          const mx = ctx.mouthX + ctx.headOffsetX
-          const my = ctx.mouthY + ctx.headOffsetY
+          const hScale = 1 + ctx.headScale
+          const mx = ctx.headPivotX + (ctx.mouthX - ctx.headPivotX) * hScale + ctx.headOffsetX
+          const my = ctx.headPivotY + (ctx.mouthY - ctx.headPivotY) * hScale + ctx.headOffsetY
           const mpx = (x - mx) * ctx.cbW
           const mpy = (y - my) * ctx.cbH
           let uLoc = mpx * ctx.cosT + mpy * ctx.sinT
@@ -1751,6 +2091,8 @@ export class Puppet2DRenderer {
           } else {
             vLoc -= open * 0.0025 * ctx.cbH
           }
+          // Formant vowel width modulation (I/E wider, O/U rounder)
+          uLoc *= 1 + (this.curMouthWide * 0.14 - this.curMouthRound * 0.20) * clamp(this.curMouth, 0, 1)
 
           if (!ctx.hasDiffExpr) {
             if (ctx.emo.happy > 0.005) {
@@ -1796,6 +2138,33 @@ export class Puppet2DRenderer {
           }
           x += sx * pinFactor
           y += sy * pinFactor
+        }
+
+        // 7. Per-vertex Marigold 2.5D depth relief + waist-pivoted upper-body lean + camera zoom
+        if (ctx.depthRelief > 0.005) {
+          const baseD = layer.meta.depth ?? 0.5
+          // Smaller depth = closer to camera -> shifts with head/pointer angle
+          const relD = clamp(baseD - vertDepth, -0.45, 0.45)
+          const reliefAmp = isHeadRig ? 0.028 : 0.018
+          x += this.curAngleX * relD * reliefAmp * ctx.depthRelief
+          y += this.curAngleY * relD * reliefAmp * 0.78 * ctx.depthRelief
+        }
+
+        if (isUpperBodyRig) {
+          const wx = x - ctx.waistX
+          const wy = y - ctx.waistY
+          // Rigid rotation around waistCenter preserves 1:1 facial & body proportions (no vertical squash)
+          x = ctx.waistX + wx * ctx.bodyCosZ - wy * ctx.bodySinZ + ctx.bodyLeanX
+          y = ctx.waistY + wx * ctx.bodySinZ + wy * ctx.bodyCosZ + ctx.bodyLeanY
+        } else {
+          y += ctx.bodyLeanY * 0.65
+        }
+
+        if (Math.abs(ctx.stageScale - 1) > 0.0005) {
+          const zCx = ctx.chestX
+          const zCy = lerp(ctx.chestY, ctx.headPivotY, 0.45)
+          x = zCx + (x - zCx) * ctx.stageScale
+          y = zCy + (y - zCy) * ctx.stageScale
         }
 
         const ndcX = (x - 0.5) * 2 * ctx.scaleX
@@ -1907,14 +2276,6 @@ export class Puppet2DRenderer {
 
     const cbW = Math.max(1, cb.width)
     const cbH = Math.max(1, cb.height)
-    const eyeSpanX = (anchors.eyeL[0] - anchors.eyeR[0]) * cbW
-    const eyeSpanY = (anchors.eyeL[1] - anchors.eyeR[1]) * cbH
-    const headTilt =
-      anchors.headTilt !== undefined
-        ? anchors.headTilt
-        : eyeSpanX * eyeSpanX + eyeSpanY * eyeSpanY > 1
-          ? Math.atan2(eyeSpanY, eyeSpanX)
-          : 0
 
     // Compute per-expression opacity weights for seamless crossfades without skin bleed
     const rawBaseW = clamp(this.exprWeights.get('') ?? 0, 0, 1)
@@ -1936,82 +2297,121 @@ export class Puppet2DRenderer {
     const breathLift = cfg.motionEnabled
       ? -(this.breathLagWave - 0.45 * cfg.breathAmp) * 0.0032
       : 0
+    const act = cfg.motionEnabled ? this.actionPose : ZERO_ACTION_POSE
     const petSquint = cfg.motionEnabled ? this.petIntensity * 0.13 : 0
-    const effectiveBlush = cfg.motionEnabled
-      ? this.blushLevel
-      : !hasDiffExpr
-        ? emo.shy * 0.68 + emo.happy * 0.2
-        : 0
+    const effectiveBlush = clamp(
+      (cfg.motionEnabled
+        ? this.blushLevel
+        : !hasDiffExpr
+          ? emo.shy * 0.68 + emo.happy * 0.2
+          : 0) + act.blushBoost,
+      0,
+      1,
+    )
     const gloomLevel = !hasDiffExpr ? clamp(emo.angry * 0.72 + emo.sad * 0.58, 0, 1) : 0
     const sadFlush = !hasDiffExpr ? emo.sad : 0
     const blushStripe = clamp((effectiveBlush - 0.35) / 0.5, 0, 1)
     const tearGlint = !hasDiffExpr ? clamp(emo.sad * 0.85 + emo.shy * 0.2, 0, 1) : 0
-    const happySparkle = !hasDiffExpr ? emo.happy : 0
+    const happySparkle = !hasDiffExpr ? clamp(emo.happy + act.squintBoost * 0.4, 0, 1) : 0
 
     const aspect = cbW / cbH
-    const eRx = anchors.eyeR[0] * aspect
-    const eRy = anchors.eyeR[1]
-    const eLx = anchors.eyeL[0] * aspect
-    const eLy = anchors.eyeL[1]
-    const dIsoX = eLx - eRx
-    const dIsoY = eLy - eRy
-    const dIso = Math.max(0.05, Math.hypot(dIsoX, dIsoY))
-    const uHatX = dIsoX / dIso
-    const uHatY = dIsoY / dIso
-    const vHatX = -uHatY
-    const vHatY = uHatX
-    const cheekR: [number, number] = [
-      (eRx + uHatX * (0.04 * dIso) + vHatX * (0.34 * dIso)) / aspect,
-      eRy + uHatY * (0.04 * dIso) + vHatY * (0.34 * dIso),
-    ]
-    const cheekL: [number, number] = [
-      (eLx - uHatX * (0.04 * dIso) + vHatX * (0.34 * dIso)) / aspect,
-      eLy - uHatY * (0.04 * dIso) + vHatY * (0.34 * dIso),
-    ]
+    const limbMotion = cfg.motionEnabled ? clamp(cfg.limbMotion ?? 1.0, 0, 2.0) : 0
+    const depthRelief = cfg.motionEnabled ? clamp(cfg.depthRelief ?? 1.0, 0, 2.5) : 0
+    const bodyTiltZ = cfg.motionEnabled
+      ? act.bodyTilt + this.curAngleX * 0.012 * limbMotion + this.dodgeCurTilt * 0.32
+      : 0
 
-    const ctx: LayerDrawContext = {
-      scaleX,
-      scaleY,
-      cbW,
-      cbH,
-      headPivotX: anchors.headPivot[0],
-      headPivotY: anchors.headPivot[1],
-      chestX: anchors.chestCenter[0],
-      chestY: anchors.chestCenter[1],
-      mouthX: anchors.mouthCenter[0],
-      mouthY: anchors.mouthCenter[1],
-      cosT: Math.cos(headTilt),
-      sinT: Math.sin(headTilt),
-      cosZ: Math.cos(this.curAngleZ),
-      sinZ: Math.sin(this.curAngleZ),
-      breathWave: this.breathWave,
-      breathLagWave: this.breathLagWave,
-      chestRecoil: cfg.motionEnabled ? this.chestRecoil : 0,
-      blushLevel: effectiveBlush,
-      cheekR,
-      cheekL,
-      cheekAxes: [uHatX, uHatY, dIso, aspect],
-      bodySwayX,
-      headOffsetX: cfg.motionEnabled
-        ? this.curPostureX + this.reactX + this.petCurX + this.dodgeCurX
-        : 0,
-      headOffsetY: cfg.motionEnabled
-        ? this.curPostureY + this.reactY + this.petCurY + this.dodgeCurY + breathLift
-        : 0,
-      blinkAmt: clamp(this.blinkValue + squint + petSquint, -0.14, 1.0),
-      blinkClose: this.blinkPhase > 0 ? clamp(this.blinkValue, 0, 1) : 0,
-      hasClosedBlink: this.layers.some((l) => l.isBlink && l.loaded),
-      hasDiffExpr,
-      emo,
-      faceMood: [gloomLevel, sadFlush, blushStripe],
-      eyeMood: [tearGlint, happySparkle, this.simTime, 0],
-      pupilScale: this.pupilScale,
-      anchors,
+    const makeDrawCtx = (subAnchors: PuppetAnchors, subSkel: SkeletalAnchors): LayerDrawContext => {
+      const eSpanX = (subAnchors.eyeL[0] - subAnchors.eyeR[0]) * cbW
+      const eSpanY = (subAnchors.eyeL[1] - subAnchors.eyeR[1]) * cbH
+      const hTilt =
+        subAnchors.headTilt !== undefined
+          ? subAnchors.headTilt
+          : eSpanX * eSpanX + eSpanY * eSpanY > 1
+            ? Math.atan2(eSpanY, eSpanX)
+            : 0
+      const eRx = subAnchors.eyeR[0] * aspect
+      const eRy = subAnchors.eyeR[1]
+      const eLx = subAnchors.eyeL[0] * aspect
+      const eLy = subAnchors.eyeL[1]
+      const dX = eLx - eRx
+      const dY = eLy - eRy
+      const dI = Math.max(0.05, Math.hypot(dX, dY))
+      const uX = dX / dI
+      const uY = dY / dI
+      const vX = -uY
+      const vY = uX
+      return {
+        scaleX,
+        scaleY,
+        cbW,
+        cbH,
+        headPivotX: subAnchors.headPivot[0],
+        headPivotY: subAnchors.headPivot[1],
+        chestX: subAnchors.chestCenter[0],
+        chestY: subAnchors.chestCenter[1],
+        mouthX: subAnchors.mouthCenter[0],
+        mouthY: subAnchors.mouthCenter[1],
+        waistX: subSkel.waistCenter[0],
+        waistY: subSkel.waistCenter[1],
+        shoulderLX: subSkel.shoulderL[0],
+        shoulderLY: subSkel.shoulderL[1],
+        shoulderRX: subSkel.shoulderR[0],
+        shoulderRY: subSkel.shoulderR[1],
+        armSpanL: subSkel.armSpanL,
+        armSpanR: subSkel.armSpanR,
+        cosT: Math.cos(hTilt),
+        sinT: Math.sin(hTilt),
+        cosZ: Math.cos(this.curAngleZ),
+        sinZ: Math.sin(this.curAngleZ),
+        bodyCosZ: Math.cos(bodyTiltZ),
+        bodySinZ: Math.sin(bodyTiltZ),
+        bodyLeanX: cfg.motionEnabled ? act.bodyX + this.dodgeCurX * 0.45 : 0,
+        bodyLeanY: cfg.motionEnabled ? act.bodyY + this.dodgeCurY * 0.35 : 0,
+        headScale: cfg.motionEnabled ? act.headScale : 0,
+        stageScale: 1 + act.scale,
+        depthRelief,
+        limbMotion,
+        armInward: act.armInward * limbMotion,
+        armSpread: act.armSpread * limbMotion,
+        armLift: act.armLift * limbMotion,
+        armReactL: cfg.motionEnabled ? this.armReactL : 0,
+        armReactR: cfg.motionEnabled ? this.armReactR : 0,
+        breathWave: this.breathWave,
+        breathLagWave: this.breathLagWave,
+        chestRecoil: cfg.motionEnabled ? this.chestRecoil : 0,
+        blushLevel: effectiveBlush,
+        cheekR: [(eRx + uX * (0.04 * dI) + vX * (0.34 * dI)) / aspect, eRy + uY * (0.04 * dI) + vY * (0.34 * dI)],
+        cheekL: [(eLx - uX * (0.04 * dI) + vX * (0.34 * dI)) / aspect, eLy - uY * (0.04 * dI) + vY * (0.34 * dI)],
+        cheekAxes: [uX, uY, dI, aspect],
+        bodySwayX,
+        headOffsetX: cfg.motionEnabled ? this.curPostureX + this.reactX + this.petCurX + this.dodgeCurX + act.headDipX : 0,
+        headOffsetY: cfg.motionEnabled ? this.curPostureY + this.reactY + this.petCurY + this.dodgeCurY + breathLift + act.headDipY : 0,
+        blinkAmt: clamp(this.blinkValue + squint + petSquint + act.squintBoost + act.blinkForce, -0.14, 1.0),
+        blinkClose: this.blinkPhase > 0 || act.blinkForce > 0.25 ? clamp(Math.max(this.blinkValue, act.blinkForce), 0, 1) : 0,
+        hasClosedBlink: this.layers.some((l) => l.isBlink && l.loaded),
+        hasDiffExpr,
+        emo,
+        faceMood: [gloomLevel, sadFlush, blushStripe],
+        eyeMood: [tearGlint, happySparkle, this.simTime, 0],
+        pupilScale: this.pupilScale,
+        anchors: subAnchors,
+      }
+    }
+
+    const ctx = makeDrawCtx(anchors, this.skel)
+    const subjectCtxMap = new Map<string, LayerDrawContext>()
+    for (const sub of m.subjects ?? []) {
+      const subSkel = this.subjectSkels.get(sub.id) ?? this.skel
+      subjectCtxMap.set(sub.id, makeDrawCtx(sub.anchors, subSkel))
     }
 
     const outfits = m.outfits ?? []
     const activeOutfitId =
       (cfg.outfit && outfits.some((o) => o.id === cfg.outfit) ? cfg.outfit : outfits[0]?.id) || ''
+
+    const ctxForLayer = (layer: LayerRuntime): LayerDrawContext =>
+      (layer.meta.subjectId && subjectCtxMap.get(layer.meta.subjectId)) || ctx
 
     const drawBaseLayer = (layer: LayerRuntime) => {
       if (!layer.isBlink && layer.meta.outfit && activeOutfitId && layer.meta.outfit !== activeOutfitId) {
@@ -2023,7 +2423,7 @@ export class Puppet2DRenderer {
         if (baseFeatureAlpha <= 0.01) return
         alpha = baseFeatureAlpha
       }
-      this.drawLayer(layer, alpha, ctx)
+      this.drawLayer(layer, alpha, ctxForLayer(layer))
     }
 
     // Pass 1: base & under-expression layers (0 .. <18.1)
@@ -2040,7 +2440,7 @@ export class Puppet2DRenderer {
       if (alpha <= 0.01) continue
       for (const layer of this.layers) {
         if (layer.loaded && layer.expressionId === exprId) {
-          this.drawLayer(layer, alpha, ctx)
+          this.drawLayer(layer, alpha, ctxForLayer(layer))
         }
       }
     }
@@ -2051,7 +2451,7 @@ export class Puppet2DRenderer {
       if (targetAlpha > 0.01) {
         for (const layer of this.layers) {
           if (layer.loaded && layer.expressionId === this.targetExprId) {
-            this.drawLayer(layer, targetAlpha, ctx)
+            this.drawLayer(layer, targetAlpha, ctxForLayer(layer))
           }
         }
       }
