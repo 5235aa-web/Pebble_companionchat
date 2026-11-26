@@ -17,8 +17,23 @@ _STYLE_BLOCK_RE = re.compile(r"<style\b[^>]*>([\s\S]*?)</style>", re.IGNORECASE)
 _SLASH_REGEX_RE = re.compile(r"^/([\s\S]*)/([a-zA-Z]*)$")
 _SUPPORTED_JS_FLAGS = frozenset("gimsuyd")
 _REPLACE_TOKEN_RE = re.compile(r"\{\{\s*match\s*\}\}|\$(&|\d{1,2})", re.IGNORECASE)
-_IMG_TAG_SHORTHAND_REF_RE = re.compile(r"""(<img\s*=\s*)(?:"([^"]+)"|'([^']+)')""", re.IGNORECASE)
+_IMG_TAG_SHORTHAND_REF_RE = re.compile(
+    r"""(<img\s*=\s*)(?:"([^"]+)"|'([^']+)'|([^\s"'=<>`]+))""",
+    re.IGNORECASE,
+)
 _ASSET_MACRO_REF_RE = re.compile(r"(\{\{\s*(?:img|image|asset|raw)\s*::\s*)([^}]+?)(\s*\}\})", re.IGNORECASE)
+_MALFORMED_IMG_TAG_RE = re.compile(
+    r"""<(?:(?:mg|mgr|imb|imgr|im|img)\s*\(\s*(?:"([^"\n<>]*)"|'([^'\n<>]*)'|([^()\n<>]+?))\s*\)\s*/?|(?:mg|mgr|imb|imgr|im)\s*=\s*(?:"([^"\n<>]*)"|'([^'\n<>]*)'|([^\s"'=<>`]+))(?:\s*/?))>""",
+    re.IGNORECASE,
+)
+_PRECEDING_VALID_IMAGE_RE = re.compile(
+    r"""(?:<img\b[^>]*>|\{\{\s*(?:img|image|asset|raw)\s*::[^}]+\}\}|!\[[^\]]*\]\([^)]+\))\s*$""",
+    re.IGNORECASE,
+)
+_FENCED_CODE_BLOCK_RE = re.compile(
+    r"""(^|\n)([ \t]*)(`{3,}|~{3,})[^\n]*\n[\s\S]*?\n\2\3[ \t]*(?=\n|$)""",
+)
+_COMPACT_SEP_RE = re.compile(r"[\s_\-]+")
 _NON_REF_PREFIX_RE = re.compile(r"^(?:https?:|data:|blob:|pebble-asset:)", re.IGNORECASE)
 
 
@@ -477,7 +492,8 @@ def resolve_fuzzy_asset_name(ref: str, asset_names: Sequence[str]) -> Optional[s
         return None
 
     low_map: Dict[str, str] = {}
-    candidates: List[Tuple[str, str]] = []
+    compact_map: Dict[str, Optional[str]] = {}
+    candidates: List[Tuple[str, str, str]] = []
     for name in asset_names:
         s = str(name or "").strip()
         if not s:
@@ -487,53 +503,83 @@ def resolve_fuzzy_asset_name(ref: str, asset_names: Sequence[str]) -> Optional[s
         low = s.lower()
         if low not in low_map:
             low_map[low] = s
-            candidates.append((low, s))
+            compact = _COMPACT_SEP_RE.sub("", low)
+            candidates.append((low, s, compact))
+            if compact:
+                if compact not in compact_map:
+                    compact_map[compact] = s
+                elif compact_map[compact] != s:
+                    compact_map[compact] = None
 
     q = cleaned.lower()
     if q in low_map:
         return low_map[q]
+
+    q_compact = _COMPACT_SEP_RE.sub("", q)
+    if len(q_compact) >= 4:
+        compact_exact = compact_map.get(q_compact)
+        if compact_exact:
+            return compact_exact
 
     best_score = 0.0
     best_prefix = -1
     best_name: Optional[str] = None
     tied = False
 
-    for c_low, c_orig in candidates:
+    for c_low, c_orig, c_compact in candidates:
         if len(c_low) < 4:
             continue
+        cand_score = 0.0
+        cand_prefix = -1
+
         max_len = max(len(q), len(c_low))
         max_dist = max(3, len(c_low) // 4)
-        if abs(len(q) - len(c_low)) > max_dist:
+        if abs(len(q) - len(c_low)) <= max_dist:
+            dist = _edit_distance(q, c_low)
+            if dist <= max_dist:
+                sim = 1.0 - (dist / max_len)
+                if sim >= 0.75:
+                    cand_score = sim
+                    cand_prefix = _common_prefix_len(q, c_low)
+
+        if len(q_compact) >= 4 and len(c_compact) >= 4:
+            max_cmp_len = max(len(q_compact), len(c_compact))
+            max_cmp_dist = max(2, len(c_compact) // 4)
+            if abs(len(q_compact) - len(c_compact)) <= max_cmp_dist:
+                dist_cmp = _edit_distance(q_compact, c_compact)
+                if dist_cmp <= max_cmp_dist:
+                    sim_cmp = 1.0 - (dist_cmp / max_cmp_len)
+                    if sim_cmp >= 0.78 and sim_cmp > cand_score:
+                        cand_score = sim_cmp
+                        cand_prefix = _common_prefix_len(q_compact, c_compact)
+
+        if cand_score <= 0.0:
             continue
-        dist = _edit_distance(q, c_low)
-        if dist > max_dist:
-            continue
-        sim = 1.0 - (dist / max_len)
-        if sim < 0.75:
-            continue
-        pref = _common_prefix_len(q, c_low)
-        if sim > best_score + 1e-9 or (abs(sim - best_score) <= 1e-9 and pref > best_prefix):
-            best_score = sim
-            best_prefix = pref
+        if cand_score > best_score + 1e-9 or (
+            abs(cand_score - best_score) <= 1e-9 and cand_prefix > best_prefix
+        ):
+            best_score = cand_score
+            best_prefix = cand_prefix
             best_name = c_orig
             tied = False
-        elif abs(sim - best_score) <= 1e-9 and pref == best_prefix:
+        elif abs(cand_score - best_score) <= 1e-9 and cand_prefix == best_prefix:
             tied = True
 
     return None if tied else best_name
 
 
-def normalize_asset_tag_refs(text: str, asset_names: Sequence[str]) -> str:
-    """Fix high-confidence typos inside ``<img="...">`` and ``{{img/raw::...}}`` tags."""
-    if not text or not asset_names:
-        return text
-
+def _normalize_asset_segment(text: str, asset_names: Sequence[str]) -> str:
     def _fix_shorthand(match: re.Match) -> str:
         prefix = match.group(1)
-        raw_ref = match.group(2) if match.group(2) is not None else match.group(3)
-        quote = '"' if match.group(2) is not None else "'"
+        raw_ref = next((g for g in match.groups()[1:] if g is not None), "")
+        if match.group(2) is not None:
+            quote = '"'
+        elif match.group(3) is not None:
+            quote = "'"
+        else:
+            quote = '"'
         fixed = resolve_fuzzy_asset_name(raw_ref, asset_names)
-        if not fixed or fixed == raw_ref:
+        if not fixed or (fixed == raw_ref and match.group(4) is None):
             return match.group(0)
         return f"{prefix}{quote}{fixed}{quote}"
 
@@ -546,6 +592,49 @@ def normalize_asset_tag_refs(text: str, asset_names: Sequence[str]) -> str:
 
     out = _IMG_TAG_SHORTHAND_REF_RE.sub(_fix_shorthand, text)
     out = _ASSET_MACRO_REF_RE.sub(_fix_macro, out)
+
+    if _MALFORMED_IMG_TAG_RE.search(out):
+        parts: List[str] = []
+        cursor = 0
+        removed_any = False
+        for m in _MALFORMED_IMG_TAG_RE.finditer(out):
+            parts.append(out[cursor:m.start()])
+            cursor = m.end()
+            preceding = "".join(parts)
+            raw_ref = next((g for g in m.groups() if g is not None), "").strip()
+            if _PRECEDING_VALID_IMAGE_RE.search(preceding):
+                removed_any = True
+                continue
+            fixed = resolve_fuzzy_asset_name(raw_ref, asset_names)
+            if fixed:
+                parts.append(f'<img="{fixed}">')
+            else:
+                removed_any = True
+        parts.append(out[cursor:])
+        out = "".join(parts)
+        if removed_any:
+            out = re.sub(r"[ \t]+\n", "\n", out)
+            out = re.sub(r"\n{3,}", "\n\n", out).rstrip()
+
+    return out
+
+
+def normalize_asset_tag_refs(text: str, asset_names: Sequence[str]) -> str:
+    """Fix typos in ``<img="...">`` / ``{{img/raw::...}}`` and repair/strip malformed LLM image tags."""
+    if not text or not asset_names:
+        return text
+
+    stashed: List[str] = []
+
+    def _stash_fence(match: re.Match) -> str:
+        idx = len(stashed)
+        stashed.append(match.group(0))
+        return f"\x00PEBBLE_FENCE_{idx}\x00"
+
+    masked = _FENCED_CODE_BLOCK_RE.sub(_stash_fence, text)
+    out = _normalize_asset_segment(masked, asset_names)
+    if stashed:
+        out = re.sub(r"\x00PEBBLE_FENCE_(\d+)\x00", lambda m: stashed[int(m.group(1))], out)
     return out
 
 

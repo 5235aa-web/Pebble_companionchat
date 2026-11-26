@@ -7,17 +7,23 @@ compatible with our upgraded WebGL2 renderer.
 """
 from __future__ import annotations
 
+import argparse
 import io
 import json
 import struct
+import sys
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
 from PIL import Image
 
-from .psd_importer import _compute_anchors_from_acc, _infer_semantic_tag
-from .puppet_builder import _layer_meta, _mask_centroid, _trim_rgba
+try:
+    from .psd_importer import _compute_anchors_from_acc, _infer_semantic_tag
+    from .puppet_builder import _layer_meta, _mask_centroid, _trim_rgba
+except ImportError:
+    from psd_importer import _compute_anchors_from_acc, _infer_semantic_tag
+    from puppet_builder import _layer_meta, _mask_centroid, _trim_rgba
 
 _INX_MAGIC = b"TRNSRTS\x00"
 _TEX_MAGIC = b"TEX_SECT"
@@ -254,3 +260,16 @@ def import_inx_file(
     }
     (out_dir / "puppet.json").write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
     return manifest
+
+
+if __name__ == "__main__":
+    here = Path(__file__).resolve().parent
+    if str(here) not in sys.path:
+        sys.path.insert(0, str(here))
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--inx", required=True, type=Path)
+    parser.add_argument("--out", required=True, type=Path)
+    parser.add_argument("--rel-prefix", required=True)
+    parser.add_argument("--source-name", default="")
+    ns = parser.parse_args()
+    import_inx_file(ns.inx, ns.out, ns.rel_prefix, ns.source_name)

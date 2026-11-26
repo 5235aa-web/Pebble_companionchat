@@ -137,8 +137,15 @@ export function rewriteCssAssetUrls(
   return { css: rewritten, assets }
 }
 
-const IMG_TAG_SHORTHAND_REF_RE = /(<img\s*=\s*)(?:"([^"]+)"|'([^']+)')/gi
+const IMG_TAG_SHORTHAND_REF_RE = /(<img\s*=\s*)(?:"([^"]+)"|'([^']+)'|([^\s"'=<>`]+))/gi
 const ASSET_MACRO_REF_RE = /(\{\{\s*(?:img|image|asset|raw)\s*::\s*)([^}]+?)(\s*\}\})/gi
+const MALFORMED_IMG_TAG_RE =
+  /<(?:(?:mg|mgr|imb|imgr|im|img)\s*\(\s*(?:"([^"\n<>]*)"|'([^'\n<>]*)'|([^()\n<>]+?))\s*\)\s*\/?|(?:mg|mgr|imb|imgr|im)\s*=\s*(?:"([^"\n<>]*)"|'([^'\n<>]*)'|([^\s"'=<>`]+))(?:\s*\/?))>/gi
+const PRECEDING_VALID_IMAGE_RE =
+  /(?:<img\b[^>]*>|\{\{\s*(?:img|image|asset|raw)\s*::[^}]+\}\}|!\[[^\]]*\]\([^)]+\))\s*$/i
+const FENCED_CODE_BLOCK_RE =
+  /(^|\n)([ \t]*)(`{3,}|~{3,})[^\n]*\n[\s\S]*?\n\2\3[ \t]*(?=\n|$)/g
+const COMPACT_SEP_RE = /[\s_-]+/g
 const NON_REF_PREFIX_RE = /^(?:https?:|data:|blob:|pebble-asset:)/i
 
 function editDistance(a: string, b: string): number {
@@ -178,7 +185,8 @@ export function resolveFuzzyAssetName(ref: string, assetNames: string[]): string
   }
 
   const lowMap = new Map<string, string>()
-  const candidates: Array<[string, string]> = []
+  const compactMap = new Map<string, string | null>()
+  const candidates: Array<[string, string, string]> = []
   for (const name of assetNames) {
     const s = (name || '').trim()
     if (!s) continue
@@ -186,7 +194,15 @@ export function resolveFuzzyAssetName(ref: string, assetNames: string[]): string
     const low = s.toLowerCase()
     if (!lowMap.has(low)) {
       lowMap.set(low, s)
-      candidates.push([low, s])
+      const compact = low.replace(COMPACT_SEP_RE, '')
+      candidates.push([low, s, compact])
+      if (compact) {
+        if (!compactMap.has(compact)) {
+          compactMap.set(compact, s)
+        } else if (compactMap.get(compact) !== s) {
+          compactMap.set(compact, null)
+        }
+      }
     }
   }
 
@@ -194,27 +210,57 @@ export function resolveFuzzyAssetName(ref: string, assetNames: string[]): string
   const exactLow = lowMap.get(q)
   if (exactLow) return exactLow
 
+  const qCompact = q.replace(COMPACT_SEP_RE, '')
+  if (qCompact.length >= 4) {
+    const exactCompact = compactMap.get(qCompact)
+    if (exactCompact) return exactCompact
+  }
+
   let bestScore = 0
   let bestPrefix = -1
   let bestName: string | null = null
   let tied = false
 
-  for (const [cLow, cOrig] of candidates) {
+  for (const [cLow, cOrig, cCompact] of candidates) {
     if (cLow.length < 4) continue
+    let candScore = 0
+    let candPrefix = -1
+
     const maxLen = Math.max(q.length, cLow.length)
     const maxDist = Math.max(3, Math.floor(cLow.length / 4))
-    if (Math.abs(q.length - cLow.length) > maxDist) continue
-    const dist = editDistance(q, cLow)
-    if (dist > maxDist) continue
-    const sim = 1 - dist / maxLen
-    if (sim < 0.75) continue
-    const pref = commonPrefixLen(q, cLow)
-    if (sim > bestScore + 1e-9 || (Math.abs(sim - bestScore) <= 1e-9 && pref > bestPrefix)) {
-      bestScore = sim
-      bestPrefix = pref
+    if (Math.abs(q.length - cLow.length) <= maxDist) {
+      const dist = editDistance(q, cLow)
+      if (dist <= maxDist) {
+        const sim = 1 - dist / maxLen
+        if (sim >= 0.75) {
+          candScore = sim
+          candPrefix = commonPrefixLen(q, cLow)
+        }
+      }
+    }
+
+    if (qCompact.length >= 4 && cCompact.length >= 4) {
+      const maxCmpLen = Math.max(qCompact.length, cCompact.length)
+      const maxCmpDist = Math.max(2, Math.floor(cCompact.length / 4))
+      if (Math.abs(qCompact.length - cCompact.length) <= maxCmpDist) {
+        const distCmp = editDistance(qCompact, cCompact)
+        if (distCmp <= maxCmpDist) {
+          const simCmp = 1 - distCmp / maxCmpLen
+          if (simCmp >= 0.78 && simCmp > candScore) {
+            candScore = simCmp
+            candPrefix = commonPrefixLen(qCompact, cCompact)
+          }
+        }
+      }
+    }
+
+    if (candScore <= 0) continue
+    if (candScore > bestScore + 1e-9 || (Math.abs(candScore - bestScore) <= 1e-9 && candPrefix > bestPrefix)) {
+      bestScore = candScore
+      bestPrefix = candPrefix
       bestName = cOrig
       tied = false
-    } else if (Math.abs(sim - bestScore) <= 1e-9 && pref === bestPrefix) {
+    } else if (Math.abs(candScore - bestScore) <= 1e-9 && candPrefix === bestPrefix) {
       tied = true
     }
   }
@@ -222,19 +268,15 @@ export function resolveFuzzyAssetName(ref: string, assetNames: string[]): string
   return tied ? null : bestName
 }
 
-/**
- * Fix high-confidence LLM typos in `<img="...">` and `{{img/raw::...}}` tags
- * against the companion's bundled asset names before Display Regex runs.
- */
-export function normalizeAssetTagRefs(text: string, assetNames: string[]): string {
-  if (!text || !assetNames.length) return text
+function normalizeAssetSegment(text: string, assetNames: string[]): string {
   let out = text.replace(
     IMG_TAG_SHORTHAND_REF_RE,
-    (whole, prefix: string, dq?: string, sq?: string) => {
-      const rawRef = dq ?? sq ?? ''
-      const quote = dq !== undefined ? '"' : "'"
+    (whole, prefix: string, dq?: string, sq?: string, uq?: string) => {
+      const rawRef = dq ?? sq ?? uq ?? ''
+      const quote = sq !== undefined ? "'" : '"'
       const fixed = resolveFuzzyAssetName(rawRef, assetNames)
-      return !fixed || fixed === rawRef ? whole : `${prefix}${quote}${fixed}${quote}`
+      if (!fixed || (fixed === rawRef && uq === undefined)) return whole
+      return `${prefix}${quote}${fixed}${quote}`
     },
   )
   out = out.replace(
@@ -244,7 +286,56 @@ export function normalizeAssetTagRefs(text: string, assetNames: string[]): strin
       return !fixed || fixed === rawRef ? whole : `${prefix}${fixed}${suffix}`
     },
   )
+
+  MALFORMED_IMG_TAG_RE.lastIndex = 0
+  if (MALFORMED_IMG_TAG_RE.test(out)) {
+    MALFORMED_IMG_TAG_RE.lastIndex = 0
+    const parts: string[] = []
+    let cursor = 0
+    let removedAny = false
+    let match: RegExpExecArray | null
+    while ((match = MALFORMED_IMG_TAG_RE.exec(out)) !== null) {
+      parts.push(out.slice(cursor, match.index))
+      cursor = match.index + match[0].length
+      const preceding = parts.join('')
+      const rawRef = (match[1] ?? match[2] ?? match[3] ?? match[4] ?? match[5] ?? match[6] ?? '').trim()
+      if (PRECEDING_VALID_IMAGE_RE.test(preceding)) {
+        removedAny = true
+        continue
+      }
+      const fixed = resolveFuzzyAssetName(rawRef, assetNames)
+      if (fixed) {
+        parts.push(`<img="${fixed}">`)
+      } else {
+        removedAny = true
+      }
+    }
+    parts.push(out.slice(cursor))
+    out = parts.join('')
+    if (removedAny) {
+      out = out.replace(/[ \t]+\n/g, '\n').replace(/\n{3,}/g, '\n\n').replace(/\s+$/, '')
+    }
+  }
+
   return out
+}
+
+/**
+ * Fix high-confidence LLM typos in `<img="...">` / `{{img/raw::...}}` tags and
+ * repair or strip malformed `<mg(...)>` / `<mgr(...)>` / `<imb=...>` tags
+ * against the companion's bundled asset names before Display Regex runs.
+ */
+export function normalizeAssetTagRefs(text: string, assetNames: string[]): string {
+  if (!text || !assetNames.length) return text
+  const stashed: string[] = []
+  const masked = text.replace(FENCED_CODE_BLOCK_RE, (whole) => {
+    const idx = stashed.length
+    stashed.push(whole)
+    return `\u0000PEBBLE_FENCE_${idx}\u0000`
+  })
+  const out = normalizeAssetSegment(masked, assetNames)
+  if (!stashed.length) return out
+  return out.replace(/\u0000PEBBLE_FENCE_(\d+)\u0000/g, (_, idx) => stashed[Number(idx)] ?? '')
 }
 
 function escapeHtmlAttr(value: string): string {

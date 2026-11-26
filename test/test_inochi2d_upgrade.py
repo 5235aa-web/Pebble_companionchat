@@ -1,22 +1,29 @@
 # -*- coding: utf-8 -*-
 """Tests for Inochi2D Live2D upgrade: depth extraction, skeletal pivots, and config."""
+from __future__ import annotations
+
 import json
 import sys
 import tempfile
 import types
 import unittest
 from pathlib import Path
+from typing import Any
 
-import numpy as np
+try:
+    import numpy as np
+except ImportError:  # Optional ML/CV dependency absent in core/packaged env
+    np = None  # type: ignore[assignment]
+
 from PIL import Image
 
 from test._helpers import ROOT  # noqa: F401 - initializes PEBBLE_DATA_ROOT guard
 
-from backend.Inochi2D import inx_importer, pose_manager, psd_importer, puppet_builder, service
+from backend.Inochi2D import pose_manager, service
 
 
 class _FakeLayer:
-    def __init__(self, name: str, arr: np.ndarray, left: int = 0, top: int = 0, visible: bool = True):
+    def __init__(self, name: str, arr: Any, left: int = 0, top: int = 0, visible: bool = True):
         self.name = name
         self._arr = arr
         self.left = left
@@ -72,6 +79,10 @@ class TestInochi2DUpgrade(unittest.TestCase):
         self.assertFalse(loaded["autoChatSync"])
 
     def test_build_puppet_extracts_depth_maps_and_skeletal_pivots(self):
+        if np is None:
+            self.skipTest("numpy not installed")
+        from backend.Inochi2D import puppet_builder
+
         with tempfile.TemporaryDirectory(prefix="puppet-up-") as tmp:
             tmp_path = Path(tmp)
             psd_path = tmp_path / "char.psd"
@@ -213,6 +224,10 @@ class TestInochi2DUpgrade(unittest.TestCase):
                 pose_manager.delete_pose(root, "default")
 
     def test_direct_psd_multi_subject_and_inx_import(self):
+        if np is None:
+            self.skipTest("numpy not installed")
+        from backend.Inochi2D import inx_importer, psd_importer
+
         with tempfile.TemporaryDirectory(prefix="puppet-import-") as tmp:
             tmp_path = Path(tmp)
             psd_path = tmp_path / "hug_cg.psd"
@@ -303,6 +318,12 @@ class TestInochi2DUpgrade(unittest.TestCase):
             self.assertEqual(inx_manifest["layers"][0]["rig"], "face")
 
     def test_layer_repair_recovers_missing_shoulders_prunes_ghost_and_fixes_z_order(self):
+        if np is None:
+            self.skipTest("numpy not installed")
+        try:
+            import cv2  # noqa: F401
+        except ImportError:
+            self.skipTest("cv2 not installed")
         from backend.Inochi2D import layer_repair
 
         with tempfile.TemporaryDirectory(prefix="puppet-repair-") as tmp:
@@ -397,7 +418,10 @@ class TestInochi2DUpgrade(unittest.TestCase):
             self.assertGreater(int((rec_img[..., 3] > 128).sum()), 1000)
 
     def test_part_lr_split_preserves_detached_third_component(self):
+        if np is None:
+            self.skipTest("numpy not installed")
         from unittest import mock
+        from backend.Inochi2D import puppet_builder
 
         iu_dir = str(Path(puppet_builder.__file__).resolve().parent / "see-through" / "common")
         if iu_dir not in sys.path:
@@ -495,6 +519,30 @@ class TestInochi2DUpgrade(unittest.TestCase):
             if proc.poll() is None:
                 proc.kill()
                 proc.wait(timeout=2)
+
+    def test_backend_imports_without_numpy_or_cv2(self):
+        import subprocess
+
+        probe = (
+            "import sys\n"
+            "class _Block:\n"
+            "    def find_spec(self, fullname, path=None, target=None):\n"
+            "        if fullname.split('.')[0] in ('numpy', 'cv2', 'psd_tools', 'torch'):\n"
+            "            raise ModuleNotFoundError(f'blocked: {fullname}')\n"
+            "        return None\n"
+            "sys.meta_path.insert(0, _Block())\n"
+            "from backend import main, api_routes, api_routesV2\n"
+            "from backend.Inochi2D import service, pose_manager\n"
+            "assert service.DEFAULT_PUPPET_CONFIG['autoChatSync'] is True\n"
+        )
+        res = subprocess.run(
+            [sys.executable, "-c", probe],
+            cwd=str(ROOT),
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        self.assertEqual(res.returncode, 0, msg=res.stderr or res.stdout)
 
 
 if __name__ == "__main__":

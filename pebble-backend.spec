@@ -47,6 +47,9 @@ _INOCHI_DATAS = [
     ('backend/Inochi2D/run_decompose.py', 'Inochi2D'),
     ('backend/Inochi2D/puppet_builder.py', 'Inochi2D'),
     ('backend/Inochi2D/expression_extractor.py', 'Inochi2D'),
+    ('backend/Inochi2D/psd_importer.py', 'Inochi2D'),
+    ('backend/Inochi2D/inx_importer.py', 'Inochi2D'),
+    ('backend/Inochi2D/layer_repair.py', 'Inochi2D'),
     ('backend/Inochi2D/requirements.txt', 'Inochi2D'),
 ]
 if os.path.isdir('backend/Inochi2D/see-through'):

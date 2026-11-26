@@ -345,6 +345,50 @@ class BranchVariablesIntegrationTest(unittest.TestCase):
         self.assertIn('<img="Motoko_seducing">', cleaned)
         self.assertIn('<img="Motoko_completely_unknown">', cleaned)
 
+    def test_malformed_llm_image_tags_repaired_deduped_and_stripped(self):
+        assets = [
+            'Motoko_smile',
+            'Motoko_seducing',
+            'Motoko_lustful',
+            'Motoko_touched',
+            'Motoko_upright_straddle_penetration',
+        ]
+        sample = (
+            'Para 1.\n\n'
+            '<img="Motoko_smile">\n'
+            '<mg("Moti koko seducing")>\n\n'
+            'Para 2.\n\n'
+            '<mg("Moti koko touched")>\n\n'
+            'Para 3.\n\n'
+            '<img="Motoko_lustful">\n'
+            '<mg("Moti koko upright_straddle")>\n\n'
+            'Para 4.\n\n'
+            '<mgr("Motoko_unknown_extra")>\n'
+            '<imb= Motoko_unknown_2>\n\n'
+            '```html\n<mg("Motoko_smile")>\n```'
+        )
+        out = card_presentation.normalize_asset_tag_refs(sample, assets)
+        # Duplicate malformed tag right after <img="Motoko_smile"> is dropped
+        self.assertIn('<img="Motoko_smile">', out)
+        self.assertNotIn('Motoko_seducing', out)
+        # Standalone resolvable <mg("Moti koko touched")> is repaired to <img="Motoko_touched">
+        self.assertIn('<img="Motoko_touched">', out)
+        # Unresolvable <mg>, <mgr>, <imb=> outside code fences are stripped completely
+        prose_only = out.split('```html', 1)[0]
+        self.assertNotIn('<mg(', prose_only)
+        self.assertNotIn('<mgr(', prose_only)
+        self.assertNotIn('<imb=', prose_only)
+        # Fenced code block stays untouched
+        self.assertIn('```html\n<mg("Motoko_smile")>\n```', out)
+        # Compact fuzzy match works for split character names
+        self.assertEqual(
+            card_presentation.resolve_fuzzy_asset_name('Moti koko upright_straddle_penetration', assets),
+            'Motoko_upright_straddle_penetration',
+        )
+        self.assertIsNone(
+            card_presentation.resolve_fuzzy_asset_name('Moti koko upright_straddle', assets)
+        )
+
 
 def _build_test_risum_bytes(module_dict, asset_blobs=()):
     main_payload = json.dumps({'type': 'risuModule', 'module': module_dict}, ensure_ascii=False).encode('utf-8')

@@ -14,7 +14,7 @@ import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
-from . import inx_importer, pose_manager, psd_importer
+from . import pose_manager
 from .. import audio_cpp_job, companion_db
 from ..paths import (
     DATA_ROOT,
@@ -468,17 +468,19 @@ def import_psd_puppet(
     rel_prefix = pose_manager.pose_rel_prefix_for(_safe_companion_dir(companion_id), pid)
 
     try:
+        import numpy  # noqa: F401
         import psd_tools  # noqa: F401
-        has_psd_tools = True
+        from . import psd_importer
+        has_psd_deps = True
     except ImportError:
-        has_psd_tools = False
+        has_psd_deps = False
 
-    if has_psd_tools:
+    if has_psd_deps:
         manifest = psd_importer.import_layered_psd(psd_path, out_dir, rel_prefix, source_name)
     else:
         py = _find_python()
         if py is None:
-            raise RuntimeError("当前环境缺少 psd_tools，请先在 Live2D 虚拟环境中安装依赖")
+            raise RuntimeError("当前环境缺少 psd_tools 或 numpy，请先在 Live2D 虚拟环境中安装依赖")
         proc = subprocess.run(
             [
                 str(py),
@@ -516,7 +518,36 @@ def import_inx_puppet(
     out_dir.mkdir(parents=True, exist_ok=True)
     rel_prefix = pose_manager.pose_rel_prefix_for(_safe_companion_dir(companion_id), pid)
 
-    manifest = inx_importer.import_inx_file(inx_path, out_dir, rel_prefix, source_name)
+    try:
+        from . import inx_importer
+        has_inx_deps = True
+    except ImportError:
+        has_inx_deps = False
+
+    if has_inx_deps:
+        manifest = inx_importer.import_inx_file(inx_path, out_dir, rel_prefix, source_name)
+    else:
+        py = _find_python()
+        if py is None:
+            raise RuntimeError("当前环境缺少 numpy，请先在 Live2D 虚拟环境中安装依赖")
+        proc = subprocess.run(
+            [
+                str(py),
+                str(_runtime_dir() / "inx_importer.py"),
+                "--inx", str(inx_path),
+                "--out", str(out_dir),
+                "--rel-prefix", rel_prefix,
+                "--source-name", source_name or inx_path.name,
+            ],
+            capture_output=True,
+            text=True,
+            timeout=120,
+            creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0,
+        )
+        if proc.returncode != 0:
+            raise RuntimeError((proc.stderr or proc.stdout or "INX 解析失败")[-500:])
+        manifest = json.loads((out_dir / "puppet.json").read_text(encoding="utf-8"))
+
     idx = pose_manager.register_pose(root, pid, label=pose_label or Path(source_name or inx_path.name).stem, activate=True)
     return {"puppet": manifest, "posesIndex": idx}
 
