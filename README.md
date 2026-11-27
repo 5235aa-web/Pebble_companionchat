@@ -213,4 +213,4 @@ You can override default locations with environment variables:
 
 ## 💬 Support & Feedback
 
-This is an independent personal project. If you happen to be using it and find it enjoyable, a **Star** is a great way to support the author; and if you run into issues or have suggestions to make it better, feel free to open an **Issue** anytime!
+If you happen to be using it and find it enjoyable, a **Star** is a great way to support the author; and if you run into issues or have suggestions, feel free to open an **Issue** anytime!
