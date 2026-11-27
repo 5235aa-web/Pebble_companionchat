@@ -47,23 +47,21 @@ from .script_db import (
     set_scene_done as set_script_scene_done,
     increment_turn as increment_script_turn,
 )
+from .audio_input import (
+    AUDIO_REJECTED as _AUDIO_REJECTED,
+    LOCAL_AUDIO_DISABLED as _LOCAL_AUDIO_DISABLED,
+    first_or_none as _first_or_none,
+    get_audio_mime as _shared_audio_mime,
+    inject_audio_into_messages as _shared_inject_audio,
+    is_audio_rejection as _is_audio_rejection,
+    prepare_audio_messages as _prepare_audio_messages,
+)
 from .script_mode import ScriptStreamFilter, merge_hud, SCRIPT_DIRECTION_NOTE
 
 logger = logging.getLogger("companion")
 
-# Providers that have already refused an input_audio block, keyed by
-# (provider, model). Nothing is decided up front: the audio goes out with the
-# first request, and a refusal teaches us to stop sending it. A whitelist cannot
-# work here - the capability belongs to the weights, not to the API vendor, and
-# a local llama.cpp can serve a model that hears and one that does not from the
-# same endpoint.
-_AUDIO_REJECTED: set = set()
 _IMAGE_REJECTED: set = set()
 
-# How a provider words the refusal. DeepSeek answers "unknown variant
-# `input_audio`, expected one of `text`, `image_url`, `file`"; others say
-# "unsupported content type" or "invalid content".
-_AUDIO_REJECTION_HINTS = ("input_audio", "audio_url", "input audio")
 _IMAGE_REJECTION_HINTS = (
     "image_url",
     "image input",
@@ -74,36 +72,6 @@ _IMAGE_REJECTION_HINTS = (
     "content must be a string",
     "invalid content type",
 )
-
-# TEMPORARY GUARD - remove once local audio is usable.
-#
-# A local llama.cpp *can* ingest audio: Gemma 4 12B ships an audio projector,
-# b11748 loads it, and the request is accepted. The cost is the problem - with
-# audio in the prompt, prefill drops from ~585 to ~93 tokens/s (measured on
-# gemma-4-12b-heretic, 3644 text tokens in 6.2 s versus 9070 mixed tokens in
-# 64.4 s), so a single voice turn waits about a minute for its first token.
-# Until that is addressed, every llama-cpp model is treated as text-only: the
-# transcript goes out, the clip does not. Set PEBBLE_LLAMA_AUDIO=1 to restore the
-# probe-and-retry path for local models without touching this file.
-_LOCAL_AUDIO_DISABLED = os.getenv("PEBBLE_LLAMA_AUDIO", "").strip().lower() not in (
-    "1", "true", "yes",
-)
-
-
-def _is_audio_rejection(chunk: Optional[Dict]) -> bool:
-    """True when the provider refused the request because of the audio block."""
-    if not isinstance(chunk, dict) or chunk.get("type") != "error":
-        return False
-    text = str(chunk.get("message") or "").lower()
-    if not text:
-        return False
-    if any(hint in text for hint in _AUDIO_REJECTION_HINTS):
-        return True
-    # "unknown variant" on its own could be about any field, so the word audio
-    # has to appear too before this counts as a rejection of the audio block.
-    return "audio" in text and any(
-        w in text for w in ("unknown variant", "unsupported", "invalid", "not support")
-    )
 
 
 def _strip_audio_parts(messages: List[Dict]) -> List[Dict]:
@@ -163,14 +131,6 @@ def _strip_image_parts(messages: List[Dict]) -> List[Dict]:
                 m = {**m, "content": "[图片附件]"}
         out.append(m)
     return out
-
-
-async def _first_or_none(stream):
-    """First item of an async iterator, or None when it is empty."""
-    try:
-        return await stream.__anext__()
-    except StopAsyncIteration:
-        return None
 
 
 def _is_local_base_url(url: Optional[str]) -> bool:
@@ -901,59 +861,12 @@ class Companion:
         return [{"role": "system", "content": system_prompt}] + replayed
 
     def _inject_audio_into_messages(self, messages: List[Dict], audio_file_path: str) -> List[Dict]:
-        """
-        将音频以 OpenAI input_audio 格式注入最后一条用户消息。
-        保留原有文本，追加音频 content_part。
-        """
-        import os
-        import base64
-        
-        if not audio_file_path or not os.path.exists(audio_file_path):
-            return messages
-        
-        # 找到最后一条用户消息
-        last_user_idx = -1
-        for i in range(len(messages) - 1, -1, -1):
-            if messages[i].get("role") == "user":
-                last_user_idx = i
-                break
-        
-        if last_user_idx == -1:
-            return messages
-        
-        # 读取音频文件并编码为 base64
-        with open(audio_file_path, "rb") as f:
-            audio_bytes = f.read()
-        audio_b64 = base64.b64encode(audio_bytes).decode('utf-8')
-        ext = os.path.splitext(audio_file_path)[1].lower().lstrip('.')
-        mime = self._get_audio_mime(ext)
-        format = ext if ext in ['wav', 'mp3', 'pcm'] else 'wav'
-        
-        # 只发音频，不带文字。支持音频的模型应该听原声：转录文本混进来会让它
-        # 照文字回答，语气和停顿这些只有声音里才有的信息就白传了。降级路径
-        # 用的是一份不含音频的消息副本，所以这里丢掉文本不会让转录消失。
-        content_parts = [{
-            "type": "input_audio",
-            "input_audio": {
-                "data": f"data:{mime};base64,{audio_b64}",
-                "format": format
-            }
-        }]
-        
-        messages[last_user_idx]["content"] = content_parts
-        return messages
-    
+        """将音频以 OpenAI input_audio 格式注入最后一条用户消息。"""
+        return _shared_inject_audio(messages, audio_file_path)
+
     def _get_audio_mime(self, ext: str) -> str:
         """根据文件扩展名返回音频的 MIME 类型。"""
-        mime_map = {
-            'mp3': 'audio/mpeg',
-            'wav': 'audio/wav',
-            'flac': 'audio/flac',
-            'm4a': 'audio/mp4',
-            'ogg': 'audio/ogg',
-            'pcm': 'audio/L16',
-        }
-        return mime_map.get(ext, 'audio/wav')
+        return _shared_audio_mime(ext)
 
     def _compose_user_text(self, user_message: str, attachments: Optional[List[Dict]]) -> str:
         """
@@ -1253,28 +1166,9 @@ class Companion:
         
         # 4.5 音频默认就发：能不能收由 provider 说了算。被拒一次之后记下来，
         # 之后这个 provider/model 直接只发文本，不再浪费一次往返。
-        audio_key = (llm_config["provider_type"], llm_config["model"])
-        audio_sent = False
-        # 不含音频的那一份，降级重试用它。_inject_audio_into_messages 会原地改
-        # messages，所以副本必须在这里就留好。
-        text_messages = messages
-        local_text_only = (
-            llm_config["provider_type"] == "llama-cpp" and _LOCAL_AUDIO_DISABLED
+        messages, text_messages, audio_sent, audio_key = _prepare_audio_messages(
+            messages, llm_config, audio_file_path
         )
-        if audio_file_path and local_text_only:
-            logger.info(
-                "Audio skipped for local model %s/%s: text only until local audio "
-                "prefill is fast enough (see PEBBLE_LLAMA_AUDIO)",
-                *audio_key,
-            )
-        elif audio_file_path and audio_key not in _AUDIO_REJECTED:
-            messages = self._inject_audio_into_messages(
-                [dict(m) for m in messages], audio_file_path
-            )
-            audio_sent = True
-            logger.info("Audio injected into last user message")
-        elif audio_file_path:
-            logger.info("Audio skipped for %s/%s: refused earlier", *audio_key)
 
         # 4.6 图片/视频帧能力探测与降级：若当前模型明确不支持 image_url，
         # 自动退回纯文本（保留视频时长与语音转录等文字信息）。

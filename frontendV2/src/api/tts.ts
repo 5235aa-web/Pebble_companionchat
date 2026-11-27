@@ -308,7 +308,11 @@ function audioMime(config: TtsConfig): string {
   return `audio/${fmt}`
 }
 
-export async function synthesize(config: TtsConfig, text: string): Promise<Blob> {
+export async function synthesize(
+  config: TtsConfig,
+  text: string,
+  signal?: AbortSignal,
+): Promise<Blob> {
   // Reclaim the other local engines' VRAM right before this one starts. Doing
   // it here — rather than when the provider is picked in the panel — keeps
   // browsing engines free: nothing is loaded or unloaded until speech is
@@ -321,13 +325,14 @@ export async function synthesize(config: TtsConfig, text: string): Promise<Blob>
     // Loopback HTTP is not reliable from the shell, so the audio comes back
     // over the same socket the rest of the API uses. There is no response
     // header on that path, so the container has to be inferred from the config.
-    const bytes = await binaryRequest('/tts', payload)
+    const bytes = await binaryRequest('/tts', payload, signal)
     return new Blob([bytes as BlobPart], { type: audioMime(config) })
   }
   const res = await fetch(`${getBaseURL()}/tts`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(payload),
+    signal,
   })
   if (!res.ok) {
     const detail = await res.text().catch(() => '')

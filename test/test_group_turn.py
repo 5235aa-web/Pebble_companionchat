@@ -9,8 +9,8 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from backend import companion_db
-from backend.group_sessions import db, prompt, turn
+from backend import audio_input, companion_db
+from backend.group_sessions import db, memory, prompt, routes, turn
 
 
 def _member(cid: str, name: str) -> dict:
@@ -400,6 +400,198 @@ class TurnLockAndPendingMessageTest(unittest.TestCase):
         self.assertIn("charx", (res.get("error") or "").lower())
 
 
+class GroupVoiceTurnTest(unittest.TestCase):
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp(prefix="pebble-grp-voice-"))
+        self._orig_db = companion_db.DB_PATH
+        companion_db.DB_PATH = self.tmp / "companions.db"
+        db._ready = False
+        audio_input.AUDIO_REJECTED.clear()
+        session = db.create_session("Voice Room", scene="A quiet terrace")
+        self.session_id = int(session["id"])
+        conn = companion_db._get_conn()
+        try:
+            conn.execute(
+                "INSERT OR REPLACE INTO companions (id, name, personality, description) VALUES (?, ?, ?, ?)",
+                ("c1", "Alice", "Warm", "Barista"),
+            )
+            conn.execute(
+                "INSERT OR REPLACE INTO companions (id, name, personality, description) VALUES (?, ?, ?, ?)",
+                ("c2", "Bob", "Sharp", "Detective"),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+        db.add_member(self.session_id, "c1")
+        db.add_member(self.session_id, "c2")
+
+    def tearDown(self):
+        turn._turn_locks.pop(self.session_id, None)
+        audio_input.AUDIO_REJECTED.clear()
+        db._ready = False
+        companion_db.DB_PATH = self._orig_db
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def test_voice_turn_injects_audio_with_speaker_prefix_and_stores_transcript(self):
+        wav = self.tmp / "sample.wav"
+        wav.write_bytes(b"RIFF\x00\x00\x00\x00WAVEfmt ")
+        seen_messages = []
+
+        async def fake_stream(**kwargs):
+            seen_messages.append(kwargs["messages"])
+            yield {"type": "content", "content": "I heard you clearly."}
+
+        async def scenario():
+            members = db.list_members(self.session_id)
+            with (
+                patch("backend.group_sessions.turn.call_llm_stream", side_effect=fake_stream),
+                patch("backend.group_sessions.memory.schedule_extraction"),
+                patch("backend.group_sessions.prompt.load_global_prompts", return_value={}),
+            ):
+                async for _ in turn.generate_turn(
+                    self.session_id,
+                    {"provider_type": "openai", "model": "gpt-4o-audio-preview"},
+                    members[0],
+                    [],
+                    members,
+                    pending_message={
+                        "content": "Alice, can you hear me?",
+                        "role": "user",
+                        "speaker_id": "user",
+                        "speaker_name": "You",
+                        "kind": "voice",
+                    },
+                    audio_file_path=str(wav),
+                ):
+                    pass
+
+        asyncio.run(scenario())
+        self.assertEqual(len(seen_messages), 1)
+        last_user = [m for m in seen_messages[0] if m["role"] == "user"][-1]
+        self.assertIsInstance(last_user["content"], list)
+        self.assertEqual(last_user["content"][0], {"type": "text", "text": "You:"})
+        self.assertEqual(last_user["content"][1]["type"], "input_audio")
+        stored = db.list_messages(self.session_id)
+        self.assertEqual(stored[0]["kind"], "voice")
+        self.assertEqual(stored[0]["content"], "Alice, can you hear me?")
+        # Voice rows stay part of replay and memory extraction.
+        transcript = memory._format_transcript(stored, db.list_members(self.session_id))
+        self.assertIn("User: Alice, can you hear me?", transcript)
+
+    def test_audio_rejection_falls_back_to_transcript_and_caches_model(self):
+        wav = self.tmp / "sample.wav"
+        wav.write_bytes(b"RIFF\x00\x00\x00\x00WAVEfmt ")
+        calls = []
+
+        async def fake_stream(**kwargs):
+            calls.append(kwargs["messages"])
+            if len(calls) == 1:
+                yield {"type": "error", "message": "unknown variant `input_audio`, expected text"}
+                return
+            yield {"type": "content", "content": "Got the text."}
+
+        async def scenario():
+            members = db.list_members(self.session_id)
+            cfg = {"provider_type": "deepseek", "model": "deepseek-chat"}
+            with (
+                patch("backend.group_sessions.turn.call_llm_stream", side_effect=fake_stream),
+                patch("backend.group_sessions.memory.schedule_extraction"),
+                patch("backend.group_sessions.prompt.load_global_prompts", return_value={}),
+            ):
+                async for _ in turn.generate_turn(
+                    self.session_id,
+                    cfg,
+                    members[0],
+                    [],
+                    members,
+                    pending_message={
+                        "content": "Hello room",
+                        "role": "user",
+                        "speaker_id": "user",
+                        "speaker_name": "You",
+                        "kind": "voice",
+                    },
+                    audio_file_path=str(wav),
+                ):
+                    pass
+                # Second turn for the same provider/model should skip input_audio immediately.
+                async for _ in turn.generate_turn(
+                    self.session_id,
+                    cfg,
+                    members[1],
+                    db.list_messages(self.session_id),
+                    members,
+                    pending_message={
+                        "content": "Second voice line",
+                        "role": "user",
+                        "speaker_id": "user",
+                        "speaker_name": "You",
+                        "kind": "voice",
+                    },
+                    audio_file_path=str(wav),
+                ):
+                    pass
+
+        asyncio.run(scenario())
+        self.assertEqual(len(calls), 3)
+        last_user = lambda msgs: [m for m in msgs if m["role"] == "user"][-1]["content"]
+        self.assertIsInstance(last_user(calls[0]), list)
+        self.assertIsInstance(last_user(calls[1]), str)
+        self.assertIn("Hello room", last_user(calls[1]))
+        self.assertIsInstance(last_user(calls[2]), str)
+        self.assertIn("Second voice line", last_user(calls[2]))
+        self.assertIn(("deepseek", "deepseek-chat"), audio_input.AUDIO_REJECTED)
+
+    def test_audio_group_stream_auto_picks_speaker_from_transcript_and_cleans_temp_file(self):
+        class FakeStt:
+            def transcribe_bytes(self, audio_bytes, sample_rate=16000):
+                self.seen = (audio_bytes, sample_rate)
+                return "Bob, what do you think?"
+
+        fake_stt = FakeStt()
+        captured_audio_paths = []
+
+        async def fake_stream(**kwargs):
+            yield {"type": "content", "content": "Looks suspicious."}
+
+        orig_generate = turn.generate_turn
+
+        async def spy_generate(*args, **kwargs):
+            captured_audio_paths.append(kwargs.get("audio_file_path"))
+            async for ev in orig_generate(*args, **kwargs):
+                yield ev
+
+        class FakeRegistry:
+            def get_engine(self):
+                return fake_stt
+
+        async def scenario():
+            with (
+                patch("backend.stt_registry.get_registry", return_value=FakeRegistry()),
+                patch("backend.group_sessions.turn.call_llm_stream", side_effect=fake_stream),
+                patch("backend.group_sessions.turn.generate_turn", side_effect=spy_generate),
+                patch("backend.group_sessions.memory.schedule_extraction"),
+                patch("backend.group_sessions.prompt.load_global_prompts", return_value={}),
+            ):
+                resp = await routes._audio_group_stream(
+                    self.session_id,
+                    b"RIFF\x00\x00\x00\x00WAVEfmt ",
+                    {"provider_type": "openai", "model": "gpt-4o"},
+                )
+                body = []
+                async for chunk in resp.body_iterator:
+                    body.append(chunk.decode("utf-8") if isinstance(chunk, bytes) else chunk)
+                return "".join(body)
+
+        sse_text = asyncio.run(scenario())
+        self.assertIn('"type": "stt_transcript"', sse_text)
+        self.assertIn("Bob, what do you think?", sse_text)
+        self.assertIn('"name": "Bob"', sse_text)
+        self.assertEqual(len(captured_audio_paths), 1)
+        self.assertTrue(captured_audio_paths[0])
+        self.assertFalse(Path(captured_audio_paths[0]).exists())
+
+
 class GroupRouteSurfaceTest(unittest.TestCase):
     def test_no_duplicate_group_routes(self):
         routes_path = (
@@ -422,6 +614,8 @@ class GroupRouteSurfaceTest(unittest.TestCase):
                 ):
                     found.append((dec.func.attr, dec.args[0].value))
         self.assertEqual(len(found), len(set(found)))
+        self.assertIn(("post", "/sessions/{session_id}/audio/stream"), found)
+        self.assertIn(("post", "/sessions/{session_id}/audio/stream-json"), found)
 
 
 if __name__ == "__main__":

@@ -12,9 +12,9 @@
  * 64 that ended the previous frame, with a recurrent state; v4 takes the frame
  * alone with an LSTM pair. The shape is read from the session's input names.
  */
-import * as ort from 'onnxruntime-web'
+import * as ort from 'onnxruntime-web/wasm'
 
-const MODEL_URL = '/models/silero_vad.onnx'
+const MODEL_URL = `${import.meta.env.BASE_URL}models/silero_vad.onnx`
 /** New samples per call. Matches the worklet's frame, so nothing is buffered. */
 const FRAME = 512
 /** v5 carries the previous frame's tail as leading context. */
@@ -53,7 +53,9 @@ export function loadVad(): Promise<void> {
     // One thread: the Tauri webview has no cross-origin isolation, so a
     // threaded wasm build cannot spawn its pool and would fail at startup.
     ort.env.wasm.numThreads = 1
-    ort.env.wasm.wasmPaths = '/ort/'
+    ort.env.wasm.wasmPaths = {
+      wasm: `${import.meta.env.BASE_URL}ort/ort-wasm-simd-threaded.wasm`,
+    }
     const s = await ort.InferenceSession.create(MODEL_URL)
     v5 = s.inputNames.includes('state')
     state = v5 ? zeros([2, 1, STATE_SIZE]) : null

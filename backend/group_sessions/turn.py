@@ -21,6 +21,12 @@ import math
 import re
 from typing import AsyncGenerator, Dict, List, Optional
 
+from ..audio_input import (
+    AUDIO_REJECTED,
+    first_or_none,
+    is_audio_rejection,
+    prepare_audio_messages,
+)
 from ..card_translation import resolve_companion_fields
 from ..llm_client import call_llm_stream
 from ..memory_retriever import tokenize
@@ -331,6 +337,7 @@ async def generate_turn(
     members: Optional[List[Dict]] = None,
     pending_message: Optional[Dict] = None,
     replace_message_id: Optional[int] = None,
+    audio_file_path: Optional[str] = None,
 ) -> AsyncGenerator[Dict, None]:
     """Stream one character's reply, refusing to start while another runs.
 
@@ -361,6 +368,7 @@ async def generate_turn(
             members,
             pending_message,
             replace_message_id,
+            audio_file_path,
         ):
             yield event
     finally:
@@ -375,6 +383,7 @@ async def _turn_stream(
     members: Optional[List[Dict]] = None,
     pending_message: Optional[Dict] = None,
     replace_message_id: Optional[int] = None,
+    audio_file_path: Optional[str] = None,
 ) -> AsyncGenerator[Dict, None]:
     """The body of a turn. Only ever entered while the room lock is held."""
     members = members or db.list_members(session_id)
@@ -438,23 +447,54 @@ async def _turn_stream(
         session, members, speaker, visible, memories=memories, compaction=compaction
     )
 
+    user_name = prompt.user_display_name(session, members)
+    if user_name == "the user":
+        user_name = "You"
+    send_messages, text_messages, audio_sent, audio_key = prepare_audio_messages(
+        messages,
+        llm_config,
+        audio_file_path,
+        prefix_text=f"{user_name}:",
+    )
+
+    def _open_stream(msgs):
+        return call_llm_stream(
+            provider_type=str(llm_config.get("provider_type") or ""),
+            api_key=str(llm_config.get("api_key") or ""),
+            base_url=str(llm_config.get("base_url") or ""),
+            model=str(llm_config.get("model") or ""),
+            messages=msgs,
+            temperature=float(llm_config.get("temperature") or 0.8),
+            top_p=float(llm_config.get("top_p") or 0.92),
+            max_tokens=llm_config.get("max_tokens"),
+            top_k=llm_config.get("top_k"),
+            min_p=llm_config.get("min_p"),
+            repeat_penalty=llm_config.get("repeat_penalty"),
+            frequency_penalty=llm_config.get("frequency_penalty"),
+            presence_penalty=llm_config.get("presence_penalty"),
+            enable_mtp=llm_config.get("enable_mtp"),
+        )
+
+    stream = _open_stream(send_messages)
+    pending = await first_or_none(stream)
+    if audio_sent and is_audio_rejection(pending):
+        logger.info(
+            "%s/%s rejected input_audio in group chat, retrying with transcript only",
+            *audio_key,
+        )
+        AUDIO_REJECTED.add(audio_key)
+        stream = _open_stream(text_messages)
+        pending = await first_or_none(stream)
+
     chunks: List[str] = []
-    async for event in call_llm_stream(
-        provider_type=str(llm_config.get("provider_type") or ""),
-        api_key=str(llm_config.get("api_key") or ""),
-        base_url=str(llm_config.get("base_url") or ""),
-        model=str(llm_config.get("model") or ""),
-        messages=messages,
-        temperature=float(llm_config.get("temperature") or 0.8),
-        top_p=float(llm_config.get("top_p") or 0.92),
-        max_tokens=llm_config.get("max_tokens"),
-        top_k=llm_config.get("top_k"),
-        min_p=llm_config.get("min_p"),
-        repeat_penalty=llm_config.get("repeat_penalty"),
-        frequency_penalty=llm_config.get("frequency_penalty"),
-        presence_penalty=llm_config.get("presence_penalty"),
-        enable_mtp=llm_config.get("enable_mtp"),
-    ):
+    while True:
+        if pending is not None:
+            event, pending = pending, None
+        else:
+            try:
+                event = await stream.__anext__()
+            except StopAsyncIteration:
+                break
         kind = event.get("type")
         if kind == "content":
             delta = str(event.get("content") or "")

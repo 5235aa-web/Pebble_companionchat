@@ -22,9 +22,9 @@
 
 ## 📋 Changelog
 
-**Current Version: `v1.0.2`** — View full release notes in [CHANGELOG.md](CHANGELOG.md).
+**Current Version: `v1.0.3`** — View full release notes in [CHANGELOG.md](CHANGELOG.md).
 
-`v1.0.2` hardens **CHARX asset tag recovery** (repairing or stripping malformed LLM image tags, inline backticks, and drifted asset names), fixes **scroll-to-bottom and message jumps** in image-heavy chats, restores the **right-hand stage & Stage HUD** to the clean Gaussian-blurred portrait backdrop, and **lazy-loads Inochi2D `numpy` imports** so CI and packaged builds pass without heavy ML dependencies.
+`v1.0.3` adds **Group Chat Voice Input** (direct voice messages with tap-to-pick or automatic speaker routing, plus transcribe-to-draft editing and native audio/transcript fallback) and fixes **Voice Call Interruption** during AI speech playback (restoring Silero VAD barge-in, non-streaming playback interruption, and adding a manual **Interrupt** button).
 
 ---
 

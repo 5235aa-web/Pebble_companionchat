@@ -9,12 +9,12 @@ import { useI18n } from '@/i18n'
 import { clearBranchMessages } from '@/api/companion'
 import { fileUrl } from '@/api/client'
 import { attachmentToPayload, type PickedAttachment } from '@/api/gallery'
-import { blobToWav } from '@/utils/audio'
 import {
   allocateChipId,
   revokeOwnedChipUrls,
   useAttachmentQueue,
 } from '@/composables/useAttachmentQueue'
+import { useVoiceRecorder } from '@/composables/useVoiceRecorder'
 import AttachmentChipStrip from './AttachmentChipStrip.vue'
 import SceneRulesDock from './SceneRulesDock.vue'
 
@@ -53,13 +53,20 @@ const attachInput = ref<HTMLInputElement | null>(null)
 const dragOver = ref(false)
 let dragDepth = 0
 
-const recording = ref(false)
-const recTime = ref('00:00')
-let recTimer = 0
-let recSec = 0
-let recorder: MediaRecorder | null = null
-let recChunks: Blob[] = []
-let recStream: MediaStream | null = null
+const {
+  recording,
+  recTime,
+  start: startVoiceRec,
+  stop: stopVoiceRec,
+} = useVoiceRecorder({
+  onError: (err) => {
+    ui.askConfirm({
+      title: t('composer.voiceInput'),
+      text: err instanceof Error ? err.message : String(err),
+      onConfirm: () => {},
+    })
+  },
+})
 
 function autoGrow() {
   const el = input.value
@@ -230,67 +237,18 @@ function toggleCall() {
   void call.start()
 }
 
-async function toggleRec() {  if (recording.value) {
-    stopRec()
+async function toggleRec() {
+  if (recording.value) {
+    await stopRec()
     return
   }
   if (chat.busy) return
-  try {
-    recStream = await navigator.mediaDevices.getUserMedia({ audio: true })
-  } catch (err) {
-    ui.askConfirm({
-      title: t('composer.voiceInput'),
-      text: err instanceof Error ? err.message : String(err),
-      onConfirm: () => {},
-    })
-    return
-  }
-  recChunks = []
-  recorder = new MediaRecorder(recStream)
-  recorder.ondataavailable = (ev) => {
-    if (ev.data.size > 0) recChunks.push(ev.data)
-  }
-  recorder.start()
-  recording.value = true
-  recSec = 0
-  recTime.value = '00:00'
-  recTimer = window.setInterval(() => {
-    recSec++
-    recTime.value = '00:' + String(recSec).padStart(2, '0')
-  }, 1000)
+  await startVoiceRec()
 }
 
-function stopRec() {
-  recording.value = false
-  clearInterval(recTimer)
-  recTimer = 0
-  recSec = 0
-  recTime.value = '00:00'
-  const rec = recorder
-  recorder = null
-  if (!rec) {
-    recStream?.getTracks().forEach((tr) => tr.stop())
-    recStream = null
-    return
-  }
-  rec.onstop = async () => {
-    recStream?.getTracks().forEach((tr) => tr.stop())
-    recStream = null
-    const raw = new Blob(recChunks, { type: rec.mimeType || 'audio/webm' })
-    recChunks = []
-    if (raw.size < 1200) return
-    try {
-      const wav = await blobToWav(raw)
-      chat.sendAudio(wav)
-    } catch (err) {
-      ui.askConfirm({
-        title: t('composer.voiceInput'),
-        text: err instanceof Error ? err.message : String(err),
-        onConfirm: () => {},
-      })
-    }
-  }
-  rec.stop()
+async function stopRec() {
+  const wav = await stopVoiceRec()
+  if (wav) chat.sendAudio(wav)
 }
 
 onMounted(() => {
@@ -304,8 +262,6 @@ onUnmounted(() => {
   window.removeEventListener('drop', resetDragState)
   window.removeEventListener('dragend', resetDragState)
   revokeOwnedChipUrls(chips.value)
-  clearInterval(recTimer)
-  recStream?.getTracks().forEach((tr) => tr.stop())
 })
 
 function askClear() {

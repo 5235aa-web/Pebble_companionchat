@@ -5,16 +5,19 @@ the single-companion endpoints: a room has its own messages, members and memory,
 and deleting a room leaves companion threads alone.
 """
 
+import base64
 import json
 import logging
+import os
 from typing import Any, Dict, List, Optional
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, File, Form, HTTPException, Query, UploadFile
 from fastapi.responses import StreamingResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from . import db, embeddings, memory, prompt, turn
 from ..attachment_parser import delete_image, delete_video_assets
+from ..audio_input import transcribe_audio_to_temp_wav
 from ..token_counter import estimate_tokens_messages
 
 logger = logging.getLogger(__name__)
@@ -73,6 +76,51 @@ class RerollIn(BaseModel):
     speaker_id: Optional[str] = None
     switch_speaker: bool = False
     llm_config: Optional[Dict[str, Any]] = None
+
+
+class GroupAudioStreamJsonIn(BaseModel):
+    """Base64-encoded WAV payload for group voice input over the socket bridge."""
+
+    audio_b64: str
+    speaker_id: Optional[str] = None
+    sender: Optional[str] = None
+    llm_config: Optional[Dict[str, Any]] = Field(default=None)
+
+
+_MAX_AUDIO_UPLOAD_BYTES = 50 * 1024 * 1024
+
+
+def _resolve_llm_config(raw: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+    from ..llm_client import load_default_llm_config
+
+    llm_config = dict(raw or {})
+    if not llm_config.get("model"):
+        defaults = load_default_llm_config() or {}
+        llm_config = {**defaults, **llm_config}
+        if not llm_config.get("model"):
+            llm_config["model"] = defaults.get("model", "")
+    if not llm_config.get("model"):
+        raise HTTPException(status_code=400, detail="No model is configured.")
+    return llm_config
+
+
+def _resolve_user_speaker_name(session_row: Dict[str, Any], members: List[Dict[str, Any]]) -> str:
+    speaker_name = prompt.user_display_name(session_row, members)
+    return "You" if speaker_name == "the user" else speaker_name
+
+
+async def _read_audio_upload(file: UploadFile) -> bytes:
+    chunks: List[bytes] = []
+    total = 0
+    while True:
+        chunk = await file.read(1024 * 1024)
+        if not chunk:
+            break
+        total += len(chunk)
+        if total > _MAX_AUDIO_UPLOAD_BYTES:
+            raise HTTPException(status_code=413, detail="Audio file exceeds 50 MB limit")
+        chunks.append(chunk)
+    return b"".join(chunks)
 
 
 def _require(session_id: int) -> Dict:
@@ -347,14 +395,7 @@ async def stream_turn(session_id: int, body: StreamIn):
     if not members:
         raise HTTPException(status_code=400, detail="This room has no members yet")
 
-    from ..llm_client import load_default_llm_config
-    llm_config = body.llm_config or {}
-    if not llm_config.get("model"):
-        llm_config = {**(load_default_llm_config() or {}), **llm_config}
-        if not llm_config.get("model"):
-            llm_config["model"] = (load_default_llm_config() or {}).get("model", "")
-    if not llm_config.get("model"):
-        raise HTTPException(status_code=400, detail="No model is configured.")
+    llm_config = _resolve_llm_config(body.llm_config)
 
     if turn.is_room_busy(session_id):
         raise HTTPException(
@@ -384,14 +425,11 @@ async def stream_turn(session_id: int, body: StreamIn):
             # Label the user's line with the name the room knows them by, not a
             # generic "You": the transcript should read like a room where
             # everyone has a name. Falls back to "You" when no card declares one.
-            speaker_name = prompt.user_display_name(session_row, members)
-            if speaker_name == "the user":
-                speaker_name = "You"
             pending_message = {
                 "content": (body.message or "").strip(),
                 "role": "user",
                 "speaker_id": "user",
-                "speaker_name": speaker_name,
+                "speaker_name": _resolve_user_speaker_name(session_row, members),
                 "kind": body.kind or "say",
                 "attachments": attachments or None,
             }
@@ -409,14 +447,11 @@ async def stream_turn(session_id: int, body: StreamIn):
             # as a user line so the model sees who was called on, exactly as an
             # "@name" typed into the composer does. Without it the turn arrives
             # with no cue at all and the reply drifts off the scene.
-            cue_name = prompt.user_display_name(session_row, members)
-            if cue_name == "the user":
-                cue_name = "You"
             pending_message = {
                 "content": f"@{str(speaker.get('name') or '').strip()}",
                 "role": "user",
                 "speaker_id": "user",
-                "speaker_name": cue_name,
+                "speaker_name": _resolve_user_speaker_name(session_row, members),
                 "kind": "cue",
                 "attachments": None,
             }
@@ -440,6 +475,143 @@ async def stream_turn(session_id: int, body: StreamIn):
     )
 
 
+async def _audio_group_stream(
+    session_id: int,
+    audio_bytes: bytes,
+    llm_config_raw: Optional[Dict[str, Any]],
+    sender: str = "user",
+    speaker_id: Optional[str] = None,
+) -> StreamingResponse:
+    """Transcribe a voice clip, pick or honor the speaker, and stream the reply."""
+    session_row = _require(session_id)
+    members = db.list_members(session_id)
+    if not members:
+        raise HTTPException(status_code=400, detail="This room has no members yet")
+
+    llm_config = _resolve_llm_config(llm_config_raw)
+
+    if turn.is_room_busy(session_id):
+        raise HTTPException(
+            status_code=409,
+            detail="Someone is already answering in this room. Let them finish first.",
+        )
+
+    if not audio_bytes:
+        raise HTTPException(status_code=400, detail="Empty audio file")
+
+    from ..stt_registry import get_registry
+
+    stt_engine = get_registry().get_engine()
+    if stt_engine is None:
+        raise HTTPException(status_code=503, detail="STT model not loaded")
+
+    tmp_path, user_message_text = await transcribe_audio_to_temp_wav(
+        stt_engine, audio_bytes, sample_rate=16000
+    )
+
+    try:
+        is_narration = (sender or "") == "narrator"
+        if is_narration:
+            pending_message = {
+                "content": user_message_text,
+                "role": "user",
+                "speaker_id": "narrator",
+                "speaker_name": "Narration",
+                "kind": "narration",
+                "attachments": None,
+            }
+            audio_path: Optional[str] = None
+            try:
+                os.unlink(tmp_path)
+            except OSError:
+                pass
+        else:
+            pending_message = {
+                "content": user_message_text,
+                "role": "user",
+                "speaker_id": "user",
+                "speaker_name": _resolve_user_speaker_name(session_row, members),
+                "kind": "voice",
+                "attachments": None,
+            }
+            audio_path = tmp_path
+
+        history = db.list_messages(session_id)
+        if speaker_id:
+            speaker = next(
+                (m for m in members if str(m.get("companion_id")) == speaker_id), None
+            )
+            if not speaker:
+                raise HTTPException(status_code=400, detail="Speaker is not in this room")
+        else:
+            speaker = turn.pick_speaker(
+                members,
+                user_message_text,
+                history,
+                is_narration=is_narration,
+            )
+        if not speaker:
+            raise HTTPException(status_code=400, detail="Could not choose a speaker")
+    except Exception:
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
+        raise
+
+    return _stream_response(
+        session_id,
+        llm_config,
+        speaker,
+        history,
+        members,
+        pending_message=pending_message,
+        audio_file_path=audio_path,
+        pre_events=[{"type": "stt_transcript", "content": user_message_text}],
+    )
+
+
+@router.post("/sessions/{session_id}/audio/stream-json")
+async def stream_audio_turn_json(session_id: int, body: GroupAudioStreamJsonIn):
+    """Voice input endpoint (base64 JSON) for socket-bridged desktop shells."""
+    try:
+        audio_bytes = base64.b64decode(body.audio_b64, validate=False)
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail="Invalid audio payload") from exc
+
+    return await _audio_group_stream(
+        session_id=session_id,
+        audio_bytes=audio_bytes,
+        llm_config_raw=body.llm_config,
+        sender=body.sender or "user",
+        speaker_id=body.speaker_id or None,
+    )
+
+
+@router.post("/sessions/{session_id}/audio/stream")
+async def stream_audio_turn(
+    session_id: int,
+    file: UploadFile = File(...),
+    speaker_id: Optional[str] = Form(None),
+    sender: str = Form("user"),
+    llm_config: str = Form("{}"),
+):
+    """Voice input endpoint (multipart WAV) for browser clients."""
+    audio_bytes = await _read_audio_upload(file)
+    try:
+        llm_config_dict = json.loads(llm_config) if llm_config else {}
+    except json.JSONDecodeError:
+        llm_config_dict = {}
+
+    return await _audio_group_stream(
+        session_id=session_id,
+        audio_bytes=audio_bytes,
+        llm_config_raw=llm_config_dict,
+        sender=sender,
+        speaker_id=speaker_id or None,
+    )
+
+
 def _stream_response(
     session_id: int,
     llm_config: Dict[str, Any],
@@ -448,9 +620,13 @@ def _stream_response(
     members: List[Dict[str, Any]],
     pending_message: Optional[Dict[str, Any]] = None,
     replace_message_id: Optional[int] = None,
+    audio_file_path: Optional[str] = None,
+    pre_events: Optional[List[Dict[str, Any]]] = None,
 ) -> StreamingResponse:
     async def generate():
         try:
+            for pre in pre_events or ():
+                yield _sse(pre)
             async for event in turn.generate_turn(
                 session_id,
                 llm_config,
@@ -459,12 +635,18 @@ def _stream_response(
                 members,
                 pending_message=pending_message,
                 replace_message_id=replace_message_id,
+                audio_file_path=audio_file_path,
             ):
                 yield _sse(event)
         except Exception as exc:  # noqa: BLE001 - the stream must always close
             logger.exception("group stream failed")
             yield _sse({"type": "error", "message": str(exc)})
         finally:
+            if audio_file_path:
+                try:
+                    os.unlink(audio_file_path)
+                except OSError:
+                    pass
             yield "data: [DONE]\n\n"
 
     return StreamingResponse(
@@ -482,14 +664,7 @@ async def reroll_turn(session_id: int, body: RerollIn):
     if not members:
         raise HTTPException(status_code=400, detail="This room has no members yet")
 
-    from ..llm_client import load_default_llm_config
-    llm_config = body.llm_config or {}
-    if not llm_config.get("model"):
-        llm_config = {**(load_default_llm_config() or {}), **llm_config}
-        if not llm_config.get("model"):
-            llm_config["model"] = (load_default_llm_config() or {}).get("model", "")
-    if not llm_config.get("model"):
-        raise HTTPException(status_code=400, detail="No model is configured.")
+    llm_config = _resolve_llm_config(body.llm_config)
 
     if turn.is_room_busy(session_id):
         raise HTTPException(

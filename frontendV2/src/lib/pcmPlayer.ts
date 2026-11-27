@@ -30,6 +30,8 @@ export class PcmPlayer {
   /** Leftover trailing byte when a transport chunk ends mid-sample (odd byte count). */
   private carryByte: number | null = null
   private levelRaf = 0
+  private drainTimer = 0
+  private drainResolve: (() => void) | null = null
 
   constructor(sampleRate: number) {
     this.rate = sampleRate
@@ -189,6 +191,16 @@ export class PcmPlayer {
     return { wide, round }
   }
 
+  private wakeDrain(): void {
+    if (this.drainTimer) {
+      window.clearTimeout(this.drainTimer)
+      this.drainTimer = 0
+    }
+    const resolve = this.drainResolve
+    this.drainResolve = null
+    resolve?.()
+  }
+
   /**
    * Cut playback immediately. A barge-in must silence the assistant at once;
    * waiting for the scheduled buffers to drain would talk over the user.
@@ -197,6 +209,7 @@ export class PcmPlayer {
     if (this.closed) return
     this.closed = true
     this.carryByte = null
+    this.wakeDrain()
     this.stopSpeechPump()
     for (const src of this.sources) {
       try {
@@ -220,7 +233,14 @@ export class PcmPlayer {
     if (this.closed) return
     const left = this.cursor - this.ctx.currentTime
     if (left > 0) {
-      await new Promise((resolve) => window.setTimeout(resolve, left * 1000))
+      await new Promise<void>((resolve) => {
+        this.drainResolve = resolve
+        this.drainTimer = window.setTimeout(() => {
+          this.drainTimer = 0
+          this.drainResolve = null
+          resolve()
+        }, left * 1000)
+      })
     }
   }
 
@@ -228,6 +248,7 @@ export class PcmPlayer {
     if (this.closed) return
     this.closed = true
     this.carryByte = null
+    this.wakeDrain()
     this.stopSpeechPump()
     try {
       await this.ctx.close()

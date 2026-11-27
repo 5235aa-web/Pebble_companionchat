@@ -278,9 +278,18 @@ class Socket {
   }
 
   /** Fetch a stored file. Images cannot be loaded over HTTP in the shell. */
-  async binary(path: string, body?: unknown, method = 'GET'): Promise<Uint8Array> {
+  async binary(
+    path: string,
+    body?: unknown,
+    method = 'GET',
+    signal?: AbortSignal,
+  ): Promise<Uint8Array> {
     await this.connect().catch(() => this.waitForOpen())
     return new Promise<Uint8Array>((resolve, reject) => {
+      if (signal?.aborted) {
+        reject(new ApiError(0, 'aborted'))
+        return
+      }
       const id = this.nextId
       this.nextId += 1
       const p: Pending = {
@@ -290,6 +299,19 @@ class Socket {
         reject: reject as (err: unknown) => void,
       }
       this.pending.set(id, p)
+      if (signal) {
+        signal.addEventListener(
+          'abort',
+          () => {
+            this.pending.delete(id)
+            if (this.ws && this.ws.readyState === WebSocket.OPEN) {
+              this.ws.send(JSON.stringify({ id, type: 'cancel' }))
+            }
+            reject(new ApiError(0, 'aborted'))
+          },
+          { once: true },
+        )
+      }
       this.ws!.send(JSON.stringify({ id, method, path, body }))
     })
   }
@@ -354,8 +376,11 @@ export const onSocketReady = (fn: () => void): (() => void) => socket.onReady(fn
  * TTS returns audio, not JSON, so it cannot go through `send`. The shell has no
  * usable HTTP path for loopback, so the same socket carries the bytes.
  */
-export const binaryRequest = (path: string, body: unknown): Promise<Uint8Array> =>
-  socket.binary(path, body, 'POST')
+export const binaryRequest = (
+  path: string,
+  body: unknown,
+  signal?: AbortSignal,
+): Promise<Uint8Array> => socket.binary(path, body, 'POST', signal)
 
 /** Fetch raw bytes over the `/ws` bridge via GET (used for Tauri card/asset downloads). */
 export const binaryGetRequest = (path: string): Promise<Uint8Array> =>

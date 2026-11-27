@@ -2,12 +2,15 @@
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import { useSessionStore } from '@/stores/session'
 import { useUiStore } from '@/stores/ui'
+import { useCallStore } from '@/stores/call'
 import { llmConfig } from '@/stores/chat'
 import { useFileUrls } from '@/composables/useFileUrl'
+import { useVoiceRecorder } from '@/composables/useVoiceRecorder'
 import { useI18n } from '@/i18n'
 import ChatAttachmentPicker from './ChatAttachmentPicker.vue'
 import InlineVideoCard from './InlineVideoCard.vue'
 import { attachmentToPayload, type PickedAttachment } from '@/api/gallery'
+import { transcribeAudio } from '@/api/stt'
 import { isCharxCard, type BeatLine } from '@/data/chat'
 import { resolveCompanionDisplayText } from '@/utils/companionTranslation'
 import {
@@ -16,6 +19,7 @@ import {
   createGroupSession,
   deleteGroupSession,
   getGroupSession,
+  groupAudioStream,
   groupContext,
   groupRerollStream,
   groupStream,
@@ -45,6 +49,7 @@ const MAX_MEMBERS = 3
 
 const session = useSessionStore()
 const ui = useUiStore()
+const call = useCallStore()
 const { t } = useI18n()
 
 const room = ref<GroupSession | null>(null)
@@ -73,6 +78,23 @@ const compaction = ref<GroupCompaction | null>(null)
 const composer = ref<HTMLTextAreaElement | null>(null)
 /** Bumped on every room change; the curtain element keys off it to replay. */
 const roomEpoch = ref(0)
+const transcribing = ref(false)
+
+const {
+  recording,
+  recTime,
+  start: startVoiceRec,
+  stop: stopVoiceRec,
+  cancel: cancelVoiceRec,
+} = useVoiceRecorder({
+  onError: (err) => {
+    error.value = err instanceof Error ? err.message : String(err)
+  },
+})
+
+const canSelectSpeaker = computed(() =>
+  Boolean(draft.value.trim() || chips.value.length || recording.value || transcribing.value),
+)
 
 const castById = computed(() => new Map(session.companions.map((c) => [c.id, c])))
 
@@ -587,8 +609,7 @@ function applyOptimisticFocus(companionId: string): void {
 
 async function onCardClick(companionId: string): Promise<void> {
   if (!room.value || busy.value) return
-  const hasDraft = Boolean(draft.value.trim() || chips.value.length)
-  if (!hasDraft) {
+  if (!canSelectSpeaker.value) {
     applyOptimisticFocus(companionId)
     void setGroupFocus(room.value.id, companionId).catch(() => {})
     promptSpeaker(companionId)
@@ -601,7 +622,7 @@ async function onCardClick(companionId: string): Promise<void> {
     applyOptimisticFocus(companionId)
     void setGroupFocus(room.value.id, companionId).catch(() => {})
   }
-  nextTick(() => composer.value?.focus())
+  if (!recording.value) nextTick(() => composer.value?.focus())
 }
 
 /**
@@ -703,7 +724,7 @@ const hoveredCardTip = computed(() => {
   if (!hoveredCardId.value) return ''
   const card = cards.value.find((c) => c.key === hoveredCardId.value)
   if (!card) return ''
-  return draft.value.trim() || chips.value.length
+  return canSelectSpeaker.value
     ? t('group.cardSelectTip', { name: card.name })
     : t('group.cardSpeakTip', { name: card.name })
 })
@@ -936,7 +957,8 @@ function stopStream(): void {
 }
 
 function makeTurnHandlers(opts: {
-  onSpeaker?: (chunk: { user_message?: { id: number } }) => void
+  onTranscript?: (text: string) => void
+  onSpeaker?: (chunk: { user_message?: { id: number; content?: string } }) => void
   onDone?: (chunk: { user_message_id?: number }) => void
   onRollback?: () => void
   allowRelay?: boolean
@@ -944,7 +966,9 @@ function makeTurnHandlers(opts: {
   let turnFailed = false
   return {
     onChunk: (chunk: import('@/api/stream').ChatChunk) => {
-      if (chunk.type === 'speaker') {
+      if (chunk.type === 'stt_transcript') {
+        if (typeof chunk.content === 'string') opts.onTranscript?.(chunk.content)
+      } else if (chunk.type === 'speaker') {
         liveSpeaker = chunk.speaker?.name ?? ''
         liveSpeakerId = chunk.speaker?.companion_id ?? ''
         opts.onSpeaker?.(chunk)
@@ -1098,6 +1122,124 @@ function runTurn(opts: {
     attachments,
     opts.speakerId,
   )
+}
+
+function runAudioTurn(audio: Blob): void {
+  if (!room.value || busy.value) return
+  if (!members.value.length) {
+    error.value = 'Invite someone to the room first.'
+    cancelRelay()
+    return
+  }
+  const roomId = room.value.id
+  const narrating = narrationMode.value
+  const speakerId = selectedSpeakerId.value || undefined
+  selectedSpeakerId.value = ''
+  mentionOpen.value = false
+  inviteOpen.value = false
+  abortedByUser = false
+  relayRemaining.value = members.value.length > 1 ? relayRounds.value : 0
+
+  const optimistic: GroupMessage = {
+    id: -Date.now(),
+    session_id: roomId,
+    speaker_id: narrating ? 'narrator' : 'user',
+    speaker_name: narrating ? 'Narration' : 'You',
+    role: 'user',
+    kind: narrating ? 'narration' : 'voice',
+    content: '',
+    attachments: [],
+  }
+  messages.value.push(optimistic)
+  void nextTick(() => scrollToEnd())
+
+  let persistedUserMsg = false
+  rerollMenuId.value = 0
+  busy.value = true
+  error.value = ''
+  liveSpeaker = ''
+  liveSpeakerId = ''
+  live.value = null
+
+  activeStream = groupAudioStream(
+    roomId,
+    audio,
+    llmConfig(),
+    makeTurnHandlers({
+      allowRelay: true,
+      onTranscript: (text) => {
+        optimistic.content = text
+      },
+      onSpeaker: (chunk) => {
+        const stored = chunk.user_message
+        if (!stored) return
+        persistedUserMsg = true
+        optimistic.id = Number(stored.id)
+        if (typeof stored.content === 'string' && stored.content) {
+          optimistic.content = stored.content
+        }
+      },
+      onDone: (chunk) => {
+        if (chunk.user_message_id && optimistic.id < 0) {
+          persistedUserMsg = true
+          optimistic.id = chunk.user_message_id
+        }
+      },
+      onRollback: () => {
+        if (!persistedUserMsg && optimistic.id < 0) {
+          messages.value = messages.value.filter((m) => m.id !== optimistic.id)
+        }
+      },
+    }),
+    {
+      sender: narrating ? 'narrator' : 'user',
+      speakerId,
+    },
+  )
+}
+
+async function toggleGroupRec(): Promise<void> {
+  if (recording.value) {
+    await sendVoice()
+    return
+  }
+  if (busy.value || relayRemaining.value > 0 || transcribing.value) return
+  if (!members.value.length) {
+    error.value = 'Invite someone to the room first.'
+    return
+  }
+  if (call.active) call.hangup()
+  mentionOpen.value = false
+  inviteOpen.value = false
+  error.value = ''
+  await startVoiceRec()
+}
+
+async function sendVoice(): Promise<void> {
+  const wav = await stopVoiceRec()
+  if (!wav) return
+  runAudioTurn(wav)
+}
+
+async function transcribeVoiceToDraft(): Promise<void> {
+  if (!recording.value || transcribing.value) return
+  const wav = await stopVoiceRec()
+  if (!wav) return
+  transcribing.value = true
+  error.value = ''
+  try {
+    const text = await transcribeAudio(wav)
+    if (text) {
+      draft.value = draft.value.trim() ? `${draft.value.trimEnd()} ${text}` : text
+      await nextTick()
+      autoGrow()
+      composer.value?.focus()
+    }
+  } catch (e) {
+    error.value = e instanceof Error ? e.message : String(e)
+  } finally {
+    transcribing.value = false
+  }
 }
 
 function rerollLast(messageId: number, speakerId?: string): void {
@@ -1323,6 +1465,7 @@ async function loadRooms(): Promise<void> {
 
 async function switchRoom(id: number): Promise<void> {
   if (room.value?.id === id) return
+  if (recording.value) cancelVoiceRec()
   abortedByUser = true
   cancelRelay()
   if (activeStream) {
@@ -1584,7 +1727,7 @@ onMounted(async () => {
         }"
         :style="cardStyle(i)"
         :data-tip="
-          draft.trim() || chips.length
+          canSelectSpeaker
             ? t('group.cardSelectTip', { name: card.name })
             : t('group.cardSpeakTip', { name: card.name })
         "
@@ -1724,7 +1867,9 @@ onMounted(async () => {
                 </button>
               </span>
             </header>
+            <p v-if="m.kind === 'voice'" class="gc-say voice-bubble">{{ t('chat.voiceMessage') }}</p>
             <p
+              v-else
               v-for="(line, li) in linesOf(m.content, m.kind)"
               :key="li"
               :class="line.kind === 'direction' ? 'gc-direction' : 'gc-say'"
@@ -1782,6 +1927,7 @@ onMounted(async () => {
 
     <footer
       class="gc-composer"
+      :class="{ recording, transcribing }"
       @dragover.prevent
       @drop="onComposerDrop"
     >
@@ -1911,99 +2057,168 @@ onMounted(async () => {
           class="gc-input"
           rows="1"
           :placeholder="
-            narrationMode
-              ? t('composer.placeholderNarration')
-              : 'Say something, @ to address, or /invite'
+            transcribing
+              ? t('call.transcribing') + '…'
+              : narrationMode
+                ? t('composer.placeholderNarration')
+                : 'Say something, @ to address, or /invite'
           "
           @input="onDraftInput"
           @keydown="onKeydown"
           @paste="onComposerPaste"
         ></textarea>
 
-        <button
-          type="button"
-          class="gc-cbtn gc-note-btn"
-          :class="{ on: Boolean(room?.scene?.trim()) }"
-          :data-tip="t('group.scene')"
-          :aria-label="t('group.scene')"
-          @click="openScene"
-        >
-          <svg viewBox="0 0 24 24">
-            <rect x="3.5" y="4.5" width="17" height="15" rx="1.5" />
-            <path d="M3.5 16l4.5-4.5 3.5 3.5 4-5 5 6" />
-          </svg>
-        </button>
+        <div class="gc-rec">
+          <span class="rec-bar" style="animation-delay: 0s"></span>
+          <span class="rec-bar" style="animation-delay: 0.1s"></span>
+          <span class="rec-bar" style="animation-delay: 0.2s"></span>
+          <span class="rec-bar" style="animation-delay: 0.3s"></span>
+          <span class="rec-bar" style="animation-delay: 0.15s"></span>
+          <span class="rec-bar" style="animation-delay: 0.05s"></span>
+          <span class="rec-bar" style="animation-delay: 0.25s"></span>
+          <span class="rec-t">{{ recTime }}</span>
+          <span class="gc-rec-hint">{{ t('group.voiceRecHint') }}</span>
+        </div>
 
-        <button
-          type="button"
-          class="gc-cbtn gc-note-btn"
-          :class="{ on: Boolean(room?.user_note?.trim()) }"
-          :data-tip="t('group.userNote')"
-          aria-label="Your details in this room"
-          @click="openUserNote"
-        >
-          <svg viewBox="0 0 24 24">
-            <circle cx="12" cy="8.4" r="3.3" />
-            <path d="M5.2 19.4c0-3.3 3-5.9 6.8-5.9s6.8 2.6 6.8 5.9" />
-          </svg>
-        </button>
+        <template v-if="recording">
+          <button
+            type="button"
+            class="gc-cbtn gc-clear"
+            :data-tip="t('group.voiceCancel')"
+            :aria-label="t('group.voiceCancel')"
+            @click="cancelVoiceRec"
+          >
+            <svg viewBox="0 0 24 24">
+              <path d="M6 6l12 12M18 6L6 18" />
+            </svg>
+          </button>
 
-        <button
-          type="button"
-          class="gc-cbtn gc-clear"
-          :data-tip="t('group.clearOrDelete')"
-          :aria-label="t('group.clearOrDelete')"
-          @click="askClearRoom"
-        >
-          <svg viewBox="0 0 24 24">
-            <path d="M6 6l12 12M18 6L6 18" />
-          </svg>
-        </button>
+          <button
+            type="button"
+            class="gc-cbtn"
+            :data-tip="t('group.voiceToText')"
+            :aria-label="t('group.voiceToText')"
+            @click="transcribeVoiceToDraft"
+          >
+            <svg viewBox="0 0 24 24">
+              <path d="M4 20h4L19 9l-4-4L4 16v4z" />
+              <path d="M13.5 6.5l4 4" />
+            </svg>
+          </button>
 
-        <button
-          type="button"
-          class="gc-cbtn"
-          :class="{ on: narrationMode }"
-          :data-tip="t('composer.narration')"
-          aria-label="Narration mode"
-          @click="toggleNarration"
-        >
-          <svg viewBox="0 0 24 24">
-            <path d="M10 8.5H6v4.5h4v-2c0-1 .3-1.8 1.4-2.5" />
-            <path d="M19 8.5h-4v4.5h4v-2c0-1 .3-1.8 1.4-2.5" />
-          </svg>
-        </button>
+          <button
+            type="button"
+            class="gc-cbtn gc-send"
+            :data-tip="t('composer.send')"
+            :aria-label="t('composer.send')"
+            @click="sendVoice"
+          >
+            <svg viewBox="0 0 24 24">
+              <path d="M4 12h15M13 6l6 6-6 6" />
+            </svg>
+          </button>
+        </template>
 
-        <button
-          type="button"
-          class="gc-cbtn"
-          :data-tip="t('composer.attach')"
-          aria-label="Attach media"
-          @click="picker?.pick()"
-        >
-          <svg viewBox="0 0 24 24">
-            <rect x="3.5" y="5" width="17" height="14" rx="2" />
-            <circle cx="9" cy="10" r="1.6" />
-            <path d="M21 16l-5-4-4 3-3-2-6 5" />
-          </svg>
-        </button>
+        <template v-else>
+          <button
+            type="button"
+            class="gc-cbtn gc-note-btn"
+            :class="{ on: Boolean(room?.scene?.trim()) }"
+            :data-tip="t('group.scene')"
+            :aria-label="t('group.scene')"
+            @click="openScene"
+          >
+            <svg viewBox="0 0 24 24">
+              <rect x="3.5" y="4.5" width="17" height="15" rx="1.5" />
+              <path d="M3.5 16l4.5-4.5 3.5 3.5 4-5 5 6" />
+            </svg>
+          </button>
 
-        <button
-          type="button"
-          class="gc-cbtn gc-send"
-          :class="{ busy: busy || relayRemaining > 0 }"
-          :disabled="!busy && relayRemaining === 0 && Boolean(picker?.uploading)"
-          :data-tip="busy || relayRemaining > 0 ? t('group.stop') : t('composer.send')"
-          :aria-label="busy || relayRemaining > 0 ? t('group.stop') : t('composer.send')"
-          @click="send"
-        >
-          <svg v-if="!busy && relayRemaining === 0" viewBox="0 0 24 24">
-            <path d="M4 12h15M13 6l6 6-6 6" />
-          </svg>
-          <svg v-else viewBox="0 0 24 24">
-            <rect x="7" y="7" width="10" height="10" rx="1" />
-          </svg>
-        </button>
+          <button
+            type="button"
+            class="gc-cbtn gc-note-btn"
+            :class="{ on: Boolean(room?.user_note?.trim()) }"
+            :data-tip="t('group.userNote')"
+            aria-label="Your details in this room"
+            @click="openUserNote"
+          >
+            <svg viewBox="0 0 24 24">
+              <circle cx="12" cy="8.4" r="3.3" />
+              <path d="M5.2 19.4c0-3.3 3-5.9 6.8-5.9s6.8 2.6 6.8 5.9" />
+            </svg>
+          </button>
+
+          <button
+            type="button"
+            class="gc-cbtn gc-clear"
+            :data-tip="t('group.clearOrDelete')"
+            :aria-label="t('group.clearOrDelete')"
+            @click="askClearRoom"
+          >
+            <svg viewBox="0 0 24 24">
+              <path d="M6 6l12 12M18 6L6 18" />
+            </svg>
+          </button>
+
+          <button
+            type="button"
+            class="gc-cbtn"
+            :class="{ on: narrationMode }"
+            :data-tip="t('composer.narration')"
+            aria-label="Narration mode"
+            @click="toggleNarration"
+          >
+            <svg viewBox="0 0 24 24">
+              <path d="M10 8.5H6v4.5h4v-2c0-1 .3-1.8 1.4-2.5" />
+              <path d="M19 8.5h-4v4.5h4v-2c0-1 .3-1.8 1.4-2.5" />
+            </svg>
+          </button>
+
+          <button
+            type="button"
+            class="gc-cbtn"
+            :data-tip="t('composer.attach')"
+            aria-label="Attach media"
+            @click="picker?.pick()"
+          >
+            <svg viewBox="0 0 24 24">
+              <rect x="3.5" y="5" width="17" height="14" rx="2" />
+              <circle cx="9" cy="10" r="1.6" />
+              <path d="M21 16l-5-4-4 3-3-2-6 5" />
+            </svg>
+          </button>
+
+          <button
+            type="button"
+            class="gc-cbtn"
+            :disabled="busy || relayRemaining > 0 || transcribing || !members.length"
+            :data-tip="t('composer.voiceInput')"
+            :aria-label="t('composer.voiceInput')"
+            @click="toggleGroupRec"
+          >
+            <svg viewBox="0 0 24 24">
+              <rect x="9" y="3" width="6" height="11" rx="3" />
+              <path d="M5 11a7 7 0 0014 0M12 18v3" />
+            </svg>
+          </button>
+
+          <button
+            type="button"
+            class="gc-cbtn gc-send"
+            :class="{ busy: busy || relayRemaining > 0 }"
+            :disabled="!busy && relayRemaining === 0 && (Boolean(picker?.uploading) || transcribing)"
+            :data-tip="busy || relayRemaining > 0 ? t('group.stop') : t('composer.send')"
+            :aria-label="busy || relayRemaining > 0 ? t('group.stop') : t('composer.send')"
+            @click="send"
+          >
+            <svg v-if="!busy && relayRemaining === 0" viewBox="0 0 24 24">
+              <path d="M4 12h15M13 6l6 6-6 6" />
+            </svg>
+            <svg v-else viewBox="0 0 24 24">
+              <rect x="7" y="7" width="10" height="10" rx="1" />
+            </svg>
+          </button>
+        </template>
       </div>
 
       <button
@@ -2026,7 +2241,7 @@ onMounted(async () => {
           :class="{ on: card.focused, speaking: card.speaking }"
           :disabled="busy"
           :data-tip="
-            draft.trim() || chips.length
+            canSelectSpeaker
               ? t('group.cardSelectTip', { name: card.name })
               : t('group.cardSpeakTip', { name: card.name })
           "

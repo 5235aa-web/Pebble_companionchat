@@ -2081,17 +2081,11 @@ async def _audio_chat_stream(
     if not audio_bytes:
         raise HTTPException(status_code=400, detail="Empty audio file")
 
-    with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as tmp:
-        tmp.write(audio_bytes)
-        tmp_path = tmp.name
+    from .audio_input import transcribe_audio_to_temp_wav
 
-    try:
-        loop = asyncio.get_event_loop()
-        transcribed = await loop.run_in_executor(None, stt_engine.transcribe_bytes, audio_bytes, 16000)
-        user_message_text = transcribed.strip() if transcribed else "[语音消息]"
-    except Exception as e:
-        logger.error(f"STT transcription failed: {e}")
-        user_message_text = "[语音消息]"
+    tmp_path, user_message_text = await transcribe_audio_to_temp_wav(
+        stt_engine, audio_bytes, sample_rate=16000
+    )
 
     logger.info(
         f"Companion audio chat: id={companion_id}, branch={branch_id}, stt={user_message_text[:50]}"

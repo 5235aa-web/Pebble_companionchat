@@ -4,6 +4,16 @@ All notable releases for Pebble Companion Chat are recorded here.
 Each `## x.y.z` section is used by `npm run release -- x.y.z` as both the
 GitHub Release description and the in-app update panel notes.
 
+## 1.0.3
+
+- **Group Chat Voice Input**:
+  - Added a microphone button to the group room composer to record and send voice messages directly, or convert speech into editable text in the input box before sending.
+  - Supports selecting the next speaker by clicking a character card or member pill during recording, or sending directly for automatic speaker routing based on your spoken message.
+  - Forwards native audio when supported by the active model (with automatic fallback to transcribed text), while always storing the transcript for room context, shared memory, and compaction.
+- **Voice Call Interruption Fixes**:
+  - Fixed Silero VAD runtime loading so speaking while the AI is talking reliably lowers volume, interrupts playback, and returns the call to listening.
+  - Fixed interruption handling for non-streaming TTS playback and added a manual **Interrupt** button on the voice call panel while the AI is speaking.
+
 ## 1.0.2
 
 - **CHARX Asset Tag Repair & Deduplication**:

@@ -300,28 +300,20 @@ export function reeditStream(
  * Over the socket the clip travels base64-encoded in the JSON body, because
  * the bridge only carries JSON frames. Over HTTP it stays multipart.
  */
-export function audioStream(
-  companionId: string,
-  branchId: string,
-  audio: Blob,
-  llmConfig: LlmConfig,
-  enableThinking: boolean,
-  h: StreamHandlers,
-  sender: 'user' | 'narrator' = 'user',
-): AbortController {
-  const controller = new AbortController()
-  const extra = {
-    companion_id: companionId,
-    branch_id: branchId,
-    enable_thinking: enableThinking,
-    llm_config: llmConfig,
-    temperature: llmConfig.temperature ?? 0.7,
-    top_p: llmConfig.top_p ?? 0.9,
-    sender,
-  }
+export function runAudioStream(opts: {
+  jsonPath: string
+  multipartPath: string
+  audio: Blob
+  jsonBody: Record<string, unknown>
+  formFields: Record<string, string>
+  handlers: StreamHandlers
+  controller?: AbortController
+}): AbortController {
+  const controller = opts.controller ?? new AbortController()
+  const { handlers: h } = opts
 
   if (useSocket()) {
-    void audio
+    void opts.audio
       .arrayBuffer()
       .then((buf) => {
         const bytes = new Uint8Array(buf)
@@ -333,12 +325,7 @@ export function audioStream(
         }
         // The user may have hit stop while the clip was being encoded.
         if (controller.signal.aborted) return
-        run(
-          '/companions/chat/audio/stream-json',
-          { ...extra, audio_b64: btoa(bin) },
-          h,
-          controller,
-        )
+        run(opts.jsonPath, { ...opts.jsonBody, audio_b64: btoa(bin) }, h, controller)
       })
       .catch((err: unknown) => {
         if (controller.signal.aborted) return
@@ -348,16 +335,12 @@ export function audioStream(
   }
 
   const form = new FormData()
-  form.append('file', audio, 'recording.wav')
-  form.append('companion_id', companionId)
-  form.append('branch_id', branchId)
-  form.append('enable_thinking', String(enableThinking))
-  form.append('llm_config', JSON.stringify(llmConfig))
-  form.append('temperature', String(llmConfig.temperature ?? 0.7))
-  form.append('top_p', String(llmConfig.top_p ?? 0.9))
-  form.append('sender', sender)
+  form.append('file', opts.audio, 'recording.wav')
+  for (const [k, v] of Object.entries(opts.formFields)) {
+    form.append(k, v)
+  }
 
-  fetch(`${getBaseURL()}/companions/chat/audio/stream`, {
+  fetch(`${getBaseURL()}${opts.multipartPath}`, {
     method: 'POST',
     body: form,
     signal: controller.signal,
@@ -368,4 +351,41 @@ export function audioStream(
       h.onError(err instanceof Error ? err : new Error(String(err)))
     })
   return controller
+}
+
+export function audioStream(
+  companionId: string,
+  branchId: string,
+  audio: Blob,
+  llmConfig: LlmConfig,
+  enableThinking: boolean,
+  h: StreamHandlers,
+  sender: 'user' | 'narrator' = 'user',
+): AbortController {
+  const temperature = llmConfig.temperature ?? 0.7
+  const topP = llmConfig.top_p ?? 0.9
+  return runAudioStream({
+    jsonPath: '/companions/chat/audio/stream-json',
+    multipartPath: '/companions/chat/audio/stream',
+    audio,
+    jsonBody: {
+      companion_id: companionId,
+      branch_id: branchId,
+      enable_thinking: enableThinking,
+      llm_config: llmConfig,
+      temperature,
+      top_p: topP,
+      sender,
+    },
+    formFields: {
+      companion_id: companionId,
+      branch_id: branchId,
+      enable_thinking: String(enableThinking),
+      llm_config: JSON.stringify(llmConfig),
+      temperature: String(temperature),
+      top_p: String(topP),
+      sender,
+    },
+    handlers: h,
+  })
 }

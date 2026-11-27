@@ -1,5 +1,5 @@
 import { del, get, patch, post } from './client'
-import { run, type LlmConfig, type StreamHandlers } from './stream'
+import { run, runAudioStream, type LlmConfig, type StreamHandlers } from './stream'
 import type { CompanionLocale, CompanionTranslations } from '@/utils/companionTranslation'
 
 /**
@@ -167,6 +167,40 @@ export function groupStream(
     },
     h,
   )
+}
+
+/**
+ * Voice turn in a group room. Uploads WAV audio; the backend transcribes it,
+ * picks or honors the speaker, forwards raw audio when supported, and streams
+ * the reply back over SSE.
+ */
+export function groupAudioStream(
+  sessionId: number,
+  audio: Blob,
+  llmConfig: LlmConfig,
+  h: StreamHandlers,
+  opts: { sender?: 'user' | 'narrator'; speakerId?: string } = {},
+): AbortController {
+  const sender = opts.sender ?? 'user'
+  const speakerId = opts.speakerId
+  const formFields: Record<string, string> = {
+    llm_config: JSON.stringify(llmConfig),
+    sender,
+  }
+  if (speakerId) formFields.speaker_id = speakerId
+
+  return runAudioStream({
+    jsonPath: `/group/sessions/${sessionId}/audio/stream-json`,
+    multipartPath: `/group/sessions/${sessionId}/audio/stream`,
+    audio,
+    jsonBody: {
+      llm_config: llmConfig,
+      sender,
+      ...(speakerId ? { speaker_id: speakerId } : {}),
+    },
+    formFields,
+    handlers: h,
+  })
 }
 
 /** Replace the latest assistant line, optionally handing the turn to another member. */

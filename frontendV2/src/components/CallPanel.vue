@@ -57,6 +57,12 @@ onBeforeUnmount(() => {
           class="cp-done"
           @click="call.endTurn()"
         >{{ t('call.doneSpeaking') }}</button>
+        <button
+          v-else-if="call.phase === 'speaking'"
+          type="button"
+          class="cp-done"
+          @click="call.interrupt()"
+        >{{ t('call.interrupt') }}</button>
         <button class="cp-hang" :aria-label="t('call.hangup')" @click="call.hangup()">
           <svg viewBox="0 0 24 24">
             <path d="M4 14c4.5-4.5 11.5-4.5 16 0l-2.2 2.4a1.4 1.4 0 01-1.8.2l-1.9-1.4a1.6 1.6 0 01-.6-1.6l.2-1a11 11 0 00-4.4 0l.2 1a1.6 1.6 0 01-.6 1.6L6 16.6a1.4 1.4 0 01-1.8-.2z" />

@@ -46,7 +46,7 @@ const END_KEYWORD = 'Beamish'
  */
 const END_WORDS = ['beamish', 'bimish', '比米什']
 /** Barge-in needs to clear a higher bar so the speakers cannot trigger it. */
-const BARGE_THRESHOLD = 0.05
+const BARGE_THRESHOLD = 0.025
 /** Continuous voice during playback that starts lowering the reply. */
 const DUCK_MS = 200
 /** Continuous voice during playback that takes the turn over. */
@@ -499,9 +499,9 @@ export const useCallStore = defineStore('call', () => {
         while (active.value && turnId === activeTurnId) {
           if (queue.length > 0) {
             const sentence = queue.shift()!
-            const blob = await synthesize(cfg, sentence)
+            const blob = await synthesize(cfg, sentence, ac.signal)
             if (!active.value || turnId !== activeTurnId) break
-            await playBlob(blob)
+            await playBlob(blob, ac.signal)
           } else if (llmDone) {
             break
           } else {
@@ -528,19 +528,32 @@ export const useCallStore = defineStore('call', () => {
     }
   }
 
-  function playBlob(blob: Blob): Promise<void> {
+  function playBlob(blob: Blob, signal?: AbortSignal): Promise<void> {
+    if (signal?.aborted) return Promise.resolve()
     return new Promise((resolve) => {
       const url = URL.createObjectURL(blob)
       const audio = new Audio(url)
       audioEl = audio
+      let settled = false
       const done = (): void => {
+        if (settled) return
+        settled = true
         audio.onended = null
         audio.onerror = null
+        audio.onpause = null
+        signal?.removeEventListener('abort', onAbort)
+        if (audioEl === audio) audioEl = null
         URL.revokeObjectURL(url)
         resolve()
       }
+      const onAbort = (): void => {
+        audio.pause()
+        done()
+      }
       audio.onended = done
       audio.onerror = done
+      audio.onpause = done
+      signal?.addEventListener('abort', onAbort, { once: true })
       void audio.play().catch(done)
     })
   }
@@ -619,10 +632,16 @@ export const useCallStore = defineStore('call', () => {
       // same loudness and opposite answers.
       if (frame.level >= BARGE_THRESHOLD) {
         bargeMs += FRAME_MS
-        if (bargeMs >= DUCK_MS) pcm?.duck()
+        if (bargeMs >= DUCK_MS) {
+          pcm?.duck()
+          if (audioEl) audioEl.volume = 0.18
+        }
       } else {
-        bargeMs = Math.max(0, bargeMs - FRAME_MS)
-        if (bargeMs < DUCK_MS) pcm?.unduck()
+        bargeMs = Math.max(0, bargeMs - FRAME_MS / 2)
+        if (bargeMs < DUCK_MS) {
+          pcm?.unduck()
+          if (audioEl) audioEl.volume = 1
+        }
       }
       if (vadQueue.length >= MAX_VAD_QUEUE) {
         vadQueue.length = 0
@@ -661,7 +680,9 @@ export const useCallStore = defineStore('call', () => {
     // Warm the VAD while the microphone opens: the model and its wasm runtime
     // take a few hundred milliseconds, and the first interruption would
     // otherwise fall back to the energy timer for its whole duration.
-    void loadVad().catch(() => {})
+    void loadVad().catch((err) => {
+      console.warn('[call] Silero VAD load failed, falling back to energy barge-in:', err)
+    })
     level.value = 0
     seconds.value = 0
     partial.value = ''
