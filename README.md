@@ -182,11 +182,17 @@ cd frontendV2
 npm run dev
 ```
 
-Open `http://localhost:5176` in your browser and open **Backstage** to configure your LLM, Voice (TTS), Ears (ASR), Paths, and Pictures settings.
+Open `http://localhost:5176` in your browser to get started:
+
+1. **Import a character**: Open **Cast** in the top bar and import your character card (`PNG` / `JSON` / `CHARX` / `.risum`).
+2. **Import chat history (optional)**: To bring over an existing SillyTavern conversation for that character, open the **Branches** menu in the top bar and select **+ import JSONL**.
+3. **Configure your model & chat**: Open **Backstage** (`Model` tab) to set up a local LLM (`llama.cpp`, Ollama, LM Studio, etc.) or enter a cloud API key (along with optional Voice, Ears, Paths, and Pictures settings), then start chatting right away!
 
 ### 3. Desktop Build (Tauri 2)
 
-With the Rust toolchain installed, run inside `frontendV2`:
+> **Windows Users:** You can skip building from source and download the pre-built Tauri desktop installer directly from the [Latest Release](https://github.com/5235aa-web/Pebble_companionchat/releases/latest) page (always redirects to the newest release).
+
+To build from source with the Rust toolchain installed, run inside `frontendV2`:
 
 ```bash
 cd frontendV2
