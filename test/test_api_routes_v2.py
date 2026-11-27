@@ -28,13 +28,30 @@ class ApiRoutesV2MountTest(unittest.TestCase):
             "/companions/chat/continue/stream",
             "/companions/chat/regenerate/stream",
             "/companions/chat/reedit/stream",
+            "/companions/world-books",
+            "/companions/world-books/{world_book_id}/translate",
+            "/companions/{companion_id}/world-books",
+            "/companions/{companion_id}/scene-rules",
+            "/companions/{companion_id}/translate",
+            "/companions/{companion_id}/export/charx",
+            "/companions/{companion_id}/assets",
+            "/companions/{companion_id}/branches/{branch_id}/hud",
+            "/companions/{companion_id}/branches/{branch_id}/variables",
         ):
             with self.subTest(path=path):
-                self.assertIn((("POST",), path), registered)
+                method = "GET" if path in ("/companions/world-books", "/companions/{companion_id}/export/charx") else "PUT" if path.endswith("/scene-rules") else "POST"
+                if path in ("/companions/{companion_id}/world-books", "/companions/{companion_id}/assets", "/companions/{companion_id}/branches/{branch_id}/hud", "/companions/{companion_id}/branches/{branch_id}/variables"):
+                    method = "GET"
+                self.assertIn(((method,), path), registered)
 
     def test_backwards_compat_reexports(self):
         self.assertIs(api_routes.companion_chat_stream, api_routesV2.companion_chat_stream)
         self.assertIs(api_routes.ChatStreamRequest, api_routesV2.ChatStreamRequest)
+        self.assertIs(api_routes.update_scene_rules, api_routesV2.update_scene_rules)
+        self.assertIs(api_routes.SceneRulesUpdateRequest, api_routesV2.SceneRulesUpdateRequest)
+        self.assertIs(api_routes.put_companion_branch_variables, api_routesV2.put_companion_branch_variables)
+        self.assertIs(api_routes.BranchVariablesUpdateRequest, api_routesV2.BranchVariablesUpdateRequest)
+        self.assertIs(api_routes.reset_companion_branch_variables, api_routesV2.reset_companion_branch_variables)
 
 
 class StoryModeAutoPictureTest(unittest.TestCase):

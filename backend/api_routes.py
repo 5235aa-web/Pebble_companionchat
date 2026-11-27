@@ -2,8 +2,6 @@ import json
 import os
 import functools
 import logging
-import shutil
-import tempfile
 import asyncio
 from typing import Optional, List, Dict, Any
 from datetime import datetime
@@ -11,15 +9,11 @@ from datetime import datetime
 import anyio
 from pathlib import Path
 from fastapi import APIRouter, UploadFile, File, Form, HTTPException, Query
-from fastapi.responses import Response, StreamingResponse
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
-from starlette.background import BackgroundTask
 
 from .companion_db import (
     get_companion, get_all_companions, delete_companion, update_companion,
-    add_companion_asset, get_companion_assets, get_companion_asset, delete_companion_asset,
-    get_branch_hud, update_branch_hud,
-    get_branch_variables, set_branch_variables, reset_branch_variables,
     get_branches, create_branch, delete_branch, update_branch_name,
     get_messages, get_messages_with_swipes, delete_message, get_message_count, clear_branch_messages,
     save_message, mark_messages_compacted, get_compacted_messages,
@@ -35,28 +29,20 @@ from .companion_db import (
 )
 from .companion import Companion
 from .script_db import get_session_by_branch
-from .paths import AVATAR_DIR, COMPANION_ASSETS_DIR, DATA_ROOT, LLM_CONFIG_PATH, TMP_UPLOAD_DIR
+from .paths import AVATAR_DIR, DATA_ROOT, LLM_CONFIG_PATH
 from .llm_client import load_default_llm_config
 from .tavern_importer import import_card_file, import_from_bytes
 from .risum import RisumError, merge_risum_into_companion
 from .charx import (
     CharxError,
     MAX_CARD_UPLOAD_BYTES,
-    MAX_CHARX_SINGLE_ASSET_BYTES,
-    classify_media_kind,
-    infer_ext,
-    infer_mime,
 )
 from .card_transfer import (
-    EXPORT_CHUNK_BYTES,
     TransferError,
     abort_staged_upload,
     append_staged_chunk,
-    cleanup_staged_export,
     commit_staged_upload,
     init_staged_upload,
-    prepare_charx_export,
-    read_export_chunk,
 )
 from .token_counter import get_token_status, acount_full_context, estimate_tokens_messages, get_context_window
 from . import token_engine
@@ -82,24 +68,70 @@ from .attachment_parser import (
     supported_extensions,
     transcribe_stored_video,
 )
-from .world_book_db import (    create_world_book, get_world_book, get_all_world_books, update_world_book, delete_world_book,
-    add_entry, update_entry, delete_entry, get_entries, get_entry,
-    associate_companion_with_world_book, remove_companion_world_book_association,
-    get_companion_world_books, get_companion_primary_world_book,
-    export_world_book_to_json, import_world_book_from_json
-)
 
 from .api_routesV2 import (
+    BranchVariablesUpdateRequest,
+    CardHudUpdateRequest,
     ChatStreamRequest,
+    CompanionTranslateRequest,
+    CompanionWorldBookAssociationRequest,
+    CompanionWorldBookSyncRequest,
     ContinueStreamRequest,
+    MAX_UPLOAD_BYTES,
     ReeditStreamRequest,
     RegenerateStreamRequest,
+    SceneRuleCompileRequest,
+    SceneRuleExplainRequest,
+    SceneRulesUpdateRequest,
+    WorldBookBulkToggleRequest,
+    WorldBookCreateRequest,
+    WorldBookEntryRequest,
+    WorldBookTranslateRequest,
+    WorldBookUpdateRequest,
+    _read_upload,
+    _stream_upload_to_tempfile,
+    add_world_book_entry,
+    associate_companion_world_book,
+    bulk_toggle_world_book_entries,
     companion_chat_continue_stream,
     companion_chat_reedit_stream,
     companion_chat_regenerate_stream,
     companion_chat_stream,
+    compile_companion_scene_rule,
+    create_new_world_book,
+    delete_staged_export,
+    delete_world_book_endpoint,
+    delete_world_book_entry,
+    download_staged_export_chunk,
+    explain_companion_scene_rules,
+    export_tavern_charx,
+    export_tavern_json,
+    export_tavern_png,
+    export_world_book,
+    get_companion_branch_hud,
+    get_companion_branch_variables,
+    get_companion_world_books_list,
+    get_world_book_detail,
+    import_world_book,
+    list_companion_assets,
+    list_world_books,
+    prepare_tavern_charx_export,
+    put_companion_branch_hud,
+    put_companion_branch_variables,
     record_usage_chunk as _record_usage_chunk,
+    remove_companion_asset,
+    remove_companion_world_book,
+    reset_companion_branch_hud,
+    reset_companion_branch_variables,
     router as v2_router,
+    set_avatar_from_asset,
+    sync_companion_card_world_book,
+    translate_companion_card,
+    translate_world_book_entries,
+    update_scene_rules,
+    update_world_book_detail,
+    update_world_book_entry,
+    upload_companion_asset,
 )
 
 router = APIRouter(prefix="/companions", tags=["multi-companion"])
@@ -107,10 +139,6 @@ router.include_router(v2_router)
 
 logger = logging.getLogger(__name__)
 
-# Upload limits. The cap is enforced while reading rather than after: a declared
-# Content-Length can be missing or wrong, and reading first would put the whole
-# file in memory before its size is known.
-MAX_UPLOAD_BYTES = 50 * 1024 * 1024
 MAX_ATTACHMENT_FILES = 10
 
 _attachment_slots: Optional[asyncio.Semaphore] = None
@@ -122,57 +150,6 @@ def _attachment_semaphore() -> asyncio.Semaphore:
     if _attachment_slots is None:
         _attachment_slots = asyncio.Semaphore(MAX_ATTACHMENT_FILES)
     return _attachment_slots
-
-
-async def _read_upload(file: UploadFile, max_bytes: int = MAX_UPLOAD_BYTES) -> bytes:
-    """Read an upload in chunks, rejecting anything over the cap."""
-    chunks: List[bytes] = []
-    total = 0
-    while True:
-        chunk = await file.read(1024 * 1024)
-        if not chunk:
-            break
-        total += len(chunk)
-        if total > max_bytes:
-            raise HTTPException(
-                status_code=413,
-                detail=f"文件超过 {max_bytes // (1024 * 1024)} MB 上限",
-            )
-        chunks.append(chunk)
-    return b"".join(chunks)
-
-
-async def _stream_upload_to_tempfile(
-    file: UploadFile,
-    max_bytes: int = MAX_CARD_UPLOAD_BYTES,
-    suffix: str = ".tmp",
-) -> Path:
-    """Stream an UploadFile directly to disk in 1 MB chunks without buffering in RAM."""
-    in_dir = TMP_UPLOAD_DIR / "in"
-    in_dir.mkdir(parents=True, exist_ok=True)
-    fd, raw_path = tempfile.mkstemp(prefix="upload_", suffix=suffix, dir=str(in_dir))
-    os.close(fd)
-    tmp_path = Path(raw_path)
-    total = 0
-    try:
-        with open(tmp_path, "wb") as out:
-            while True:
-                chunk = await file.read(1024 * 1024)
-                if not chunk:
-                    break
-                total += len(chunk)
-                if total > max_bytes:
-                    raise HTTPException(
-                        status_code=413,
-                        detail=f"文件超过 {max_bytes // (1024 * 1024)} MB 上限",
-                    )
-                out.write(chunk)
-        if total == 0:
-            raise HTTPException(status_code=400, detail="上传文件为空")
-        return tmp_path
-    except Exception:
-        tmp_path.unlink(missing_ok=True)
-        raise
 
 
 @router.post("/attachments/parse")
@@ -368,13 +345,6 @@ class CompanionUpdateRequest(BaseModel):
     pinned: Optional[bool] = None
 
 
-class CompanionTranslateRequest(BaseModel):
-    target_locale: str = "zh"
-    fields: Optional[List[str]] = None
-    activate: bool = True
-    llm_config: Optional[Dict[str, Any]] = None
-
-
 class BranchRenameRequest(BaseModel):
     branch_name: str
 
@@ -401,152 +371,6 @@ class MessageImportanceRequest(BaseModel):
     branch_id: str = "main"
     message_id: int
     is_important: bool
-
-
-# ==================== World Book Models ====================
-
-class WorldBookCreateRequest(BaseModel):
-    name: str
-    description: str = ""
-
-
-class WorldBookUpdateRequest(BaseModel):
-    name: Optional[str] = None
-    description: Optional[str] = None
-
-
-class WorldBookEntryRequest(BaseModel):
-    comment: str = ""
-    keys: List[str] = []
-    secondary_keys: List[str] = []
-    content: str = ""
-    constant: bool = False
-    selective: bool = True
-    selective_logic: int = 0
-    order: int = 100
-    position: int = 0
-    depth: int = 4
-    disabled: bool = False
-    probability: int = 100
-    use_probability: bool = True
-    sticky: Optional[int] = None
-    cooldown: Optional[int] = None
-    delay: Optional[int] = None
-    group: str = ""
-    group_override: bool = False
-    group_weight: int = 100
-
-
-class CompanionWorldBookAssociationRequest(BaseModel):
-    world_book_id: int
-    is_primary: bool = False
-
-
-# ==================== World Book (MUST be before /{companion_id}) ====================
-
-@router.get("/world-books")
-async def list_world_books():
-    """获取所有世界书列表。"""
-    books = get_all_world_books()
-    return {"world_books": books}
-
-
-@router.post("/world-books")
-async def create_new_world_book(request: WorldBookCreateRequest):
-    """创建新世界书。"""
-    world_book_id = create_world_book(request.name, request.description)
-    return {"status": "success", "world_book_id": world_book_id}
-
-
-@router.get("/world-books/{world_book_id}")
-async def get_world_book_detail(world_book_id: int):
-    """获取世界书详情及所有条目。"""
-    world_book = get_world_book(world_book_id)
-    if not world_book:
-        raise HTTPException(status_code=404, detail="World book not found")
-    
-    entries = get_entries(world_book_id)
-    return {
-        "world_book": world_book,
-        "entries": entries
-    }
-
-
-@router.put("/world-books/{world_book_id}")
-async def update_world_book_detail(world_book_id: int, request: WorldBookUpdateRequest):
-    """更新世界书信息。"""
-    success = update_world_book(world_book_id, request.name, request.description)
-    if not success:
-        raise HTTPException(status_code=404, detail="World book not found")
-    return {"status": "success"}
-
-
-@router.delete("/world-books/{world_book_id}")
-async def delete_world_book_endpoint(world_book_id: int):
-    """删除世界书。"""
-    success = delete_world_book(world_book_id)
-    if not success:
-        raise HTTPException(status_code=404, detail="World book not found")
-    return {"status": "success"}
-
-
-@router.post("/world-books/{world_book_id}/entries")
-async def add_world_book_entry(world_book_id: int, request: WorldBookEntryRequest):
-    """添加条目到世界书。"""
-    world_book = get_world_book(world_book_id)
-    if not world_book:
-        raise HTTPException(status_code=404, detail="World book not found")
-    
-    entry_id = add_entry(world_book_id, request.model_dump())
-    return {"status": "success", "entry_id": entry_id}
-
-
-@router.put("/world-books/{world_book_id}/entries/{entry_id}")
-async def update_world_book_entry(world_book_id: int, entry_id: int, request: WorldBookEntryRequest):
-    """更新条目。"""
-    entry = get_entry(entry_id)
-    if not entry or entry.get('id') != entry_id:
-        raise HTTPException(status_code=404, detail="Entry not found")
-    
-    success = update_entry(entry_id, request.model_dump())
-    if not success:
-        raise HTTPException(status_code=404, detail="Entry not found")
-    return {"status": "success"}
-
-
-@router.delete("/world-books/{world_book_id}/entries/{entry_id}")
-async def delete_world_book_entry(world_book_id: int, entry_id: int):
-    """删除条目。"""
-    success = delete_entry(entry_id)
-    if not success:
-        raise HTTPException(status_code=404, detail="Entry not found")
-    return {"status": "success"}
-
-
-@router.post("/world-books/import")
-async def import_world_book(file: UploadFile = File(...), name: Optional[str] = Form(None)):
-    """导入世界书（支持JSON格式）。"""
-    try:
-        content = await _read_upload(file)
-        data = json.loads(content.decode('utf-8'))
-        
-        world_book_id = import_world_book_from_json(data, name)
-        return {"status": "success", "world_book_id": world_book_id}
-    except json.JSONDecodeError:
-        raise HTTPException(status_code=400, detail="Invalid JSON file")
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Import failed: {str(e)}")
-
-
-@router.get("/world-books/{world_book_id}/export")
-async def export_world_book(world_book_id: int):
-    """导出世界书为JSON。"""
-    world_book = get_world_book(world_book_id)
-    if not world_book:
-        raise HTTPException(status_code=404, detail="World book not found")
-    
-    data = export_world_book_to_json(world_book_id)
-    return data
 
 
 # ==================== Companion CRUD ====================
@@ -771,403 +595,6 @@ async def import_risum_base64_for_companion(
         raise HTTPException(status_code=500, detail=f"Import .risum failed: {str(e)}")
 
 
-# ==================== Scene Rules Studio ====================
-
-class SceneRulesUpdateRequest(BaseModel):
-    display_regex: Optional[List[Dict[str, Any]]] = None
-    output_regex: Optional[List[Dict[str, Any]]] = None
-    input_regex: Optional[List[Dict[str, Any]]] = None
-    prompt_regex: Optional[List[Dict[str, Any]]] = None
-    scene_rules: Optional[List[Dict[str, Any]]] = None
-    hud_pinned_vars: Optional[List[str]] = None
-    hud_thought_enabled: Optional[bool] = None
-    card_css: Optional[str] = None
-
-
-class SceneRuleCompileRequest(BaseModel):
-    instruction: str
-    sample_text: str = ""
-    preferred_mode: str = "auto"
-    branch_id: str = "main"
-    llm_config: Optional[Dict[str, Any]] = None
-
-
-class SceneRuleExplainRequest(BaseModel):
-    rules: List[Dict[str, Any]]
-    language: str = "zh"
-    llm_config: Optional[Dict[str, Any]] = None
-
-
-@router.put("/{companion_id}/scene-rules")
-async def update_scene_rules(companion_id: str, request: SceneRulesUpdateRequest):
-    """Merge Scene Rules & presentation overrides into ``card_ui`` without clobbering siblings."""
-    companion = get_companion(companion_id)
-    if not companion:
-        raise HTTPException(status_code=404, detail="Companion not found")
-
-    next_ui = dict(companion.get("card_ui") or {})
-    if request.display_regex is not None:
-        next_ui["display_regex"] = request.display_regex
-    if request.output_regex is not None:
-        next_ui["output_regex"] = request.output_regex
-    if request.input_regex is not None:
-        next_ui["input_regex"] = request.input_regex
-    if request.prompt_regex is not None:
-        next_ui["prompt_regex"] = request.prompt_regex
-    if request.scene_rules is not None:
-        next_ui["scene_rules"] = request.scene_rules
-    if request.hud_pinned_vars is not None:
-        from .card_presentation import normalize_hud_pinned_vars
-
-        next_ui["hud_pinned_vars"] = normalize_hud_pinned_vars(request.hud_pinned_vars)
-    if request.hud_thought_enabled is not None:
-        next_ui["hud_thought_enabled"] = bool(request.hud_thought_enabled)
-    if request.card_css is not None:
-        next_ui["card_css"] = request.card_css
-
-    update_companion(companion_id, {"card_ui": next_ui})
-    updated = get_companion(companion_id)
-    return {
-        "status": "success",
-        "card_ui": (updated or {}).get("card_ui", next_ui),
-        "card_presentation": (updated or {}).get("card_presentation"),
-    }
-
-
-@router.post("/{companion_id}/scene-rules/compile")
-async def compile_companion_scene_rule(companion_id: str, request: SceneRuleCompileRequest):
-    """Compile plain-language rule description into a validated Pebble rule."""
-    from .memory_engine import resolve_user_name
-    from .scene_rules_ai import compile_scene_rule
-
-    try:
-        comp = Companion(companion_id)
-    except ValueError:
-        raise HTTPException(status_code=404, detail="Companion not found")
-
-    branch_key = request.branch_id or "main"
-    vars_map = get_branch_variables(companion_id, branch_key).get("variables", {})
-    hud_map = get_branch_hud(companion_id, branch_key).get("hud") or {}
-    asset_names = [
-        str(a.get("name") or "").strip()
-        for a in get_companion_assets(companion_id)
-        if str(a.get("name") or "").strip()
-    ]
-    llm_cfg = comp._resolve_llm_config_full(request.llm_config) or {}
-
-    try:
-        result = await compile_scene_rule(
-            instruction=request.instruction,
-            sample_text=request.sample_text,
-            preferred_mode=request.preferred_mode,
-            char_name=comp.name or companion_id,
-            user_name=resolve_user_name(comp.user_info),
-            variables=vars_map,
-            hud=hud_map,
-            asset_names=asset_names,
-            llm_config=llm_cfg,
-        )
-        return result
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc))
-    except Exception as exc:
-        logger.error("Scene rule compile failed for %s: %s", companion_id, exc, exc_info=True)
-        raise HTTPException(status_code=500, detail=f"Compile failed: {str(exc)}")
-
-
-@router.post("/{companion_id}/scene-rules/explain")
-async def explain_companion_scene_rules(companion_id: str, request: SceneRuleExplainRequest):
-    """Translate technical card rules into plain-language summaries."""
-    from .scene_rules_ai import explain_scene_rules
-
-    try:
-        comp = Companion(companion_id)
-    except ValueError:
-        raise HTTPException(status_code=404, detail="Companion not found")
-
-    llm_cfg = comp._resolve_llm_config_full(request.llm_config) or {}
-    try:
-        explanations = await explain_scene_rules(
-            rules=request.rules,
-            language=request.language,
-            llm_config=llm_cfg,
-        )
-        return {"explanations": explanations}
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc))
-    except Exception as exc:
-        logger.error("Scene rule explain failed for %s: %s", companion_id, exc, exc_info=True)
-        raise HTTPException(status_code=500, detail=f"Explain failed: {str(exc)}")
-
-
-@router.post("/{companion_id}/translate")
-async def translate_companion_card(companion_id: str, request: CompanionTranslateRequest):
-    """Stream per-field LLM translations for display fields without mutating original card columns."""
-    from .card_translation import iter_translate_companion_card
-
-    try:
-        comp = Companion(companion_id)
-    except ValueError:
-        raise HTTPException(status_code=404, detail="Companion not found")
-
-    llm_cfg = comp._resolve_llm_config_full(request.llm_config) or {}
-
-    async def event_stream():
-        try:
-            async for ev in iter_translate_companion_card(
-                companion_id,
-                target_locale=request.target_locale,
-                fields=request.fields,
-                activate=request.activate,
-                llm_config=llm_cfg,
-            ):
-                yield f"data: {json.dumps(ev, ensure_ascii=False)}\n\n"
-        except ValueError as exc:
-            yield f"data: {json.dumps({'type': 'error', 'message': str(exc)}, ensure_ascii=False)}\n\n"
-        except Exception as exc:
-            logger.error("Card translate failed for %s: %s", companion_id, exc, exc_info=True)
-            yield f"data: {json.dumps({'type': 'error', 'message': str(exc)}, ensure_ascii=False)}\n\n"
-
-    return StreamingResponse(event_stream(), media_type="text/event-stream")
-
-
-# ==================== Card Export ====================
-
-@router.get("/{companion_id}/export/json")
-async def export_tavern_json(companion_id: str):
-    """导出角色卡为JSON格式。"""
-    from .tavern_exporter import export_to_json, get_export_filename
-    from urllib.parse import quote
-    
-    companion = get_companion(companion_id)
-    if not companion:
-        raise HTTPException(status_code=404, detail="Companion not found")
-    
-    try:
-        json_content = export_to_json(companion)
-        filename = get_export_filename(companion, 'json')
-        encoded_filename = quote(filename)
-        return Response(
-            content=json_content,
-            media_type="application/json",
-            headers={"Content-Disposition": f"attachment; filename*=UTF-8''{encoded_filename}"}
-        )
-    except Exception as e:
-        import traceback
-        print(f"[Export JSON] Error: {e}")
-        traceback.print_exc()
-        raise HTTPException(status_code=500, detail=f"Export failed: {str(e)}")
-
-
-@router.get("/{companion_id}/export/png")
-async def export_tavern_png(companion_id: str):
-    """导出角色卡为PNG格式（嵌入元数据）。"""
-    from .tavern_exporter import export_to_png, get_export_filename
-    from urllib.parse import quote
-    
-    companion = get_companion(companion_id)
-    if not companion:
-        raise HTTPException(status_code=404, detail="Companion not found")
-    
-    try:
-        png_bytes = export_to_png(companion)
-        filename = get_export_filename(companion, 'png')
-        encoded_filename = quote(filename)
-        return Response(
-            content=png_bytes,
-            media_type="image/png",
-            headers={"Content-Disposition": f"attachment; filename*=UTF-8''{encoded_filename}"}
-        )
-    except Exception as e:
-        import traceback
-        print(f"[Export PNG] Error: {e}")
-        traceback.print_exc()
-        raise HTTPException(status_code=500, detail=f"Export failed: {str(e)}")
-
-
-@router.get("/{companion_id}/export/charx")
-async def export_tavern_charx(companion_id: str):
-    """流式导出角色卡为 CHARX（.charx）容器包。"""
-    from .tavern_exporter import export_to_charx_file, get_export_filename
-    from urllib.parse import quote
-
-    companion = get_companion(companion_id)
-    if not companion:
-        raise HTTPException(status_code=404, detail="Companion not found")
-
-    assets = get_companion_assets(companion_id)
-    out_dir = TMP_UPLOAD_DIR / "out"
-    out_dir.mkdir(parents=True, exist_ok=True)
-    fd, raw_path = tempfile.mkstemp(prefix="stream_", suffix=".charx", dir=str(out_dir))
-    os.close(fd)
-    dest_path = Path(raw_path)
-
-    try:
-        await anyio.to_thread.run_sync(export_to_charx_file, companion, assets, dest_path)
-        file_size = dest_path.stat().st_size
-        filename = get_export_filename(companion, 'charx')
-        encoded_filename = quote(filename)
-
-        def _iter_file():
-            with open(dest_path, "rb") as f:
-                while True:
-                    chunk = f.read(EXPORT_CHUNK_BYTES)
-                    if not chunk:
-                        break
-                    yield chunk
-
-        return StreamingResponse(
-            _iter_file(),
-            media_type="application/zip",
-            headers={
-                "Content-Disposition": f"attachment; filename*=UTF-8''{encoded_filename}",
-                "Content-Length": str(file_size),
-            },
-            background=BackgroundTask(dest_path.unlink, missing_ok=True),
-        )
-    except Exception as e:
-        dest_path.unlink(missing_ok=True)
-        logger.error("Export CHARX failed for %s: %s", companion_id, e, exc_info=True)
-        raise HTTPException(status_code=500, detail=f"Export failed: {str(e)}")
-
-
-@router.post("/{companion_id}/export/charx/prepare")
-async def prepare_tavern_charx_export(companion_id: str):
-    """在磁盘预生成 .charx 导出包，供分片下载（适配 Tauri / 进度条）。"""
-    companion = get_companion(companion_id)
-    if not companion:
-        raise HTTPException(status_code=404, detail="Companion not found")
-
-    assets = get_companion_assets(companion_id)
-    try:
-        return await anyio.to_thread.run_sync(prepare_charx_export, companion, assets)
-    except Exception as e:
-        logger.error("Prepare CHARX export failed for %s: %s", companion_id, e, exc_info=True)
-        raise HTTPException(status_code=500, detail=f"Export failed: {str(e)}")
-
-
-@router.get("/export/download/{export_id}/chunk")
-async def download_staged_export_chunk(
-    export_id: str,
-    offset: int = Query(0, ge=0),
-    length: int = Query(EXPORT_CHUNK_BYTES, ge=1),
-):
-    """读取预生成导出包的指定字节分片。"""
-    try:
-        data = await anyio.to_thread.run_sync(read_export_chunk, export_id, offset, length)
-        return Response(content=data, media_type="application/octet-stream")
-    except TransferError as e:
-        raise HTTPException(status_code=e.status_code, detail=str(e))
-
-
-@router.delete("/export/download/{export_id}")
-async def delete_staged_export(export_id: str):
-    """清理已完成或已取消的暂存导出包。"""
-    try:
-        removed = cleanup_staged_export(export_id)
-        return {"status": "success", "removed": removed}
-    except TransferError as e:
-        raise HTTPException(status_code=e.status_code, detail=str(e))
-
-
-# ==================== Companion Multimedia Assets ====================
-
-@router.get("/{companion_id}/assets")
-async def list_companion_assets(companion_id: str, asset_type: Optional[str] = Query(None)):
-    """列出角色关联的所有多媒体资产（图片、表情、背景、音乐、音效等）。"""
-    if not get_companion(companion_id):
-        raise HTTPException(status_code=404, detail="Companion not found")
-    assets = get_companion_assets(companion_id, asset_type=asset_type)
-    return {"assets": assets, "count": len(assets)}
-
-
-@router.post("/{companion_id}/assets")
-async def upload_companion_asset(
-    companion_id: str,
-    file: UploadFile = File(...),
-    asset_type: str = Form("other"),
-    name: str = Form(""),
-):
-    """流式上传单个图片或音视频资产到角色资产库。"""
-    if not get_companion(companion_id):
-        raise HTTPException(status_code=404, detail="Companion not found")
-
-    orig_name = file.filename or "asset.bin"
-    ext = infer_ext(orig_name, "bin")
-    tmp_path: Optional[Path] = None
-    try:
-        tmp_path = await _stream_upload_to_tempfile(
-            file, max_bytes=MAX_CHARX_SINGLE_ASSET_BYTES, suffix=f".{ext}"
-        )
-        size_bytes = tmp_path.stat().st_size
-        semantic_type = classify_media_kind(ext, asset_type)
-        asset_name = (name or Path(orig_name).stem or "asset").strip()[:80]
-
-        import uuid
-        target_dir = COMPANION_ASSETS_DIR / companion_id / semantic_type
-        target_dir.mkdir(parents=True, exist_ok=True)
-        dest_path = target_dir / f"{uuid.uuid4().hex[:10]}.{ext}"
-        await anyio.to_thread.run_sync(shutil.move, str(tmp_path), str(dest_path))
-        tmp_path = None
-
-        rel_path = dest_path.resolve().relative_to(DATA_ROOT.resolve()).as_posix()
-        asset_id = add_companion_asset(companion_id, {
-            "asset_type": semantic_type,
-            "name": asset_name,
-            "ext": ext,
-            "mime_type": infer_mime(ext),
-            "rel_path": rel_path,
-            "source_uri": f"embeded://assets/{semantic_type}/{dest_path.name}",
-            "size_bytes": size_bytes,
-            "sort_order": len(get_companion_assets(companion_id)),
-        })
-        return {"status": "success", "asset": get_companion_asset(companion_id, asset_id)}
-    except HTTPException:
-        raise
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Asset upload failed: {str(e)}")
-    finally:
-        if tmp_path is not None:
-            tmp_path.unlink(missing_ok=True)
-
-
-@router.delete("/{companion_id}/assets/{asset_id}")
-async def remove_companion_asset(companion_id: str, asset_id: int):
-    """删除角色的单个多媒体资产及其磁盘文件。"""
-    if not get_companion(companion_id):
-        raise HTTPException(status_code=404, detail="Companion not found")
-    deleted = delete_companion_asset(companion_id, asset_id)
-    if not deleted:
-        raise HTTPException(status_code=404, detail="Asset not found")
-    rel_path = str(deleted.get("rel_path") or "")
-    if rel_path:
-        try:
-            assets_root = COMPANION_ASSETS_DIR.resolve()
-            target = (DATA_ROOT.resolve() / rel_path).resolve()
-            if target.is_relative_to(assets_root) and target.is_file():
-                target.unlink()
-        except Exception as exc:
-            logger.warning("Failed to remove asset file %s: %s", rel_path, exc)
-    return {"status": "success", "id": asset_id}
-
-
-@router.post("/{companion_id}/avatar/from-asset/{asset_id}")
-async def set_avatar_from_asset(companion_id: str, asset_id: int):
-    """将角色资产库中的某张图片设为主头像。"""
-    if not get_companion(companion_id):
-        raise HTTPException(status_code=404, detail="Companion not found")
-    asset = get_companion_asset(companion_id, asset_id)
-    if not asset:
-        raise HTTPException(status_code=404, detail="Asset not found")
-    if not str(asset.get("mime_type") or "").startswith("image/"):
-        raise HTTPException(status_code=400, detail="Selected asset is not an image")
-    rel_path = str(asset.get("rel_path") or "")
-    if not rel_path:
-        raise HTTPException(status_code=400, detail="Asset has no stored file")
-    update_companion(companion_id, {"avatar_path": rel_path})
-    return {"status": "success", "avatar_path": rel_path}
-
-
 # ==================== Branch Management ====================
 
 @router.get("/{companion_id}/branches")
@@ -1177,82 +604,6 @@ async def get_companion_branches(companion_id: str):
         raise HTTPException(status_code=404, detail="Companion not found")
     branches = get_branches(companion_id)
     return {"branches": branches}
-
-
-class CardHudUpdateRequest(BaseModel):
-    hud: Optional[Dict[str, Any]] = None
-    enabled: Optional[bool] = None
-    clear_enabled: bool = False
-
-
-@router.get("/{companion_id}/branches/{branch_id}/hud")
-async def get_companion_branch_hud(companion_id: str, branch_id: str):
-    """获取单人对话分支的 HUD 状态与启用配置。"""
-    if not get_companion(companion_id):
-        raise HTTPException(status_code=404, detail="Companion not found")
-    return get_branch_hud(companion_id, branch_id)
-
-
-@router.put("/{companion_id}/branches/{branch_id}/hud")
-async def put_companion_branch_hud(
-    companion_id: str,
-    branch_id: str,
-    request: CardHudUpdateRequest,
-):
-    """更新单人对话分支的 HUD 状态或开关。"""
-    if not get_companion(companion_id):
-        raise HTTPException(status_code=404, detail="Companion not found")
-    return update_branch_hud(
-        companion_id,
-        branch_id,
-        hud=request.hud,
-        enabled=request.enabled,
-        clear_enabled=request.clear_enabled,
-    )
-
-
-@router.post("/{companion_id}/branches/{branch_id}/hud/reset")
-async def reset_companion_branch_hud(companion_id: str, branch_id: str):
-    """重置单人对话分支的 HUD 状态字段（保留开关设置）。"""
-    if not get_companion(companion_id):
-        raise HTTPException(status_code=404, detail="Companion not found")
-    return update_branch_hud(companion_id, branch_id, hud={})
-
-
-class BranchVariablesUpdateRequest(BaseModel):
-    variables: Dict[str, Any] = Field(default_factory=dict)
-
-
-@router.get("/{companion_id}/branches/{branch_id}/variables")
-async def get_companion_branch_variables(companion_id: str, branch_id: str):
-    """获取单人对话分支的 CBS 变量（含卡面默认值合并）。"""
-    if not get_companion(companion_id):
-        raise HTTPException(status_code=404, detail="Companion not found")
-    return get_branch_variables(companion_id, branch_id)
-
-
-@router.put("/{companion_id}/branches/{branch_id}/variables")
-async def put_companion_branch_variables(
-    companion_id: str,
-    branch_id: str,
-    request: BranchVariablesUpdateRequest,
-):
-    """更新单人对话分支的 CBS 变量。"""
-    if not get_companion(companion_id):
-        raise HTTPException(status_code=404, detail="Companion not found")
-    res = set_branch_variables(companion_id, branch_id, request.variables)
-    token_engine.clear_recorded_usage(companion_id, branch_id)
-    return res
-
-
-@router.post("/{companion_id}/branches/{branch_id}/variables/reset")
-async def reset_companion_branch_variables(companion_id: str, branch_id: str):
-    """将分支 CBS 变量重置为角色卡默认值。"""
-    if not get_companion(companion_id):
-        raise HTTPException(status_code=404, detail="Companion not found")
-    res = reset_branch_variables(companion_id, branch_id)
-    token_engine.clear_recorded_usage(companion_id, branch_id)
-    return res
 
 
 @router.post("/{companion_id}/branches")
@@ -2327,38 +1678,3 @@ async def upload_companion_avatar(companion_id: str, file: UploadFile = File(...
         return {"status": "success", "avatar_path": avatar_url}
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Upload failed: {str(e)}")
-
-
-# ==================== Companion - World Book Association ====================
-
-@router.get("/{companion_id}/world-books")
-async def get_companion_world_books_list(companion_id: str):
-    """获取AI伴侣关联的所有世界书。"""
-    if not get_companion(companion_id):
-        raise HTTPException(status_code=404, detail="Companion not found")
-    
-    world_books = get_companion_world_books(companion_id)
-    return {"world_books": world_books}
-
-
-@router.post("/{companion_id}/world-books")
-async def associate_companion_world_book(companion_id: str, request: CompanionWorldBookAssociationRequest):
-    """关联AI伴侣与世界书。"""
-    if not get_companion(companion_id):
-        raise HTTPException(status_code=404, detail="Companion not found")
-    
-    world_book = get_world_book(request.world_book_id)
-    if not world_book:
-        raise HTTPException(status_code=404, detail="World book not found")
-    
-    success = associate_companion_with_world_book(companion_id, request.world_book_id, request.is_primary)
-    return {"status": "success" if success else "failed"}
-
-
-@router.delete("/{companion_id}/world-books/{world_book_id}")
-async def remove_companion_world_book(companion_id: str, world_book_id: int):
-    """移除AI伴侣与世界书的关联。"""
-    success = remove_companion_world_book_association(companion_id, world_book_id)
-    if not success:
-        raise HTTPException(status_code=404, detail="Association not found")
-    return {"status": "success"}

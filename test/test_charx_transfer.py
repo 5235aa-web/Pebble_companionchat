@@ -224,6 +224,101 @@ class CharxRoundTripTest(unittest.TestCase):
         self.assertIn("sandbox", th_res.headers.get("content-security-policy", ""))
         self.assertEqual(th_res.headers.get("x-content-type-options"), "nosniff")
 
+    def test_charx_import_wires_character_book_with_media_only_active_and_api_endpoints(self):
+        from fastapi import FastAPI
+        from fastapi.testclient import TestClient
+        from backend import api_routes, companion
+
+        card = {
+            "spec": "chara_card_v3",
+            "spec_version": "3.0",
+            "data": {
+                "name": "Evelyn",
+                "assets": [
+                    {"type": "icon", "name": "main", "uri": "embeded://assets/icon/main.png", "ext": "png"},
+                    {"type": "image", "name": "evelyn_shy", "uri": "embeded://assets/other/evelyn_shy.webp", "ext": "webp"},
+                ],
+                "extensions": {
+                    "risuai": {
+                        "customScripts": [
+                            {"type": "editdisplay", "in": '<pimg="(.+?)">', "out": '<img src="{{raw::$1}}">'}
+                        ]
+                    }
+                },
+                "character_book": {
+                    "entries": [
+                        {
+                            "comment": "Asset Output Protocol",
+                            "keys": [],
+                            "content": 'Output <pimg="evelyn_shy"> on its own line.',
+                            "constant": True,
+                            "enabled": True,
+                        },
+                        {
+                            "comment": "Shop Economy",
+                            "keys": [],
+                            "content": "Shop prices: copper coin 10.",
+                            "constant": True,
+                            "enabled": True,
+                        },
+                    ]
+                },
+            },
+        }
+        charx_path = self.tmp / "evelyn.charx"
+        with zipfile.ZipFile(charx_path, "w") as zf:
+            zf.writestr("card.json", json.dumps(card, ensure_ascii=False).encode("utf-8"))
+            zf.writestr("assets/icon/main.png", b"\x89PNG\r\n\x1a\nMAIN")
+            zf.writestr("assets/other/evelyn_shy.webp", b"RIFF\x00\x00\x00\x00WEBPSHY")
+
+        cid = tavern_importer.import_charx(str(charx_path))
+        prompt = companion.Companion(cid).build_system_prompt(history=[])
+        self.assertIn('<pimg="evelyn_shy">', prompt)
+        self.assertNotIn("copper coin", prompt)
+
+        app = FastAPI()
+        app.include_router(api_routes.router, prefix="/api")
+        client = TestClient(app)
+        info_res = client.get(f"/api/companions/{cid}/world-books")
+        self.assertEqual(info_res.status_code, 200)
+        payload = info_res.json()
+        self.assertEqual(payload["card_lore_count"], 2)
+        self.assertEqual(len(payload["world_books"]), 1)
+        book_id = payload["world_books"][0]["id"]
+
+        # Test bulk toggle + frontend-style entry update payload
+        entries = world_book_db.get_entries(book_id)
+        rpg = next(e for e in entries if e["comment"] == "Shop Economy")
+        upd_res = client.put(
+            f"/api/companions/world-books/{book_id}/entries/{rpg['id']}",
+            json={
+                "name": "Shop Economy",
+                "comment": "Shop Economy",
+                "content": rpg["content"],
+                "keys": [],
+                "secondary_keys": [],
+                "position": "before_char",
+                "depth": 4,
+                "probability": 100,
+                "constant": True,
+                "selective": False,
+                "enabled": True,
+                "logic": "OR",
+                "category": "rpg",
+            },
+        )
+        self.assertEqual(upd_res.status_code, 200)
+        self.assertIn("copper coin", companion.Companion(cid).build_system_prompt(history=[]))
+
+        bulk_res = client.post(
+            f"/api/companions/world-books/{book_id}/entries/bulk-toggle",
+            json={"mode": "media_only"},
+        )
+        self.assertEqual(bulk_res.status_code, 200)
+        prompt_after = companion.Companion(cid).build_system_prompt(history=[])
+        self.assertIn('<pimg="evelyn_shy">', prompt_after)
+        self.assertNotIn("copper coin", prompt_after)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -108,5 +108,46 @@ class EvaluateTest(unittest.TestCase):
         )
 
 
+class PlanAndDepthTest(unittest.TestCase):
+    def test_scan_depth_does_not_leak_to_following_entries(self):
+        msgs = [
+            {'role': 'user', 'content': 'old_keyword appears here'},
+            {'role': 'assistant', 'content': 'middle turn'},
+            {'role': 'user', 'content': 'latest turn'},
+        ]
+        entries = [
+            _entry(id=1, uid=1, comment='short', keys=['missing'], scan_depth=1),
+            _entry(id=2, uid=2, comment='default', keys=['old_keyword'], scan_depth=None, content='found old'),
+        ]
+        activated = _engine(entries).evaluate(msgs, scan_depth=10)
+        self.assertEqual([a.entry.comment for a in activated], ['default'])
+
+    def test_media_entries_sort_after_lore_inside_same_position(self):
+        entries = [
+            _entry(id=1, uid=1, comment='media', keys=[], constant=True, position=0, order=200, category='media', content='MEDIA_RULE'),
+            _entry(id=2, uid=2, comment='lore', keys=[], constant=True, position=0, order=100, category='lore', content='LORE_TEXT'),
+        ]
+        engine = _engine(entries)
+        plan = engine.build_plan(engine.evaluate([]))
+        self.assertIsNotNone(plan.system_before)
+        self.assertLess(plan.system_before.index('LORE_TEXT'), plan.system_before.index('MEDIA_RULE'))
+        self.assertTrue(plan.has_media)
+        self.assertFalse(plan.has_shallow_media)
+
+    def test_position_4_builds_depth_entries_and_shallow_media_flag(self):
+        entries = [
+            _entry(id=1, uid=1, comment='m', keys=[], constant=True, position=4, depth=2, category='media', content='DEPTH_MEDIA'),
+            _entry(id=2, uid=2, comment='l', keys=[], constant=True, position=1, category='lore', content='AFTER_LORE'),
+        ]
+        engine = _engine(entries)
+        plan = engine.build_plan(engine.evaluate([]))
+        self.assertIsNone(plan.system_before)
+        self.assertIn('AFTER_LORE', plan.system_after)
+        self.assertEqual(len(plan.depth_entries), 1)
+        self.assertEqual(plan.depth_entries[0]['depth'], 2)
+        self.assertEqual(plan.depth_entries[0]['content'], 'DEPTH_MEDIA')
+        self.assertTrue(plan.has_shallow_media)
+
+
 if __name__ == '__main__':
     unittest.main()

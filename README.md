@@ -22,9 +22,16 @@
 
 ## 📋 Changelog
 
-**Current Version: `v1.0.3`** — View full release notes in [CHANGELOG.md](CHANGELOG.md).
+**Current Version: `v1.0.4`** — View full release notes in [CHANGELOG.md](CHANGELOG.md).
+
+`v1.0.4` adds **Card-Aware Media Tag Protection** (preserving custom card tags like `<pimg="...">`), **Lore Panel Overhaul & Isolated Translation** (full embedded character-book import defaulting to media-only activation, per-entry toggles, true depth injection, and display-only Chinese/English translation), and **Stage HUD Affection & Portrait Fixes** (healing annotated affection values, filtering noisy multi-character assets, and syncing custom inline tags to the stage).
+
+<details>
+<summary>Previous release summary (<code>v1.0.3</code>)</summary>
 
 `v1.0.3` adds **Group Chat Voice Input** (direct voice messages with tap-to-pick or automatic speaker routing, plus transcribe-to-draft editing and native audio/transcript fallback) and fixes **Voice Call Interruption** during AI speech playback (restoring Silero VAD barge-in, non-streaming playback interruption, and adding a manual **Interrupt** button).
+
+</details>
 
 ---
 

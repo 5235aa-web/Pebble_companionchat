@@ -20,6 +20,7 @@ import {
 import {
   extractInlineMediaFromText,
   normalizeAssetTagRefs,
+  repairAssetTagRefs,
   rewriteCssAssetUrls,
 } from '@/utils/inlineMedia'
 import {
@@ -663,12 +664,14 @@ function renderSampleWithRules(
   const source = rawSource || ''
   if (!source.trim()) return { cleanedText: '', assetUrls: {} as Record<number, string>, cardCss: '' }
   const outRules = [...session.outputRegexRules, ...extraOutputRules]
+  const dispRules = [...session.displayRegexRules, ...extraDisplayRules]
+  const allRules = [...dispRules, ...outRules, ...session.promptRegexRules]
   const afterOut = applyDisplayRegex(source, outRules, { ...previewCbsOpts.value, placement: 2 })
   const afterCbs = evaluateCbs(afterOut, previewCbsOpts.value)
-  const norm = normalizeAssetTagRefs(afterCbs, session.assetNames)
-  const dispRules = [...session.displayRegexRules, ...extraDisplayRules]
+  const norm = normalizeAssetTagRefs(afterCbs, session.assetNames, { rules: allRules })
   const afterDisp = applyDisplayRegex(norm, dispRules, { ...previewCbsOpts.value, placement: 2 })
-  const media = extractInlineMediaFromText(afterDisp, (ref) => session.findAssetByRef(ref))
+  const repaired = repairAssetTagRefs(afterDisp, session.assetNames, { rules: allRules })
+  const media = extractInlineMediaFromText(repaired, (ref) => session.findAssetByRef(ref))
   return {
     cleanedText: media.cleanedText,
     mediaAssets: media.htmlImages,

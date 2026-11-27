@@ -9,6 +9,8 @@ import {
 import { useSessionStore } from './session'
 import { useCardAudioStore } from './cardAudio'
 import { useInochi2dStore } from './inochi2d'
+import { extractProtectedAssetTags } from '@/utils/inlineMedia'
+import type { DisplayRegexRule } from '@/utils/displayRegex'
 
 const MOOD_SYNONYMS: string[][] = [
   ['happy', 'joy', 'smile', 'cheerful', 'delighted', 'excited', 'contented', 'glad', '开心', '高兴', '微笑', '愉快'],
@@ -31,18 +33,61 @@ function firstNonEmpty(...vals: unknown[]): string {
   return ''
 }
 
-const INLINE_REPLY_IMG_RE =
-  /<img\s*=\s*(?:"([^"]+)"|'([^']+)')|<img\b[^>]*\bsrc\s*=\s*(?:"([^"]+)"|'([^']+)')|\{\{\s*(?:img|image|asset|raw)\s*::\s*([^}]+?)\s*\}\}/gi
+const PLACEHOLDER_ICON_NAMES = new Set(['iconx', 'main', 'avatar', 'cover', 'thumb', 'thumbnail'])
+const GENERIC_SCENE_NAME_RE = /^(?:\d+|(?:scene|bg|cg|map|item|ui|icon)[-_\s]*\d*)$/i
 
-function extractLastInlineImageRef(replyText: string): string {
+function escapeRegExp(s: string): string {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+}
+
+function parseAffectionValue(raw: unknown): number | null {
+  if (raw === null || raw === undefined || typeof raw === 'boolean') return null
+  if (typeof raw === 'number') {
+    return Number.isFinite(raw) ? Math.max(0, Math.min(100, Math.round(raw))) : null
+  }
+  const text = String(raw).trim()
+  if (!text) return null
+  if (Number.isFinite(Number(text))) {
+    return Math.max(0, Math.min(100, Math.round(Number(text))))
+  }
+  const mSigned = text.match(/^\s*([+-])\s*(\d+(?:\.\d+)?)\b/)
+  if (mSigned) {
+    const n = (mSigned[1] === '-' ? -1 : 1) * Number(mSigned[2])
+    return Number.isFinite(n) ? Math.max(0, Math.min(100, Math.round(n))) : null
+  }
+  const mNum = text.match(/^\s*(?:[^\d+\-.]{0,18}?[:：=♥♡\s])?\s*(\d+(?:\.\d+)?)\b/)
+  if (mNum) {
+    const n = Number(mNum[1])
+    return Number.isFinite(n) ? Math.max(0, Math.min(100, Math.round(n))) : null
+  }
+  return null
+}
+
+function extractLastInlineImageRef(replyText: string, rules?: DisplayRegexRule[]): string {
   if (!replyText) return ''
-  let lastRef = ''
-  for (const m of replyText.matchAll(INLINE_REPLY_IMG_RE)) {
+  const protectedTags = extractProtectedAssetTags(rules)
+  const htmlAlts = [...new Set(['img', ...protectedTags.htmlTags])].map(escapeRegExp).join('|')
+  const macroAlts = [...new Set(['img', 'image', 'asset', 'raw', ...protectedTags.macroTags])]
+    .map(escapeRegExp)
+    .join('|')
+  const tagRe = new RegExp(
+    `<(?:${htmlAlts})\\s*=\\s*(?:"([^"]+)"|'([^']+)')|<img\\b[^>]*\\bsrc\\s*=\\s*(?:"([^"]+)"|'([^']+)')|\\{\\{\\s*(?:${macroAlts})\\s*::\\s*([^}]+?)\\s*\\}\\}`,
+    'gi',
+  )
+
+  const candidates: string[] = []
+  for (const m of replyText.matchAll(tagRe)) {
     const cand = (m[1] ?? m[2] ?? m[3] ?? m[4] ?? m[5] ?? '').trim()
     if (!cand || /^(?:https?:|data:|blob:|pebble-asset:)/i.test(cand)) continue
-    lastRef = cand
+    candidates.push(cand)
   }
-  return lastRef
+  if (!candidates.length) return ''
+  for (let i = candidates.length - 1; i >= 0; i--) {
+    if (!GENERIC_SCENE_NAME_RE.test(candidates[i])) {
+      return candidates[i]
+    }
+  }
+  return candidates[candidates.length - 1]
 }
 
 function expandTerms(raw: string): string[] {
@@ -136,14 +181,7 @@ export const useCardHudStore = defineStore('cardHud', () => {
 
   const moodText = computed(() => String(hud.value.mood ?? '').trim())
   const moodRgb = computed(() => resolveMoodRgb(moodText.value))
-  const affectionValue = computed<number | null>(() => {
-    const raw = hud.value.affection
-    if (typeof raw === 'number' && Number.isFinite(raw)) return raw
-    if (typeof raw === 'string' && raw.trim() && Number.isFinite(Number(raw))) {
-      return Number(raw)
-    }
-    return null
-  })
+  const affectionValue = computed<number | null>(() => parseAffectionValue(hud.value.affection))
   const locationText = computed(() => String(hud.value.location ?? '').trim())
   const outfitText = computed(() => String(hud.value.outfit ?? '').trim())
   const thoughtText = computed(() => String(hud.value.thought ?? '').trim())
@@ -200,9 +238,12 @@ export const useCardHudStore = defineStore('cardHud', () => {
   }
 
   function hasExplicitExpressionAssets(): boolean {
-    return session.imageAssets.some((a) =>
-      ['emotion', 'portrait', 'icon'].includes((a.asset_type || '').toLowerCase()),
-    )
+    return session.imageAssets.some((a) => {
+      const t = (a.asset_type || '').toLowerCase()
+      const n = (a.name || '').trim().toLowerCase()
+      if (t === 'emotion' || t === 'portrait') return true
+      return t === 'icon' && !PLACEHOLDER_ICON_NAMES.has(n)
+    })
   }
 
   function matchImageAsset(cue: string): CompanionAsset | undefined {
@@ -227,17 +268,36 @@ export const useCardHudStore = defineStore('cardHud', () => {
     }
 
     const terms = expandTerms(cue)
-    for (const term of terms) {
-      const hit = sorted.find((a) => {
-        const t = (a.asset_type || '').toLowerCase()
-        if (t === 'background' && hasExplicitExpressionAssets()) {
-          return false
-        }
-        return a.name.toLowerCase().includes(term)
-      })
-      if (hit) return hit
+    const charTokens = (session.act || '')
+      .toLowerCase()
+      .split(/[\s,·/|()[\]<>'"!?！？~_-]+/)
+      .filter((t) => t.length >= 2)
+    let bestHit: CompanionAsset | undefined
+    let bestScore = 0
+    for (const a of sorted) {
+      const t = (a.asset_type || '').toLowerCase()
+      const nameLow = (a.name || '').trim().toLowerCase()
+      if (!nameLow) continue
+      if (t === 'background' && hasExplicitExpressionAssets()) continue
+      if (t === 'icon' && PLACEHOLDER_ICON_NAMES.has(nameLow)) continue
+      if (GENERIC_SCENE_NAME_RE.test(nameLow)) continue
+
+      let score = 0
+      for (const term of terms) {
+        if (!term || term.length < 2) continue
+        if (!nameLow.includes(term)) continue
+        const boundaryRe = new RegExp(`(?:^|[_\\-\\s])${escapeRegExp(term)}(?:$|[_\\-\\s])`, 'i')
+        score = Math.max(score, boundaryRe.test(nameLow) ? 40 : 12)
+      }
+      if (score <= 0) continue
+      if (t === 'emotion' || t === 'portrait') score += 50
+      if (charTokens.some((ct) => nameLow.includes(ct))) score += 80
+      if (score > bestScore) {
+        bestScore = score
+        bestHit = a
+      }
     }
-    return undefined
+    return bestHit
   }
 
   function clearExpressionOverride() {
@@ -302,7 +362,7 @@ export const useCardHudStore = defineStore('cardHud', () => {
       )
     }
     if (!replyText || explicitExpressionLocked || !session.imageAssets.length) return
-    const ref = extractLastInlineImageRef(replyText)
+    const ref = extractLastInlineImageRef(replyText, session.allCardRegexRules)
     if (!ref) return
     const exact = session.findAssetByRef(ref)
     const asset =

@@ -13,6 +13,7 @@
  * alone with an LSTM pair. The shape is read from the session's input names.
  */
 import * as ort from 'onnxruntime-web/wasm'
+import ortWasmUrl from 'onnxruntime-web/ort-wasm-simd-threaded.wasm?url'
 
 const MODEL_URL = `${import.meta.env.BASE_URL}models/silero_vad.onnx`
 /** New samples per call. Matches the worklet's frame, so nothing is buffered. */
@@ -53,9 +54,7 @@ export function loadVad(): Promise<void> {
     // One thread: the Tauri webview has no cross-origin isolation, so a
     // threaded wasm build cannot spawn its pool and would fail at startup.
     ort.env.wasm.numThreads = 1
-    ort.env.wasm.wasmPaths = {
-      wasm: `${import.meta.env.BASE_URL}ort/ort-wasm-simd-threaded.wasm`,
-    }
+    ort.env.wasm.wasmPaths = { wasm: ortWasmUrl }
     const s = await ort.InferenceSession.create(MODEL_URL)
     v5 = s.inputNames.includes('state')
     state = v5 ? zeros([2, 1, STATE_SIZE]) : null

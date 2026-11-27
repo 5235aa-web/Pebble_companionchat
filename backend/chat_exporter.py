@@ -16,6 +16,7 @@ from .card_presentation import (
     apply_regex_scripts,
     extract_card_presentation,
     normalize_asset_tag_refs,
+    repair_asset_tag_refs_only,
     resolve_fuzzy_asset_name,
 )
 from .companion_db import (
@@ -286,7 +287,7 @@ def _resolve_message_text(
         hud=ctx["hud"],
     )
     if is_ai and asset_names:
-        text = normalize_asset_tag_refs(text, asset_names)
+        text = normalize_asset_tag_refs(text, asset_names, rules=display_regex)
     if display_regex and (is_user or is_ai):
         text = apply_regex_scripts(
             text,
@@ -299,6 +300,8 @@ def _resolve_message_text(
             placement=1 if is_user else 2,
             hud=ctx["hud"],
         )
+        if is_ai and asset_names:
+            text = repair_asset_tag_refs_only(text, asset_names, rules=display_regex)
     return text
 
 

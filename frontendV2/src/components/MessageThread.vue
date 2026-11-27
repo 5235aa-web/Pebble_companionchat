@@ -12,6 +12,7 @@ import { applyDisplayRegex } from '@/utils/displayRegex'
 import {
   extractInlineMediaFromText,
   normalizeAssetTagRefs,
+  repairAssetTagRefs,
   rewriteCssAssetUrls,
   type InlineMediaTextResult,
 } from '@/utils/inlineMedia'
@@ -38,7 +39,9 @@ const greetingVisible = computed(() => !chat.beats.length && !chat.loading)
 
 const greetingMedia = computed<InlineMediaTextResult>(() => {
   if (!greetingVisible.value) return EMPTY_GREETING_MEDIA
-  const raw = normalizeAssetTagRefs(session.emptyLine, session.assetNames)
+  const raw = normalizeAssetTagRefs(session.emptyLine, session.assetNames, {
+    rules: session.allCardRegexRules,
+  })
   if (!raw) return EMPTY_GREETING_MEDIA
   const displayed = applyDisplayRegex(raw, session.displayRegexRules, {
     placement: 2,
@@ -48,7 +51,10 @@ const greetingMedia = computed<InlineMediaTextResult>(() => {
     seed: `${session.activeCompanionId}:${session.activeBranch}`,
     assetNames: session.assetNames,
   })
-  return extractInlineMediaFromText(displayed, (refText) => session.findAssetByRef(refText))
+  const repaired = repairAssetTagRefs(displayed, session.assetNames, {
+    rules: session.allCardRegexRules,
+  })
+  return extractInlineMediaFromText(repaired, (refText) => session.findAssetByRef(refText))
 })
 
 const resolvedCardCssInfo = computed(() =>

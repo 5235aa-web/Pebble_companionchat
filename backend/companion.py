@@ -21,16 +21,22 @@ from .card_hud import (
 from .card_presentation import (
     apply_regex_scripts,
     build_scene_rules_prompt,
+    extract_card_presentation,
     extract_input_regex,
     extract_output_regex,
     extract_prompt_regex,
+    extract_protected_asset_tags,
     normalize_asset_tag_refs,
     normalize_hud_pinned_vars,
     normalize_scene_rules_list,
 )
 from .card_translation import resolve_companion_fields
 from .llm_client import call_llm_stream, load_default_llm_config, resolve_provider_model_config
-from .world_book_engine import get_active_world_book_content
+from .world_book_engine import (
+    WorldBookPlan,
+    get_active_world_book_content,
+    get_active_world_book_plan,
+)
 from .compaction import is_summary_message, SUMMARY_MARKER_START
 from .memory_engine import build_memory_block, schedule_extraction, resolve_user_name
 from .placeholders import substitute
@@ -342,6 +348,17 @@ class Companion:
             if str(a.get("name") or "").strip()
         ]
 
+    def _card_regex_rules(self) -> List[Dict]:
+        pres = extract_card_presentation(
+            getattr(self, "raw_card_data", ""),
+            getattr(self, "card_ui", {}),
+        )
+        return [
+            *(pres.get("display_regex") or []),
+            *(pres.get("output_regex") or []),
+            *(pres.get("prompt_regex") or []),
+        ]
+
     def _finalize_assistant_output(self, text: str, branch_id: str = "main") -> str:
         """Apply card ``editoutput`` regex rules and high-confidence asset typo fixes."""
         if not text:
@@ -364,8 +381,23 @@ class Companion:
                 asset_names=asset_names,
             )
         if asset_names:
-            cleaned = normalize_asset_tag_refs(cleaned, asset_names)
+            cleaned = normalize_asset_tag_refs(cleaned, asset_names, rules=self._card_regex_rules())
         return cleaned
+
+    def _uses_inline_media_protocol(self, world_book_content: Optional[str] = None) -> bool:
+        """Return True when active card regex or world-book media entries already drive inline image output."""
+        import re as _re
+
+        html_tags, macro_tags, _, _ = extract_protected_asset_tags(self._card_regex_rules())
+        if (set(html_tags) - {"img"}) or macro_tags:
+            return True
+        if world_book_content and _re.search(
+            r"<pimg\s*=|<img\s*=|\{\{\s*(?:pic|img|image|asset|raw)\s*::",
+            world_book_content,
+            _re.IGNORECASE,
+        ):
+            return True
+        return False
     
     def _depth_prompt_entry(self) -> Optional[Dict]:
         """
@@ -490,34 +522,49 @@ class Companion:
         days, rem_h = divmod(hours, 24)
         return mins, f"{days}d {rem_h}h" if rem_h else f"{days}d"
 
-    def build_system_prompt(
+    def _media_post_history_reminder(self) -> str:
+        """Build a concise 1-line post-history reminder referencing the card's active tag syntax."""
+        html_tags, macro_tags, primary_html, primary_macro = extract_protected_asset_tags(
+            self._card_regex_rules()
+        )
+        if html_tags and primary_html:
+            tag_sample = f'<{primary_html}="exact key">'
+        elif macro_tags and primary_macro:
+            tag_sample = f"{{{{{primary_macro}::exact key}}}}"
+        else:
+            tag_sample = "the exact registered asset tag"
+        return (
+            "Visual Asset Reminder: Whenever depicting expressions, poses, or scenes, "
+            f"strictly output {tag_sample} using only exact keys listed in the active Visual Asset Protocol above."
+        )
+
+    def _build_system_prompt_and_wb_plan(
         self,
         history: Optional[List[Dict]] = None,
         branch_id: str = "main",
         memory_out: Optional[List[Dict]] = None,
         *,
         include_card_hud: bool = False,
-    ) -> str:
-        """
-        Assemble the character-card system prompt.
-        
-        Every card field that reaches the model is wrapped in a bracketed
-        English tag so the model can tell sections apart. World book content
-        already carries its own "[World Info: ...]" tags and is appended as is.
-
-        *memory_out* collects the memories that were injected, for callers that
-        want to report which ones were in play.
-        """
+        include_depth_world_book: bool = True,
+    ) -> Tuple[str, WorldBookPlan]:
         history = history or []
         parts: List[str] = []
 
-        # Cards write {{char}}, {{user}}, and CBS conditionals/variables instead
-        # of static values. Resolve them here rather than at import so edits and
-        # variable toggles take effect on the next turn.
         sub = self._macro_context(branch_id, history=history)
+
+        wb_plan = WorldBookPlan()
+        try:
+            wb_plan = get_active_world_book_plan(self.id, history)
+            if wb_plan.system_before or wb_plan.system_after or wb_plan.depth_entries:
+                logger.info(f"Added world book content for companion {self.id}")
+        except Exception as e:
+            logger.warning(f"Failed to get world book content: {e}")
 
         if self.name:
             parts.append(f"[Character]\nYou are {self.name}.")
+
+        if wb_plan.system_before:
+            parts.append(sub(wb_plan.system_before))
 
         if self.description:
             parts.append(f"[Description]\n{sub(self.description)}")
@@ -527,14 +574,18 @@ class Companion:
 
         if self.scenario:
             parts.append(f"[Scenario]\n{sub(self.scenario)}")
-        
-        try:
-            world_book_content = get_active_world_book_content(self.id, history)
-            if world_book_content:
-                parts.append(world_book_content)
-                logger.info(f"Added world book content for companion {self.id}")
-        except Exception as e:
-            logger.warning(f"Failed to get world book content: {e}")
+
+        if wb_plan.system_after:
+            parts.append(sub(wb_plan.system_after))
+
+        if include_depth_world_book and wb_plan.depth_entries:
+            depth_text = "\n\n".join(
+                sub(item["content"]) for item in wb_plan.depth_entries if item.get("content")
+            )
+            if depth_text.strip():
+                parts.append(f"[World Info: Depth prompt]\n{depth_text}")
+
+        world_book_content = wb_plan.as_text()
 
         # Long-term memories, retrieved by keyword against the recent turns.
         # Separate tag from world info: one is the rules of the world, the other
@@ -604,6 +655,8 @@ class Companion:
                     variables=vars_map,
                     pinned_vars=self._hud_pinned_vars(),
                     thought_enabled=self._hud_thought_enabled(),
+                    char_name=self.name or "",
+                    inline_media_managed=self._uses_inline_media_protocol(world_book_content),
                 )
             )
         
@@ -614,7 +667,30 @@ class Companion:
         # The depth prompt is absent here on purpose too: it belongs inside the
         # history at its requested depth, which _build_messages handles.
         
-        return "\n\n".join(parts)
+        return "\n\n".join(parts), wb_plan
+
+    def build_system_prompt(
+        self,
+        history: Optional[List[Dict]] = None,
+        branch_id: str = "main",
+        memory_out: Optional[List[Dict]] = None,
+        *,
+        include_card_hud: bool = False,
+    ) -> str:
+        """
+        Assemble the character-card system prompt.
+
+        Every card field that reaches the model is wrapped in a bracketed
+        English tag so the model can tell sections apart.
+        """
+        prompt, _ = self._build_system_prompt_and_wb_plan(
+            history,
+            branch_id,
+            memory_out,
+            include_card_hud=include_card_hud,
+            include_depth_world_book=True,
+        )
+        return prompt
 
     def _hud_pinned_vars(self) -> List[str]:
         card_ui = getattr(self, "card_ui", None) or {}
@@ -676,14 +752,20 @@ class Companion:
         Compaction summaries are replayed with the system role so they do not
         occupy an assistant turn.
         """
+        system_prompt, wb_plan = self._build_system_prompt_and_wb_plan(
+            history,
+            branch_id,
+            memory_out,
+            include_card_hud=include_card_hud,
+            include_depth_world_book=False,
+        )
         messages = [{
             "role": "system",
-            "content": self.build_system_prompt(
-                history, branch_id, memory_out, include_card_hud=include_card_hud
-            ),
+            "content": system_prompt,
         }]
         sub = self._macro_context(branch_id, history=history)
         asset_names = self._asset_names()
+        card_rules = self._card_regex_rules() if asset_names else []
         prompt_rules = extract_prompt_regex(
             getattr(self, "raw_card_data", ""),
             getattr(self, "card_ui", {}),
@@ -713,7 +795,7 @@ class Companion:
             msg_type = msg.get("message_type", "chat")
             content = msg["content"]
             if msg.get("role") == "assistant" and asset_names and msg_type == "chat":
-                content = normalize_asset_tag_refs(content, asset_names)
+                content = normalize_asset_tag_refs(content, asset_names, rules=card_rules)
             if prompt_rules and msg_type == "chat" and content:
                 content = apply_regex_scripts(
                     content,
@@ -744,19 +826,36 @@ class Companion:
         
         if summaries:
             messages.insert(1, summaries[-1])
-        
+
+        # Depth-targeted injections: card depth_prompt + World Book position=4 entries.
+        # Group entries by depth and insert from largest depth down to 0 so earlier
+        # shallow insertions don't shift deeper offsets.
+        depth_injections: List[Tuple[int, str, str]] = []
         depth_entry = self._depth_prompt_entry()
         if depth_entry:
-            # Count back from the newest message. Clamped so an oversized depth
-            # lands right after the system prompt instead of out of range, while
-            # depth 0 appends at the tail.
-            index = len(messages) - depth_entry["depth"]
-            index = max(1, min(index, len(messages)))
-            messages.insert(index, {
-                "role": depth_entry["role"],
-                "content": f"[Depth Prompt]\n{sub(depth_entry['text'])}",
-            })
-        
+            depth_injections.append(
+                (depth_entry["depth"], depth_entry["role"], f"[Depth Prompt]\n{sub(depth_entry['text'])}")
+            )
+        if wb_plan.depth_entries:
+            by_depth: Dict[int, List[str]] = {}
+            for item in wb_plan.depth_entries:
+                text = sub(item.get("content") or "").strip()
+                if not text:
+                    continue
+                by_depth.setdefault(int(item["depth"]), []).append(text)
+            for d_val, texts in by_depth.items():
+                depth_injections.append(
+                    (d_val, "system", f"[World Info · Depth {d_val}]\n" + "\n\n".join(texts))
+                )
+
+        if depth_injections:
+            base_len = len(messages)
+            # Insert from smallest depth (largest base index) up to largest depth so
+            # earlier insertions at the tail never shift shallower base indices.
+            for d_val, d_role, d_content in sorted(depth_injections, key=lambda x: x[0]):
+                index = max(1, min(base_len - d_val, len(messages)))
+                messages.insert(index, {"role": d_role, "content": d_content})
+
         post_parts = [
             text
             for text in (
@@ -766,6 +865,8 @@ class Companion:
             )
             if text.strip()
         ]
+        if wb_plan.has_media and not wb_plan.has_shallow_media:
+            post_parts.append(self._media_post_history_reminder())
         if post_parts:
             messages.append({
                 "role": "system",

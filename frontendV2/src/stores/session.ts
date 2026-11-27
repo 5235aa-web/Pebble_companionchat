@@ -226,6 +226,11 @@ export const useSessionStore = defineStore('session', () => {
   const outputRegexRules = computed(() => cardPresentation.value.output_regex ?? [])
   const inputRegexRules = computed(() => cardPresentation.value.input_regex ?? [])
   const promptRegexRules = computed(() => cardPresentation.value.prompt_regex ?? [])
+  const allCardRegexRules = computed(() => [
+    ...displayRegexRules.value,
+    ...outputRegexRules.value,
+    ...promptRegexRules.value,
+  ])
   const sceneRules = computed(() => cardPresentation.value.scene_rules ?? [])
   const hudPinnedVars = computed(() => cardPresentation.value.hud_pinned_vars ?? [])
   const hudThoughtEnabled = computed(() => Boolean(cardPresentation.value.hud_thought_enabled))
@@ -688,6 +693,7 @@ export const useSessionStore = defineStore('session', () => {
     outputRegexRules,
     inputRegexRules,
     promptRegexRules,
+    allCardRegexRules,
     sceneRules,
     hudPinnedVars,
     hudThoughtEnabled,

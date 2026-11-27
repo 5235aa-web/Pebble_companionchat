@@ -7,7 +7,7 @@ import {
   post,
   postForm,
   put,
-  streamRequest,
+  streamSseJson,
   useSocket,
 } from './client'
 import type { DisplayRegexRule, ScenePromptRule } from '@/utils/displayRegex'
@@ -665,37 +665,9 @@ export async function translateCompanionCard(
     signal?: AbortSignal
   },
 ): Promise<CardTranslateEvent | null> {
-  let buffer = ''
-  let finalEvent: CardTranslateEvent | null = null
-  let streamErr = ''
-
-  const processLine = (line: string) => {
-    const trimmed = line.trim()
-    if (!trimmed.startsWith('data:')) return
-    const raw = trimmed.slice(5).trim()
-    if (!raw || raw === '[DONE]') return
-    try {
-      const ev = JSON.parse(raw) as CardTranslateEvent
-      handlers.onEvent(ev)
-      if (ev.type === 'done') finalEvent = ev
-      else if (ev.type === 'error' && ev.message) streamErr = ev.message
-    } catch {
-      /* ignore malformed SSE frames */
-    }
-  }
-
-  await streamRequest(
+  return streamSseJson<CardTranslateEvent>(
     `${C}/${encodeURIComponent(companionId)}/translate`,
     payload,
-    (chunk) => {
-      buffer += chunk
-      const lines = buffer.split('\n')
-      buffer = lines.pop() ?? ''
-      for (const line of lines) processLine(line)
-    },
-    { signal: handlers.signal },
+    handlers,
   )
-  if (buffer.trim()) processLine(buffer)
-  if (streamErr) throw new Error(streamErr)
-  return finalEvent
 }

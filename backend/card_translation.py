@@ -242,10 +242,11 @@ async def _collect_translation_text(
     messages: List[Dict[str, str]],
     *,
     source_chars: int,
+    max_token_cap: int = 8192,
 ) -> str:
     if not llm_config or not llm_config.get("provider_type"):
         raise ValueError("No LLM model configured. Please configure an AI model in Backstage settings.")
-    max_tokens = max(2048, min(8192, int(source_chars * 2.2) + 512))
+    max_tokens = max(2048, min(max_token_cap, int(source_chars * 2.2) + 512))
     chunks: List[str] = []
     error_msg = ""
     async for ev in call_llm_stream(

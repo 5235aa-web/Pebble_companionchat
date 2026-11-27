@@ -4,6 +4,19 @@ All notable releases for Pebble Companion Chat are recorded here.
 Each `## x.y.z` section is used by `npm run release -- x.y.z` as both the
 GitHub Release description and the in-app update panel notes.
 
+## 1.0.4
+
+- **Card-Aware Media Tag Protection**:
+  - Preserves custom inline media tags and macros declared by imported character cards instead of rewriting or stripping them as typos, while still recovering genuine malformed image tags.
+- **Lore Panel Overhaul, Triage & Display-Only Translation**:
+  - Restored the **Lore** entry in the top navigation bar and redesigned the panel with themed dropdown selectors, category filter pills (`Media` / `Lore` / `RPG`), per-entry toggle switches, bulk presets (**Media only** / **All off**), and a **Reset to default** sync button.
+  - Imports embedded character-book entries in full on card import, enabling media-asset instruction entries by default while leaving heavy RPG and lore entries disabled until toggled on.
+  - Added display-only **Original / Chinese / English** translation controls next to **Media only** using the active chat model—translating natural language while keeping code, regexes, asset tags, and macros untouched, and always sending original text to the AI.
+  - Added true conversation-depth injection for depth-positioned World Book entries and lightweight post-history reminders for active media protocols (alongside companion API route cleanup).
+- **Stage HUD Affection & Portrait Fixes**:
+  - Added tolerant affection parsing and historical branch self-healing for annotated or delta-style LLM outputs, restoring missing Stage affection meters.
+  - Prioritized protagonist-relevant assets, skipped generic placeholder icons and competing expression lists on inline-media cards, and synced card-declared inline tags directly with the right-hand Stage portrait.
+
 ## 1.0.3
 
 - **Group Chat Voice Input**:

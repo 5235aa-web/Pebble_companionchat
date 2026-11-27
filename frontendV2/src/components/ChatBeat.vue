@@ -19,6 +19,7 @@ import { applyDisplayRegex } from '@/utils/displayRegex'
 import {
   extractInlineMediaFromText,
   normalizeAssetTagRefs,
+  repairAssetTagRefs,
   rewriteCssAssetUrls,
 } from '@/utils/inlineMedia'
 import { plainTextForSpeech } from '@/utils/richText'
@@ -129,13 +130,21 @@ const inlineMedia = computed(() => {
   const withVars = evaluateCbs(displaySource.value, cbsOpts)
   const normalized =
     props.beat.role === 'ai' && !isStreaming.value
-      ? normalizeAssetTagRefs(withVars, session.assetNames)
+      ? normalizeAssetTagRefs(withVars, session.assetNames, {
+          rules: session.allCardRegexRules,
+        })
       : withVars
   const displayed = applyDisplayRegex(normalized, session.displayRegexRules, {
     ...cbsOpts,
     placement: props.beat.role === 'you' ? 1 : 2,
   })
-  return extractInlineMediaFromText(displayed, (ref) => session.findAssetByRef(ref))
+  const repaired =
+    props.beat.role === 'ai' && !isStreaming.value
+      ? repairAssetTagRefs(displayed, session.assetNames, {
+          rules: session.allCardRegexRules,
+        })
+      : displayed
+  return extractInlineMediaFromText(repaired, (ref) => session.findAssetByRef(ref))
 })
 
 const resolvedCardCssInfo = computed(() =>

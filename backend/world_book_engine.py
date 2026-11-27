@@ -1,8 +1,8 @@
 import re
 import random
 import logging
-from typing import List, Dict, Optional, Set
-from dataclasses import dataclass, field
+from typing import Any, List, Dict, Optional, Set
+from dataclasses import dataclass, field, fields
 
 logger = logging.getLogger(__name__)
 
@@ -41,6 +41,7 @@ class WorldBookEntry:
     scan_depth: Optional[int] = None
     triggers: List[str] = field(default_factory=list)
     ignore_budget: bool = False
+    category: str = "lore"
     
     def to_dict(self) -> Dict:
         return {
@@ -69,6 +70,7 @@ class WorldBookEntry:
             'scan_depth': self.scan_depth,
             'triggers': self.triggers,
             'ignore_budget': self.ignore_budget,
+            'category': self.category,
         }
 
 
@@ -82,6 +84,33 @@ class ActivationResult:
     group: str
 
 
+@dataclass
+class WorldBookPlan:
+    """Structured prompt injection plan separating system context vs message-depth injections."""
+
+    system_before: Optional[str] = None
+    system_after: Optional[str] = None
+    depth_entries: List[Dict[str, Any]] = field(default_factory=list)
+    has_media: bool = False
+    has_shallow_media: bool = False
+
+    def as_text(self) -> Optional[str]:
+        """Render all sections as one flat block for legacy callers/diagnostics."""
+        parts: List[str] = []
+        if self.system_before:
+            parts.append(self.system_before)
+        if self.system_after:
+            parts.append(self.system_after)
+        if self.depth_entries:
+            depth_text = "\n\n".join(item["content"] for item in self.depth_entries if item.get("content"))
+            if depth_text:
+                parts.append(f"[World Info: Depth prompt]\n{depth_text}")
+        return "\n\n".join(parts) if parts else None
+
+
+_WORLD_BOOK_ENTRY_FIELDS = None
+
+
 class WorldBookEngine:
     """世界书引擎 - 处理条目匹配和激活"""
     
@@ -93,9 +122,14 @@ class WorldBookEngine:
             entries: 世界书条目列表（从数据库获取的原始数据）
             budget: 激活条目的token预算（简化版，实际应该计算token）
         """
+        global _WORLD_BOOK_ENTRY_FIELDS
+        if _WORLD_BOOK_ENTRY_FIELDS is None:
+            _WORLD_BOOK_ENTRY_FIELDS = frozenset(f.name for f in fields(WorldBookEntry))
+
         self.entries: List[WorldBookEntry] = []
         for entry_data in entries:
-            self.entries.append(WorldBookEntry(**entry_data))
+            filtered = {k: v for k, v in entry_data.items() if k in _WORLD_BOOK_ENTRY_FIELDS}
+            self.entries.append(WorldBookEntry(**filtered))
         
         self.budget = budget
         self.activated_entries: Set[int] = set()
@@ -319,18 +353,15 @@ class WorldBookEngine:
         if not self.entries:
             return []
         
-        # 获取扫描文本
-        scan_text = self.get_scan_text(messages, scan_depth)
-        
+        scan_cache: Dict[int, str] = {scan_depth: self.get_scan_text(messages, scan_depth)}
         activated: List[ActivationResult] = []
-        
+
         for entry in self.entries:
-            # 确定实际扫描深度
             depth = entry.scan_depth if entry.scan_depth is not None else scan_depth
-            if depth != scan_depth:
-                scan_text = self.get_scan_text(messages, depth)
-            
-            # 评估条目
+            if depth not in scan_cache:
+                scan_cache[depth] = self.get_scan_text(messages, depth)
+            scan_text = scan_cache[depth]
+
             if self.evaluate_entry(entry, scan_text):
                 activated.append(ActivationResult(
                     entry=entry,
@@ -339,89 +370,104 @@ class WorldBookEngine:
                     order=entry.order,
                     group=entry.group
                 ))
-        
+
         # 处理分组
         activated = self.process_group_scoring(activated)
-        
+
         # 按order降序排序（数值大的先插入）
         activated.sort(key=lambda x: x.order, reverse=True)
-        
+
         return activated
-    
-    def build_prompt_injection(self, activated: List[ActivationResult]) -> Optional[str]:
-        """
-        构建提示词注入内容
-        
-        Args:
-            activated: 激活的条目列表
-            
-        Returns:
-            要插入的提示词内容，如果没有则返回None
-        """
+
+    @staticmethod
+    def _sort_slot_media_last(items: List[ActivationResult]) -> List[ActivationResult]:
+        """Place ``category == 'media'`` formatting protocols later in the block so lore doesn't bury them."""
+        non_media = [r for r in items if getattr(r.entry, "category", "lore") != "media"]
+        media = [r for r in items if getattr(r.entry, "category", "lore") == "media"]
+        return non_media + media
+
+    def build_plan(self, activated: List[ActivationResult]) -> WorldBookPlan:
+        """Split activated entries into system before/after slots and message-depth injections."""
         if not activated:
-            return None
-        
-        # 按位置分组
-        before_entries = [r for r in activated if r.position == 0]  # before char
-        after_entries = [r for r in activated if r.position == 1]   # after char
-        depth_entries = [r for r in activated if r.position == 4]   # at depth
-        
-        injections = []
-        
-        # 构建before部分
-        if before_entries:
-            content = '\n\n'.join([e.content for e in before_entries])
-            injections.append(f"[World Info: Context before character]\n{content}")
-        
-        # 构建after部分
-        if after_entries:
-            content = '\n\n'.join([e.content for e in after_entries])
-            injections.append(f"[World Info: Context after character]\n{content}")
-        
-        # 构建depth部分
-        if depth_entries:
-            content = '\n\n'.join([e.content for e in depth_entries])
-            injections.append(f"[World Info: Depth prompt]\n{content}")
-        
-        if not injections:
-            return None
-        
-        return '\n\n'.join(injections)
+            return WorldBookPlan()
+
+        before_entries = self._sort_slot_media_last([r for r in activated if r.position == 0])
+        after_entries = self._sort_slot_media_last([r for r in activated if r.position == 1])
+        raw_depth = self._sort_slot_media_last([r for r in activated if r.position == 4])
+
+        sys_before = (
+            f"[World Info: Context before character]\n" + "\n\n".join(e.content for e in before_entries)
+            if before_entries
+            else None
+        )
+        sys_after = (
+            f"[World Info: Context after character]\n" + "\n\n".join(e.content for e in after_entries)
+            if after_entries
+            else None
+        )
+
+        depth_items: List[Dict[str, Any]] = []
+        has_shallow_media = False
+        for r in raw_depth:
+            d = max(0, int(getattr(r.entry, "depth", 4) if r.entry.depth is not None else 4))
+            cat = getattr(r.entry, "category", "lore")
+            if cat == "media" and d <= 2:
+                has_shallow_media = True
+            depth_items.append(
+                {
+                    "depth": d,
+                    "content": r.content,
+                    "order": r.order,
+                    "category": cat,
+                }
+            )
+
+        has_media = any(getattr(r.entry, "category", "lore") == "media" for r in activated)
+        return WorldBookPlan(
+            system_before=sys_before,
+            system_after=sys_after,
+            depth_entries=depth_items,
+            has_media=has_media,
+            has_shallow_media=has_shallow_media,
+        )
+
+    def build_prompt_injection(self, activated: List[ActivationResult]) -> Optional[str]:
+        """构建提示词注入内容（扁平文本形态，兼容旧调用方）。"""
+        return self.build_plan(activated).as_text()
 
 
-def get_active_world_book_content(companion_id: str, messages: List[Dict], 
-                                  world_book_id: Optional[int] = None) -> Optional[str]:
-    """
-    获取AI伴侣当前激活的世界书内容
-    
-    Args:
-        companion_id: AI伴侣ID
-        messages: 消息历史
-        world_book_id: 指定的世界书ID（可选，默认使用主世界书）
-        
-    Returns:
-        要插入的提示词内容
-    """
+def get_active_world_book_plan(
+    companion_id: str,
+    messages: List[Dict],
+    world_book_id: Optional[int] = None,
+) -> WorldBookPlan:
+    """Evaluate active world-book entries and return a structured ``WorldBookPlan``."""
     from .world_book_db import get_companion_primary_world_book, get_entries
-    
-    # 获取世界书
+
     if world_book_id:
         entries = get_entries(world_book_id)
     else:
         world_book = get_companion_primary_world_book(companion_id)
         if not world_book:
-            return None
-        entries = get_entries(world_book['id'])
-    
+            return WorldBookPlan()
+        entries = get_entries(world_book["id"])
+
     if not entries:
-        return None
-    
-    # 创建引擎并评估
+        return WorldBookPlan()
+
     engine = WorldBookEngine(entries)
     activated = engine.evaluate(messages)
-    
-    # 构建提示词
-    return engine.build_prompt_injection(activated)
+    return engine.build_plan(activated)
+
+
+def get_active_world_book_content(companion_id: str, messages: List[Dict], 
+                                  world_book_id: Optional[int] = None) -> Optional[str]:
+    """获取AI伴侣当前激活的世界书内容（扁平文本形式）。"""
+    return get_active_world_book_plan(
+        companion_id,
+        messages,
+        world_book_id=world_book_id,
+    ).as_text()
 
 
 # 简单的测试函数

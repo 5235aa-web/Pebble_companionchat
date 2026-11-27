@@ -9,6 +9,7 @@ BGM, and one-shot SFX via a stripped trailing <<<STATE>>> block.
 
 from __future__ import annotations
 
+import math
 import re
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
@@ -19,9 +20,50 @@ CORE_HUD_KEYS = ("mood", "affection", "location", "outfit")
 MEDIA_CUE_KEYS = ("expression", "bgm", "sfx")
 _IGNORED_CONTROL_KEYS = {"scene_done", "scenedone", "scene_finished", "scene", "bg"}
 _THOUGHT_NULL_VALUES = frozenset({"none", "null", "off", "empty", "n/a", "-", "—", "无", "没有"})
+_PLACEHOLDER_ICON_NAMES = frozenset({"iconx", "main", "avatar", "cover", "thumb", "thumbnail"})
+_GENERIC_SCENE_RE = re.compile(r"^(?:\d+|(?:scene|bg|cg|map|item|ui|icon)[-_\s]*\d*)$", re.IGNORECASE)
+_EMOTION_HINT_RE = re.compile(
+    r"(?:_|^|\s)(?:smile|shy|blush|happy|sad|angry|annoyed|confused|curious|crying|"
+    r"embarrassed|surprised|shocked|aroused|ahegao|warm|gentle|love|nervous|scared|"
+    r"sleepy|tired|smug|teasing|laugh|wink|touched|relaxed|calm|neutral|normal|"
+    r"defeat|attack|pleasure|upset|fear|pout|grin|serious|admiring|depressed|bored)\b",
+    re.IGNORECASE,
+)
+_SIGNED_AFFECTION_RE = re.compile(r"^\s*([+-])\s*(\d+(?:\.\d+)?)\b")
+_LEADING_AFFECTION_RE = re.compile(r"^\s*(?:[^\d+\-.]{0,18}?[:：=♥♡\s])?\s*(\d+(?:\.\d+)?)\b")
 
 _MAX_VISUAL_TAGS = 40
 _MAX_AUDIO_TAGS = 20
+
+
+def _clamp_affection(val: float) -> int:
+    return max(0, min(100, int(round(val))))
+
+
+def parse_affection_value(raw: Any, current: Optional[Any] = None) -> Optional[int]:
+    """Parse numeric, annotated (``17 (growing)``, ``65/100``), or ``+delta`` affection values."""
+    if raw is None or isinstance(raw, bool):
+        return None
+    if isinstance(raw, (int, float)):
+        return _clamp_affection(float(raw)) if math.isfinite(float(raw)) else None
+
+    text = str(raw).strip()
+    if not text:
+        return None
+
+    m_signed = _SIGNED_AFFECTION_RE.match(text)
+    if m_signed:
+        sign = -1.0 if m_signed.group(1) == "-" else 1.0
+        delta = sign * float(m_signed.group(2))
+        base = parse_affection_value(current) if current is not None else None
+        if base is not None:
+            return _clamp_affection(base + delta)
+        return _clamp_affection(delta)
+
+    m_num = _LEADING_AFFECTION_RE.match(text)
+    if m_num:
+        return _clamp_affection(float(m_num.group(1)))
+    return None
 
 
 def _coerce_value(raw: str) -> Any:
@@ -73,6 +115,18 @@ def parse_hud_block(raw: str) -> Tuple[Dict[str, Any], Dict[str, str]]:
             val_str = value.strip().strip("\"'")
             hud["thought"] = "" if val_str.lower() in _THOUGHT_NULL_VALUES else val_str
             continue
+        if lowered == "affection":
+            raw_aff = value.strip()
+            m_signed = _SIGNED_AFFECTION_RE.match(raw_aff)
+            if m_signed:
+                hud["affection"] = f"{m_signed.group(1)}{m_signed.group(2)}"
+            else:
+                parsed_aff = parse_affection_value(raw_aff)
+                if parsed_aff is not None:
+                    hud["affection"] = parsed_aff
+                elif raw_aff:
+                    hud["affection"] = _coerce_value(raw_aff)
+            continue
         hud[key] = _coerce_value(value)
     return hud, cue
 
@@ -85,6 +139,9 @@ def merge_card_hud(
 ) -> Dict[str, Any]:
     """Merge new HUD values into existing state without dropping unmentioned keys."""
     merged = dict(current or {})
+    base_aff = parse_affection_value(merged.get("affection")) if "affection" in merged else None
+    if base_aff is not None:
+        merged["affection"] = base_aff
     upd = update or {}
     for key, value in upd.items():
         if key == "sfx":
@@ -95,6 +152,14 @@ def merge_card_hud(
                 merged.pop("thought", None)
             else:
                 merged["thought"] = text
+            continue
+        if str(key).lower() == "affection":
+            next_aff = parse_affection_value(value, current=base_aff)
+            if next_aff is not None:
+                merged["affection"] = next_aff
+                base_aff = next_aff
+            elif base_aff is not None:
+                merged["affection"] = base_aff
             continue
         merged[key] = value
     if clear_stale_thought and "thought" not in upd:
@@ -142,11 +207,37 @@ def _format_var_value(val: Any) -> str:
     return str(val)
 
 
-def _summarize_assets_for_prompt(assets: List[Dict]) -> Tuple[List[str], List[str]]:
+def _extract_name_tokens(char_name: str) -> List[str]:
+    tokens = [
+        tok.lower()
+        for tok in re.split(r"[\s,·/|()\[\]<>\"'!?！？~]+", char_name or "")
+        if len(tok.strip()) >= 2
+    ]
+    return list(dict.fromkeys(tokens))
+
+
+def _image_relevance_score(name: str, char_tokens: Sequence[str]) -> int:
+    low = name.lower()
+    score = 0
+    if char_tokens and any(tok in low for tok in char_tokens):
+        score += 100
+    if _EMOTION_HINT_RE.search(name):
+        score += 30
+    if not re.match(r"^(?:pikk|mob|bandit|slime|minotaur|inccubus|wyvern|kraken|troll|tentacles|goblins)[_\s]", low):
+        score += 5
+    return score
+
+
+def _summarize_assets_for_prompt(
+    assets: List[Dict],
+    *,
+    char_name: str = "",
+) -> Tuple[List[str], List[str]]:
     """Select compact, non-redundant visual and audio asset names for the prompt.
 
     Protects context budget on massive 2,000+ image CHARX cards by prioritizing
-    explicit emotion/background/audio names and capping list length strictly.
+    explicit emotion/portrait names (skipping generic placeholder icons),
+    ranking main-character emotion candidates first, and capping list length strictly.
     """
     emotions: List[str] = []
     other_images: List[str] = []
@@ -169,15 +260,20 @@ def _summarize_assets_for_prompt(assets: List[Dict]) -> Tuple[List[str], List[st
         elif mime.startswith("image/") or a_type in ("emotion", "icon", "portrait", "image"):
             if key in seen_v or a_type == "background":
                 continue
+            if a_type == "icon" and key in _PLACEHOLDER_ICON_NAMES:
+                continue
             seen_v.add(key)
             if a_type in ("emotion", "portrait", "icon"):
                 if len(emotions) < _MAX_VISUAL_TAGS:
                     emotions.append(name)
-            else:
-                # Skip pure numeric placeholder names when better names exist.
-                if not re.fullmatch(r"\d+", name) and len(other_images) < _MAX_VISUAL_TAGS:
-                    other_images.append(name)
+            elif not _GENERIC_SCENE_RE.fullmatch(key):
+                other_images.append(name)
 
+    if len(other_images) > _MAX_VISUAL_TAGS:
+        char_tokens = _extract_name_tokens(char_name)
+        other_images.sort(key=lambda item: -_image_relevance_score(item, char_tokens))
+
+    other_images = other_images[:_MAX_VISUAL_TAGS]
     visual = emotions if emotions else other_images
     if emotions and len(visual) < 16 and other_images:
         for item in other_images:
@@ -196,7 +292,10 @@ def _format_current_hud(hud: Optional[Dict[str, Any]], limit: int = 16) -> str:
     lines: List[str] = []
     for key in keys[:limit]:
         val = data.get(key, "")
-        if isinstance(val, (list, tuple)):
+        if key == "affection":
+            parsed = parse_affection_value(val)
+            text = str(parsed if parsed is not None else 0)
+        elif isinstance(val, (list, tuple)):
             text = ", ".join(str(v) for v in val)
         elif isinstance(val, bool):
             text = "yes" if val else "no"
@@ -214,12 +313,14 @@ def _collect_expression_roles(assets: Sequence[Dict]) -> List[str]:
         mime = str(asset.get("mime_type") or "").lower()
         a_type = str(asset.get("asset_type") or "").lower()
         name = str(asset.get("name") or "").strip()
-        if not name or re.fullmatch(r"\d+", name):
+        if not name or _GENERIC_SCENE_RE.fullmatch(name):
             continue
         if not (mime.startswith("image/") or a_type in ("emotion", "icon", "portrait", "image")):
             continue
         if a_type in ("emotion", "portrait", "icon"):
             key = name.lower()
+            if a_type == "icon" and key in _PLACEHOLDER_ICON_NAMES:
+                continue
             if key not in seen_e and len(exprs) < _MAX_VISUAL_TAGS:
                 seen_e.add(key)
                 exprs.append(name)
@@ -233,11 +334,17 @@ def build_card_hud_prompt(
     variables: Optional[Dict[str, Any]] = None,
     pinned_vars: Optional[Sequence[str]] = None,
     thought_enabled: bool = False,
+    char_name: str = "",
+    inline_media_managed: bool = False,
 ) -> str:
     """Build the [Stage HUD] prompt block appended in normal single-chat mode."""
     asset_list = list(assets or [])
-    visual_names, audio_names = _summarize_assets_for_prompt(asset_list)
+    visual_names, audio_names = _summarize_assets_for_prompt(asset_list, char_name=char_name)
     expr_names = _collect_expression_roles(asset_list)
+    # When a card already emits inline media tags (e.g. <pimg="...">) and lacks
+    # dedicated portrait sprites, keep [Stage HUD] focused on state telemetry so it
+    # never competes with the card's own visual protocol or dumps random asset lists.
+    emit_expression_cue = bool(expr_names) or (bool(visual_names) and not inline_media_managed)
     pinned = [str(k).strip() for k in (pinned_vars or ()) if str(k).strip()]
     vars_map = variables or {}
 
@@ -253,10 +360,11 @@ def build_card_hud_prompt(
         lines.append("Tracked story variables (CBS):")
         lines.extend(var_lines)
 
-    if expr_names:
-        lines.append("Available expression portraits: " + ", ".join(expr_names))
-    elif visual_names:
-        lines.append("Available expression images: " + ", ".join(visual_names))
+    if emit_expression_cue:
+        if expr_names:
+            lines.append("Available expression portraits: " + ", ".join(expr_names))
+        elif visual_names:
+            lines.append("Available expression images: " + ", ".join(visual_names))
     if audio_names:
         lines.append(
             "Available BGM/SFX tracks: " + ", ".join(audio_names)
@@ -267,11 +375,11 @@ def build_card_hud_prompt(
         "At the very end of every reply, append a state block in this exact format:",
         HUD_STATE_START,
         "mood: <current emotion in a few words>",
-        "affection: <integer 0-100>",
+        "affection: <integer ONLY 0-100, cumulative score, NO '+' delta, NO text or notes>",
         "location: <current setting/place>",
         "outfit: <current clothing>",
     ])
-    if expr_names or visual_names:
+    if emit_expression_cue:
         lines.append("expression: <best matching portrait/expression name from above, or current mood>")
     if audio_names:
         lines.append("bgm: <track name to loop, 'none' to stop, or omit to keep>")

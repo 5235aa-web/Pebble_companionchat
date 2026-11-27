@@ -510,6 +510,50 @@ export async function streamRequest(
   }
 }
 
+/** Stream a JSON-framed SSE endpoint (`data: {...}`) and return the final `'done'` event. */
+export async function streamSseJson<T extends { type?: string; message?: string }>(
+  path: string,
+  body: unknown,
+  handlers: {
+    onEvent: (ev: T) => void
+    signal?: AbortSignal
+  },
+): Promise<T | null> {
+  let buffer = ''
+  let finalEvent: T | null = null
+  let streamErr = ''
+
+  const processLine = (line: string) => {
+    const trimmed = line.trim()
+    if (!trimmed.startsWith('data:')) return
+    const raw = trimmed.slice(5).trim()
+    if (!raw || raw === '[DONE]') return
+    try {
+      const ev = JSON.parse(raw) as T
+      handlers.onEvent(ev)
+      if (ev.type === 'done') finalEvent = ev
+      else if (ev.type === 'error' && ev.message) streamErr = ev.message
+    } catch {
+      /* ignore malformed SSE frames */
+    }
+  }
+
+  await streamRequest(
+    path,
+    body,
+    (chunk) => {
+      buffer += chunk
+      const lines = buffer.split('\n')
+      buffer = lines.pop() ?? ''
+      for (const line of lines) processLine(line)
+    },
+    { signal: handlers.signal },
+  )
+  if (buffer.trim()) processLine(buffer)
+  if (streamErr) throw new Error(streamErr)
+  return finalEvent
+}
+
 /** Turn a stored relative path into something an <img> can load. */
 export function getFileUrl(filePath: string): string {
   if (!filePath) return ''

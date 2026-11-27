@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import json
 import re
-from typing import Any, Dict, List, Optional, Sequence, Tuple
+from typing import Any, Dict, FrozenSet, List, Optional, Sequence, Set, Tuple
 
 from .cbs import evaluate_cbs
 
@@ -35,7 +35,7 @@ _MALFORMED_IMG_TAG_RE = re.compile(
     r""")>""",
 )
 _MALFORMED_MACRO_TAG_RE = re.compile(
-    r"""\{\{\s*(?:mg|mgr|imb|imgr|im|irm|firm|fimg|ig|pic|cg|emote|sprite)\s*::\s*([^}\n]+?)\s*\}\}""",
+    r"""\{\{\s*(mg|mgr|imb|imgr|im|irm|firm|fimg|ig|pic|cg|emote|sprite)\s*::\s*([^}\n]+?)\s*\}\}""",
     re.IGNORECASE,
 )
 _INLINE_BACKTICK_TAG_RE = re.compile(
@@ -54,10 +54,37 @@ _NON_PAREN_PROTOCOLS = frozenset({"http", "https", "ftp", "mailto"})
 _HTML_SRC_TAGS = frozenset({
     "img", "audio", "video", "source", "track", "iframe", "embed", "input", "script", "frame",
 })
+_STANDARD_HTML_TAGS = frozenset({
+    "a", "abbr", "address", "area", "article", "aside", "audio", "b", "base", "bdi", "bdo",
+    "blockquote", "body", "br", "button", "canvas", "caption", "center", "cite", "code", "col",
+    "colgroup", "data", "datalist", "dd", "del", "details", "dfn", "dialog", "div", "dl", "dt",
+    "em", "embed", "fieldset", "figcaption", "figure", "font", "footer", "form", "frame",
+    "frameset", "h1", "h2", "h3", "h4", "h5", "h6", "head", "header", "hr", "html", "i",
+    "iframe", "input", "ins", "kbd", "label", "legend", "li", "link", "main", "map", "mark",
+    "meta", "meter", "nav", "noscript", "object", "ol", "optgroup", "option", "output", "p",
+    "param", "picture", "pre", "progress", "q", "rp", "rt", "ruby", "s", "samp", "script",
+    "section", "select", "small", "source", "span", "strong", "style", "sub", "summary", "sup",
+    "svg", "table", "tbody", "td", "template", "textarea", "tfoot", "th", "thead", "time",
+    "title", "tr", "track", "u", "ul", "var", "video", "wbr",
+})
 _KNOWN_IMAGE_TAG_TYPOS = frozenset({
     "mg", "mgr", "imb", "imgr", "im", "irm", "firm", "fimg", "ig",
     "img_", "image", "pic", "cg", "em", "emo", "emote", "sprite", "asset",
 })
+_BUILTIN_CBS_MACROS = frozenset({
+    "if", "if_pure", "each", "when", "getvar", "setvar", "addvar", "gettempvar", "settempvar",
+    "tempvar", "addtempvar", "getglobalvar", "slot", "hud", "array", "makearray", "spread",
+    "equal", "not_equal", "notequal", "greater", "less", "greater_equal", "greaterequal",
+    "less_equal", "lessequal", "and", "or", "not", "replace", "lower", "upper", "trim",
+    "length", "array_length", "contains", "startswith", "endswith", "split", "join", "calc",
+    "random", "pick", "comment", "raw", "img", "image", "asset", "audio", "bgm", "video",
+})
+_PATTERN_HTML_TAG_RE = re.compile(r"""\\?<([a-zA-Z][a-zA-Z0-9_-]{0,23})(?=\\s|\\b|[\s=>/(\"'])""")
+_PATTERN_MACRO_TAG_RE = re.compile(r"""(?:\\?\{){2}\s*([a-zA-Z][a-zA-Z0-9_-]{0,23})\s*::""")
+_IMAGE_REPLACE_HINT_RE = re.compile(
+    r"""<img\b|\{\{\s*(?:raw|img|image|asset)\s*::|(?:embeded|embedded)://""",
+    re.IGNORECASE,
+)
 _NON_REF_PREFIX_RE = re.compile(r"^(?:https?:|data:|blob:|pebble-asset:)", re.IGNORECASE)
 
 
@@ -603,23 +630,105 @@ def resolve_fuzzy_asset_name(ref: str, asset_names: Sequence[str]) -> Optional[s
     return None if tied else best_name
 
 
-def _normalize_asset_segment(text: str, asset_names: Sequence[str]) -> str:
-    def _unwrap_inline_backtick(match: re.Match) -> str:
-        inner = match.group(1)
-        if (
-            _IMG_TAG_SHORTHAND_REF_RE.match(inner)
-            or _HTML_IMG_SRC_REF_RE.match(inner)
-            or _ASSET_MACRO_REF_RE.match(inner)
-            or _MALFORMED_MACRO_TAG_RE.match(inner)
-        ):
-            return inner
-        m_bad = _MALFORMED_IMG_TAG_RE.fullmatch(inner)
-        if m_bad:
-            src_tag = m_bad.group(10)
-            if not src_tag or src_tag.lower() not in _HTML_SRC_TAGS:
-                return inner
-        return match.group(0)
+def extract_protected_asset_tags(
+    rules: Optional[Sequence[Dict[str, Any]]],
+) -> Tuple[FrozenSet[str], FrozenSet[str], str, str]:
+    """Derive custom HTML/macro tag names declared by enabled card regex rules.
 
+    Returns ``(protected_html_tags, protected_macro_tags, primary_html_tag, primary_macro_tag)``.
+    Any tag declared in a card's regex (such as ``<pimg="...">`` or ``{{pic::...}}``)
+    must not be renamed to ``<img>`` or stripped as a malformed LLM typo.
+    """
+    if not rules:
+        return frozenset(), frozenset(), "img", "img"
+
+    html_tags: Set[str] = set()
+    macro_tags: Set[str] = set()
+    image_html_candidates: List[str] = []
+    image_macro_candidates: List[str] = []
+
+    for rule in rules:
+        if not isinstance(rule, dict) or rule.get("enabled") is False:
+            continue
+        pattern = str(rule.get("pattern") or "")
+        if not pattern:
+            continue
+        replace_str = str(rule.get("replace") or "")
+        is_image_rule = bool(_IMAGE_REPLACE_HINT_RE.search(replace_str))
+
+        for m in _PATTERN_HTML_TAG_RE.finditer(pattern):
+            start = m.start()
+            if start >= 2 and pattern[start - 2 : start] == "(?":
+                continue
+            tag = m.group(1).lower()
+            if tag in _STANDARD_HTML_TAGS:
+                continue
+            html_tags.add(tag)
+            if is_image_rule and tag not in image_html_candidates:
+                image_html_candidates.append(tag)
+
+        for m in _PATTERN_MACRO_TAG_RE.finditer(pattern):
+            macro = m.group(1).lower()
+            if macro in _BUILTIN_CBS_MACROS:
+                continue
+            macro_tags.add(macro)
+            if is_image_rule and macro not in image_macro_candidates:
+                image_macro_candidates.append(macro)
+
+    if "img" in image_html_candidates or ("img" in html_tags and not image_html_candidates):
+        primary_html = "img"
+    elif image_html_candidates:
+        primary_html = image_html_candidates[0]
+    else:
+        primary_html = "img"
+
+    primary_macro = image_macro_candidates[0] if image_macro_candidates else "img"
+    return frozenset(html_tags), frozenset(macro_tags), primary_html, primary_macro
+
+
+def _is_likely_image_tag_typo(tag_low: str, protected_html: FrozenSet[str]) -> bool:
+    if (
+        not tag_low
+        or tag_low in _STANDARD_HTML_TAGS
+        or tag_low in _HTML_SRC_TAGS
+        or tag_low in protected_html
+    ):
+        return False
+    if tag_low in _KNOWN_IMAGE_TAG_TYPOS:
+        return True
+    if _edit_distance(tag_low, "img") <= 1:
+        return True
+    for ptag in protected_html:
+        if len(ptag) >= 3 and _edit_distance(tag_low, ptag) <= 1:
+            return True
+    return False
+
+
+def _is_preceding_valid_image(
+    preceding: str,
+    protected_html: FrozenSet[str],
+    protected_macros: FrozenSet[str],
+) -> bool:
+    if _PRECEDING_VALID_IMAGE_RE.search(preceding):
+        return True
+    custom_html = sorted(t for t in protected_html if t != "img")
+    if custom_html:
+        alt = "|".join(re.escape(t) for t in custom_html)
+        if re.search(rf"""<(?:{alt})\b[^>]*>\s*$""", preceding, re.IGNORECASE):
+            return True
+    if protected_macros:
+        alt_m = "|".join(re.escape(m) for m in sorted(protected_macros))
+        if re.search(rf"""\{{\{{\s*(?:{alt_m})\s*::[^}}]+\}}\}}\s*$""", preceding, re.IGNORECASE):
+            return True
+    return False
+
+
+def _repair_declared_tag_refs(
+    text: str,
+    asset_names: Sequence[str],
+    protected_html: FrozenSet[str],
+    protected_macros: FrozenSet[str],
+) -> str:
     def _fix_shorthand(match: re.Match) -> str:
         prefix = match.group(1)
         raw_ref = next((g for g in match.groups()[1:] if g is not None), "").strip()
@@ -652,10 +761,69 @@ def _normalize_asset_segment(text: str, asset_names: Sequence[str]) -> str:
             return match.group(0)
         return f"{match.group(1)}{fixed}{match.group(3)}"
 
-    out = _INLINE_BACKTICK_TAG_RE.sub(_unwrap_inline_backtick, text)
-    out = _IMG_TAG_SHORTHAND_REF_RE.sub(_fix_shorthand, out)
+    out = _IMG_TAG_SHORTHAND_REF_RE.sub(_fix_shorthand, text)
     out = _HTML_IMG_SRC_REF_RE.sub(_fix_html_src, out)
     out = _ASSET_MACRO_REF_RE.sub(_fix_macro, out)
+
+    custom_html = sorted(t for t in protected_html if t != "img")
+    if custom_html:
+        alt = "|".join(re.escape(t) for t in custom_html)
+        custom_shorthand_re = re.compile(
+            rf"""(<(?:{alt})\s*=\s*)(?:"([^"]+)"|'([^']+)'|([^"'\n=<>`]+?)(?=\s*/?>))""",
+            re.IGNORECASE,
+        )
+        custom_src_re = re.compile(
+            rf"""(<(?:{alt})\b[^>]*?\bsrc\s*=\s*)(?:"([^"\n<>]+)"|'([^'\n<>]+)')""",
+            re.IGNORECASE,
+        )
+        out = custom_shorthand_re.sub(_fix_shorthand, out)
+        out = custom_src_re.sub(_fix_html_src, out)
+
+    if protected_macros:
+        alt_m = "|".join(re.escape(m) for m in sorted(protected_macros))
+        custom_macro_re = re.compile(
+            rf"""(\{{\{{\s*(?:{alt_m})\s*::\s*)([^}}]+?)(\s*\}}\}})""",
+            re.IGNORECASE,
+        )
+        out = custom_macro_re.sub(_fix_macro, out)
+
+    return out
+
+
+def _normalize_asset_segment(
+    text: str,
+    asset_names: Sequence[str],
+    *,
+    protected_html: FrozenSet[str] = frozenset(),
+    protected_macros: FrozenSet[str] = frozenset(),
+    primary_html: str = "img",
+    primary_macro: str = "img",
+) -> str:
+    def _unwrap_inline_backtick(match: re.Match) -> str:
+        inner = match.group(1)
+        if (
+            _IMG_TAG_SHORTHAND_REF_RE.match(inner)
+            or _HTML_IMG_SRC_REF_RE.match(inner)
+            or _ASSET_MACRO_REF_RE.match(inner)
+            or _MALFORMED_MACRO_TAG_RE.match(inner)
+        ):
+            return inner
+        if protected_macros:
+            alt_m = "|".join(re.escape(m) for m in sorted(protected_macros))
+            if re.match(rf"""^\{{\{{\s*(?:{alt_m})\s*::\s*[^}}\n]+\s*\}}\}}$""", inner, re.IGNORECASE):
+                return inner
+        m_bad = _MALFORMED_IMG_TAG_RE.fullmatch(inner)
+        if m_bad:
+            tag_name = next(
+                (g for g in (m_bad.group(2), m_bad.group(6), m_bad.group(10), m_bad.group(13)) if g),
+                "",
+            ).lower()
+            if tag_name in protected_html or _is_likely_image_tag_typo(tag_name, protected_html):
+                return inner
+        return match.group(0)
+
+    out = _INLINE_BACKTICK_TAG_RE.sub(_unwrap_inline_backtick, text)
+    out = _repair_declared_tag_refs(out, asset_names, protected_html, protected_macros)
 
     removed_any = False
 
@@ -670,13 +838,22 @@ def _normalize_asset_segment(text: str, asset_names: Sequence[str]) -> str:
             src_tag = m.group(10)
             quoted_tag = m.group(13)
 
-            if equals_tag and equals_tag.lower() == "img":
+            tag_name = paren_tag or equals_tag or src_tag or quoted_tag or ""
+            tag_low = tag_name.lower()
+
+            if equals_tag and tag_low == "img":
                 parts.append(m.group(0))
                 continue
-            if paren_tag and paren_tag.lower() in _NON_PAREN_PROTOCOLS:
+            if tag_low in protected_html:
                 parts.append(m.group(0))
                 continue
-            if src_tag and src_tag.lower() in _HTML_SRC_TAGS:
+            if paren_tag and tag_low in _NON_PAREN_PROTOCOLS:
+                parts.append(m.group(0))
+                continue
+            if src_tag and tag_low in _HTML_SRC_TAGS:
+                parts.append(m.group(0))
+                continue
+            if tag_low in _STANDARD_HTML_TAGS:
                 parts.append(m.group(0))
                 continue
 
@@ -693,29 +870,32 @@ def _normalize_asset_segment(text: str, asset_names: Sequence[str]) -> str:
                 ),
                 "",
             ).strip()
+            is_typo = _is_likely_image_tag_typo(tag_low, protected_html) or (
+                bool(quoted_tag) and tag_low == "img"
+            )
+            fixed = resolve_fuzzy_asset_name(raw_ref, asset_names)
+
             preceding = "".join(parts)
-            if _PRECEDING_VALID_IMAGE_RE.search(preceding):
+            if (is_typo or fixed is not None) and _is_preceding_valid_image(
+                preceding, protected_html, protected_macros
+            ):
                 removed_any = True
                 continue
-            fixed = resolve_fuzzy_asset_name(raw_ref, asset_names)
-            if fixed:
-                parts.append(f'<img="{fixed}">')
-                continue
 
-            if equals_tag:
-                is_quoted = m.group(7) is not None or m.group(8) is not None
-                looks_like_asset_ref = (
-                    is_quoted
-                    or bool(re.search(r"[\s_/-]", raw_ref))
-                    or equals_tag.lower() in _KNOWN_IMAGE_TAG_TYPOS
-                )
-                if not looks_like_asset_ref:
-                    parts.append(m.group(0))
+            if fixed:
+                if is_typo:
+                    parts.append(f'<{primary_html}="{fixed}">')
                     continue
-            elif src_tag and src_tag.lower() not in _KNOWN_IMAGE_TAG_TYPOS:
-                parts.append(m.group(0))
-                continue
-            elif quoted_tag and quoted_tag.lower() != "img" and quoted_tag.lower() not in _KNOWN_IMAGE_TAG_TYPOS:
+                if equals_tag:
+                    is_quoted = m.group(7) is not None or m.group(8) is not None
+                    if is_quoted or bool(re.search(r"[\s_/-]", raw_ref)):
+                        parts.append(f'<{primary_html}="{fixed}">')
+                        continue
+                elif paren_tag:
+                    parts.append(f'<{primary_html}="{fixed}">')
+                    continue
+
+            if not is_typo:
                 parts.append(m.group(0))
                 continue
 
@@ -729,14 +909,18 @@ def _normalize_asset_segment(text: str, asset_names: Sequence[str]) -> str:
         for m in _MALFORMED_MACRO_TAG_RE.finditer(out):
             parts.append(out[cursor:m.start()])
             cursor = m.end()
+            macro_name = (m.group(1) or "").strip().lower()
+            if macro_name in protected_macros:
+                parts.append(m.group(0))
+                continue
             preceding = "".join(parts)
-            raw_ref = (m.group(1) or "").strip()
-            if _PRECEDING_VALID_IMAGE_RE.search(preceding):
+            raw_ref = (m.group(2) or "").strip()
+            if _is_preceding_valid_image(preceding, protected_html, protected_macros):
                 removed_any = True
                 continue
             fixed = resolve_fuzzy_asset_name(raw_ref, asset_names)
             if fixed:
-                parts.append(f"{{{{img::{fixed}}}}}")
+                parts.append(f"{{{{{primary_macro}::{fixed}}}}}")
             else:
                 removed_any = True
         parts.append(out[cursor:])
@@ -749,11 +933,16 @@ def _normalize_asset_segment(text: str, asset_names: Sequence[str]) -> str:
     return out
 
 
-def normalize_asset_tag_refs(text: str, asset_names: Sequence[str]) -> str:
-    """Fix typos in ``<img="...">`` / ``{{img/raw::...}}`` and repair/strip malformed LLM image tags."""
+def repair_asset_tag_refs_only(
+    text: str,
+    asset_names: Sequence[str],
+    *,
+    rules: Optional[Sequence[Dict[str, Any]]] = None,
+) -> str:
+    """Repair fuzzy asset refs in declared image/macro tags without deleting unknown tags."""
     if not text or not asset_names:
         return text
-
+    protected_html, protected_macros, _, _ = extract_protected_asset_tags(rules)
     stashed: List[str] = []
 
     def _stash_fence(match: re.Match) -> str:
@@ -762,7 +951,39 @@ def normalize_asset_tag_refs(text: str, asset_names: Sequence[str]) -> str:
         return f"\x00PEBBLE_FENCE_{idx}\x00"
 
     masked = _FENCED_CODE_BLOCK_RE.sub(_stash_fence, text)
-    out = _normalize_asset_segment(masked, asset_names)
+    out = _repair_declared_tag_refs(masked, asset_names, protected_html, protected_macros)
+    if stashed:
+        out = re.sub(r"\x00PEBBLE_FENCE_(\d+)\x00", lambda m: stashed[int(m.group(1))], out)
+    return out
+
+
+def normalize_asset_tag_refs(
+    text: str,
+    asset_names: Sequence[str],
+    *,
+    rules: Optional[Sequence[Dict[str, Any]]] = None,
+) -> str:
+    """Fix typos in declared image/macro tags and repair/strip malformed LLM image tags."""
+    if not text or not asset_names:
+        return text
+
+    protected_html, protected_macros, primary_html, primary_macro = extract_protected_asset_tags(rules)
+    stashed: List[str] = []
+
+    def _stash_fence(match: re.Match) -> str:
+        idx = len(stashed)
+        stashed.append(match.group(0))
+        return f"\x00PEBBLE_FENCE_{idx}\x00"
+
+    masked = _FENCED_CODE_BLOCK_RE.sub(_stash_fence, text)
+    out = _normalize_asset_segment(
+        masked,
+        asset_names,
+        protected_html=protected_html,
+        protected_macros=protected_macros,
+        primary_html=primary_html,
+        primary_macro=primary_macro,
+    )
     if stashed:
         out = re.sub(r"\x00PEBBLE_FENCE_(\d+)\x00", lambda m: stashed[int(m.group(1))], out)
     return out

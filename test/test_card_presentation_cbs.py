@@ -430,6 +430,92 @@ class BranchVariablesIntegrationTest(unittest.TestCase):
         self.assertIn('`<div>keep html</div>`', out)
         self.assertIn('`{{getvar::hp}}`', out)
 
+    def test_protected_custom_card_tags_and_narrowed_typo_guards(self):
+        assets = ['scene 8', 'scene 9', 'scene 10', '이벨린_shy']
+        rules = [
+            {
+                'id': 'r0',
+                'pattern': r'(<pimg="(?:[^"<>\r\n]+?))\.(?:webp|png)(")',
+                'flags': 'g',
+                'replace': '$1$2',
+                'enabled': True,
+            },
+            {
+                'id': 'r1',
+                'pattern': r'<pimg="(.+?)">',
+                'flags': 'g',
+                'replace': '<table class="passet-table"><tr><td><img src="{{raw::$1}}" alt="$1"></td></tr></table>',
+                'enabled': True,
+            },
+            {
+                'id': 'r2',
+                'pattern': r'\{\{pic::(.+?)\}\}',
+                'flags': 'g',
+                'replace': '<img src="{{raw::$1}}">',
+                'enabled': True,
+            },
+            {
+                'id': 'r_named_group',
+                'pattern': r'(?<named_cap>foo)',
+                'flags': 'g',
+                'replace': '$1',
+                'enabled': True,
+            },
+        ]
+        html_tags, macro_tags, primary_html, primary_macro = card_presentation.extract_protected_asset_tags(rules)
+        self.assertEqual(html_tags, frozenset({'pimg'}))
+        self.assertEqual(macro_tags, frozenset({'pic'}))
+        self.assertEqual(primary_html, 'pimg')
+        self.assertEqual(primary_macro, 'pic')
+
+        sample = (
+            '<pimg="scene 10">\n\n'
+            '<pimg="scene 10.png">\n\n'
+            '<pimg="이벨린 shy">\n\n'
+            '`<pimg="scene 8">`\n\n'
+            '<pimg="scene 8">\n\n'
+            '<pimg="scene 9">\n\n'
+            '<pmg="이벨린_shy">\n\n'
+            '<mg("이벨린 shy")>\n\n'
+            '<pmg="nonexistent_garbage">\n\n'
+            '{{pic::이벨린 shy}}\n\n'
+            '<status="HP 100">\n\n'
+            '<speaker="Evelyn">\n\n'
+            '<foo("unrelated call")>\n\n'
+            '<font color="red">hi</font>'
+        )
+        out = card_presentation.normalize_asset_tag_refs(sample, assets, rules=rules)
+        self.assertIn('<pimg="scene 10">', out)
+        # .png variant not yet matching asset_names stays intact for r0 to strip
+        self.assertIn('<pimg="scene 10.png">', out)
+        # Fuzzy asset ref inside protected tag is repaired in-place without changing tag name
+        self.assertIn('<pimg="이벨린_shy">', out)
+        # Consecutive protected tags stay intact
+        self.assertEqual(out.count('<pimg="scene 8">'), 2)
+        self.assertIn('<pimg="scene 9">', out)
+        self.assertNotIn('`<pimg=', out)
+        # Typos repair into card's primary custom tag <pimg="..."> when no <img> rule exists
+        self.assertNotIn('<pmg=', out)
+        self.assertNotIn('<mg(', out)
+        # Custom declared macro {{pic::...}} keeps its macro name
+        self.assertIn('{{pic::이벨린_shy}}', out)
+        # Non-typo custom tags & standard HTML are never misclassified or deleted
+        self.assertIn('<status="HP 100">', out)
+        self.assertIn('<speaker="Evelyn">', out)
+        self.assertIn('<foo("unrelated call")>', out)
+        self.assertIn('<font color="red">hi</font>', out)
+
+        # Applying display_regex afterwards works cleanly and post-display repair fixes raw:: refs
+        rendered = card_presentation.apply_regex_scripts(
+            '<pimg="scene 10">\n\n<table class="passet-table"><img src="{{raw::이벨린 shy}}"></table>',
+            rules,
+            asset_names=assets,
+        )
+        repaired = card_presentation.repair_asset_tag_refs_only(rendered, assets, rules=rules)
+        self.assertIn('<table class="passet-table">', repaired)
+        self.assertIn('src="{{raw::scene 10}}"', repaired)
+        self.assertIn('src="{{raw::이벨린_shy}}"', repaired)
+
 
 def _build_test_risum_bytes(module_dict, asset_blobs=()):
     main_payload = json.dumps({'type': 'risuModule', 'module': module_dict}, ensure_ascii=False).encode('utf-8')
@@ -807,6 +893,53 @@ class SceneRulesStudioTest(unittest.TestCase):
         self.assertEqual(res['card_presentation']['hud_pinned_vars'], ['stamina', 'mood_tag'])
         prompt = companion.Companion('c_hud_cbs').build_system_prompt(history=[])
         self.assertIn('At rooftop_garden, mood=tender, reason=记得约定, expr=1', prompt)
+
+    def test_companion_finalize_preserves_card_declared_pimg_tags(self):
+        raw_card = json.dumps({
+            'spec': 'chara_card_v3',
+            'spec_version': '3.0',
+            'data': {
+                'name': 'Evelyn',
+                'extensions': {
+                    'risuai': {
+                        'customScripts': [
+                            {
+                                'comment': 'Display pimg',
+                                'type': 'editdisplay',
+                                'in': '<pimg="(.+?)">',
+                                'out': '<table class="passet-table"><tr><td><img src="{{raw::$1}}"></td></tr></table>',
+                                'ableFlag': True,
+                                'flag': 'g',
+                            },
+                        ],
+                    },
+                },
+            },
+        }, ensure_ascii=False)
+        companion_db.create_companion(
+            'c_pimg_card',
+            {'name': 'Evelyn'},
+            raw_card_data=raw_card,
+            card_format='charx',
+        )
+        companion_db.add_companion_assets('c_pimg_card', [{
+            'asset_type': 'image',
+            'name': '이벨린_shy',
+            'ext': 'webp',
+            'mime_type': 'image/webp',
+            'rel_path': 'uploads/companion_assets/c_pimg_card/evelyn_shy.webp',
+            'source_uri': 'embeded://assets/evelyn_shy.webp',
+            'size_bytes': 123,
+            'sort_order': 0,
+        }])
+        comp = companion.Companion('c_pimg_card')
+        finalized = comp._finalize_assistant_output('<pimg="이벨린 shy">\n\nHello.\n\n<pmg="nonexistent_bad">', 'main')
+        self.assertIn('<pimg="이벨린_shy">', finalized)
+        self.assertNotIn('<img=', finalized)
+        self.assertNotIn('nonexistent_bad', finalized)
+
+        msgs = comp._build_messages([{'role': 'assistant', 'content': '<pimg="이벨린_shy">', 'message_type': 'chat'}])
+        self.assertEqual(msgs[1]['content'], '<pimg="이벨린_shy">')
 
 
 if __name__ == '__main__':

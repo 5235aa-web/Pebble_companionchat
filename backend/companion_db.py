@@ -863,6 +863,13 @@ def get_branch_hud(companion_id: str, branch_id: str = "main") -> Dict:
         except (ValueError, TypeError):
             hud = {}
 
+        if "affection" in hud:
+            from .card_hud import parse_affection_value
+
+            normalized_aff = parse_affection_value(hud.get("affection"))
+            if normalized_aff is not None:
+                hud["affection"] = normalized_aff
+
         raw_enabled = row["card_hud_enabled"] if row else None
         enabled: Optional[bool] = None if raw_enabled is None else bool(raw_enabled)
         effective_enabled = has_assets if enabled is None else enabled

@@ -1,24 +1,56 @@
-import { del, get, getBaseURL, post, postForm, put } from './client'
+import { del, get, getBaseURL, post, postForm, put, streamSseJson } from './client'
+import type { LlmConfig } from './stream'
 
 const C = '/companions'
+
+export type WorldBookEntryCategory = 'media' | 'lore' | 'rpg'
+export type WorldBookLocale = 'zh' | 'en'
+
+export interface WorldBookEntryTranslationBucket {
+  comment?: string
+  content?: string
+  translated_at?: string
+}
+
+export type WorldBookEntryTranslations = Partial<
+  Record<WorldBookLocale, WorldBookEntryTranslationBucket>
+>
 
 export interface WorldBookEntry {
   id: number
   world_book_id: number
-  name: string
+  uid?: number
+  name?: string
   comment: string
   content: string
   keys: string[]
   secondary_keys: string[]
-  position: string
+  position: number | string
   depth: number
   probability: number
   constant: boolean
   selective: boolean
-  enabled: boolean
-  logic: 'AND' | 'OR'
+  enabled?: boolean
+  disabled?: boolean
+  selective_logic?: number
+  logic?: 'AND' | 'OR'
+  category?: WorldBookEntryCategory
+  translations?: WorldBookEntryTranslations
   created_at?: string
   updated_at?: string
+}
+
+export interface WorldBookTranslateEvent {
+  type: 'start' | 'progress' | 'entry_done' | 'done' | 'error'
+  locale?: WorldBookLocale
+  done?: number
+  total?: number
+  skipped?: number
+  entry_id?: number
+  comment?: string
+  message?: string
+  translations?: WorldBookEntryTranslations
+  entries?: WorldBookEntry[]
 }
 
 export interface WorldBook {
@@ -28,6 +60,21 @@ export interface WorldBook {
   entries?: WorldBookEntry[]
   created_at?: string
   updated_at?: string
+}
+
+export interface CompanionWorldBooksInfo {
+  worldBooks: WorldBook[]
+  cardLoreCount: number
+}
+
+export interface SyncCardWorldBookResult {
+  status: string
+  world_book: WorldBook | null
+  entries: WorldBookEntry[]
+  world_book_id: number | null
+  imported_count: number
+  media_enabled_count: number
+  already_linked?: boolean
 }
 
 export const listWorldBooks = async (): Promise<WorldBook[]> => {
@@ -88,6 +135,30 @@ export const getCompanionWorldBooks = async (companionId: string): Promise<World
   return r.world_books ?? []
 }
 
+export const getCompanionWorldBooksInfo = async (
+  companionId: string,
+): Promise<CompanionWorldBooksInfo> => {
+  const r = await get<{ world_books?: WorldBook[]; card_lore_count?: number }>(
+    `${C}/${encodeURIComponent(companionId)}/world-books`,
+  )
+  return {
+    worldBooks: r.world_books ?? [],
+    cardLoreCount: Number(r.card_lore_count ?? 0),
+  }
+}
+
+export const syncCompanionCardWorldBook = (
+  companionId: string,
+  force = false,
+): Promise<SyncCardWorldBookResult> =>
+  post(`${C}/${encodeURIComponent(companionId)}/world-books/sync-card`, { force })
+
+export const bulkToggleWorldBookEntries = (
+  worldBookId: number,
+  mode: 'media_only' | 'all_on' | 'all_off',
+): Promise<{ status: string; updated: number; entries: WorldBookEntry[] }> =>
+  post(`${C}/world-books/${worldBookId}/entries/bulk-toggle`, { mode })
+
 export const associateCompanionWorldBook = (
   companionId: string,
   worldBookId: number,
@@ -100,3 +171,23 @@ export const associateCompanionWorldBook = (
 
 export const removeCompanionWorldBook = (companionId: string, worldBookId: number): Promise<unknown> =>
   del(`${C}/${encodeURIComponent(companionId)}/world-books/${worldBookId}`)
+
+export const translateWorldBook = (
+  worldBookId: number,
+  payload: {
+    target_locale: WorldBookLocale
+    entry_ids?: number[]
+    force?: boolean
+    companion_id?: string | null
+    llm_config?: LlmConfig
+  },
+  handlers: {
+    onEvent: (ev: WorldBookTranslateEvent) => void
+    signal?: AbortSignal
+  },
+): Promise<WorldBookTranslateEvent | null> =>
+  streamSseJson<WorldBookTranslateEvent>(
+    `${C}/world-books/${worldBookId}/translate`,
+    payload,
+    handlers,
+  )

@@ -6,8 +6,6 @@ Handles:
 - CCv3 `data.assets` (embeded://, embedded://, __asset:, data:...;base64,...)
 - RisuAI `extensions.risuai` (`emotions`, `additionalAssets`) and fallback media
 - Streaming .charx archive creation with ZIP_STORED for pre-compressed media
-
-Note: World book / character_book data is intentionally not imported or wired.
 """
 
 from __future__ import annotations

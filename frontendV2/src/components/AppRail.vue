@@ -667,21 +667,12 @@ function askDeleteBranch(id: string) {
           <path d="M12 3v18" />
         </svg>
       </button>
-      <!-- Lore (world book) is hidden on purpose. This project is a card-driven
-           single-character chat: the character card already carries all the
-           setting it needs, and the memory engine covers "what happened between
-           us" automatically. World book has never been used here, and its
-           multi-book path is still unverified, so the entry point is commented
-           out rather than deleted. Uncomment this block if a multi-character or
-           large-world use case ever shows up; the panel, the API layer and the
-           backend are all intact.
       <button class="pb-btn" :data-tip="t('rail.lore')" @click="ui.openPanel('lore')">
         <svg viewBox="0 0 24 24">
           <path d="M12 3l8 4.5v9L12 21l-8-4.5v-9L12 3z" />
           <path d="M12 12l8-4.5M12 12v9M12 12L4 7.5" />
         </svg>
       </button>
-      -->
       <button class="pb-btn" :data-tip="t('rail.rules')" @click="ui.openPanel('rules')">
         <svg viewBox="0 0 24 24">
           <path d="M6 4h7l5 5v11H6z" />

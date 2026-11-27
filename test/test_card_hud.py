@@ -307,6 +307,92 @@ class BranchHudDbTest(unittest.TestCase):
         self.assertNotIn("thought", ev2["hud"])
         self.assertNotIn("thought", companion_db.get_branch_hud("c_thought", "main")["hud"])
 
+    def test_affection_normalization_heals_annotated_deltas_and_legacy_db_rows(self):
+        hud_upd, _ = card_hud.parse_hud_block("affection: 17 (growing)\nmood: shy")
+        self.assertEqual(hud_upd["affection"], 17)
+
+        hud_frac, _ = card_hud.parse_hud_block("affection: 65/100")
+        self.assertEqual(hud_frac["affection"], 65)
+
+        hud_delta, _ = card_hud.parse_hud_block('affection: +15 from the moment of being caught')
+        self.assertEqual(hud_delta["affection"], "+15")
+
+        merged = card_hud.merge_card_hud({"affection": "17 (growing)"}, hud_delta)
+        self.assertEqual(merged["affection"], 32)
+
+        merged_drop = card_hud.merge_card_hud({"affection": 12}, {"affection": "-20"})
+        self.assertEqual(merged_drop["affection"], 0)
+
+        # Legacy dirty string stored directly in SQLite heals on read via get_branch_hud.
+        companion_db.create_companion("c_legacy_aff", {"name": "Evelyn"})
+        companion_db.update_branch_hud("c_legacy_aff", "main", hud={"affection": "17 (growing)", "mood": "warm"})
+        state = companion_db.get_branch_hud("c_legacy_aff", "main")
+        self.assertEqual(state["hud"]["affection"], 17)
+
+    def test_multi_char_asset_filtering_and_inline_media_decoupling(self):
+        companion_db.create_companion("c_inline_card", {"name": "Evelyn"})
+        companion_db.update_companion(
+            "c_inline_card",
+            {
+                "card_ui": {
+                    "display_regex": [
+                        {
+                            "id": "pimg",
+                            "enabled": True,
+                            "pattern": '<pimg="(.+?)">',
+                            "replace": '<img src="{{raw::$1}}">',
+                        }
+                    ]
+                }
+            },
+        )
+        companion_db.add_companion_asset("c_inline_card", {
+            "asset_type": "icon",
+            "name": "iconx",
+            "ext": "png",
+            "mime_type": "image/png",
+            "rel_path": "uploads/companion_assets/c_inline_card/iconx.png",
+        })
+        for i in range(10):
+            companion_db.add_companion_asset("c_inline_card", {
+                "asset_type": "image",
+                "name": f"scene {i + 1}",
+                "ext": "png",
+                "mime_type": "image/png",
+                "rel_path": f"uploads/companion_assets/c_inline_card/scene_{i + 1}.png",
+            })
+        for i in range(45):
+            companion_db.add_companion_asset("c_inline_card", {
+                "asset_type": "image",
+                "name": f"lucian_pose_{i}",
+                "ext": "webp",
+                "mime_type": "image/webp",
+                "rel_path": f"uploads/companion_assets/c_inline_card/lucian_{i}.webp",
+            })
+        companion_db.add_companion_asset("c_inline_card", {
+            "asset_type": "image",
+            "name": "Evelyn_shy",
+            "ext": "webp",
+            "mime_type": "image/webp",
+            "rel_path": "uploads/companion_assets/c_inline_card/evelyn_shy.webp",
+        })
+
+        # Ranking prioritizes main character assets and skips placeholder iconx / generic scene N.
+        assets = companion_db.get_companion_assets("c_inline_card")
+        visual, _ = card_hud._summarize_assets_for_prompt(assets, char_name="Evelyn")
+        self.assertIn("Evelyn_shy", visual)
+        self.assertNotIn("iconx", visual)
+        self.assertNotIn("scene 1", visual)
+
+        # Inline media card without dedicated emotion/portrait assets runs lightweight HUD telemetry:
+        # keeps affection/mood/location/outfit without fighting <pimg> via expression lists.
+        prompt = companion.Companion("c_inline_card").build_system_prompt(include_card_hud=True)
+        self.assertIn("[Stage HUD]", prompt)
+        self.assertIn("affection: <integer ONLY 0-100", prompt)
+        self.assertNotIn("Available expression images", prompt)
+        self.assertNotIn("expression:", prompt)
+        self.assertNotIn("lucian_pose_0", prompt)
+
 
 if __name__ == "__main__":
     unittest.main()

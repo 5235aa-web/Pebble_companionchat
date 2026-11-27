@@ -1,15 +1,39 @@
 import json
 import base64
+import logging
 import shutil
 import struct
 import tempfile
 import uuid
 from pathlib import Path
-from typing import Dict, Optional
+from typing import Dict, Optional, Sequence
 
 from . import paths
 from .charx import extract_charx_package, is_zip_container
 from .companion_db import add_companion_assets, create_companion
+from .world_book_db import import_character_book_for_companion
+
+logger = logging.getLogger(__name__)
+
+
+def _import_embedded_character_book(
+    companion_id: str,
+    raw: Dict,
+    *,
+    char_name: str = "",
+    asset_names: Sequence[str] = (),
+) -> None:
+    """Import ``character_book`` into world books with media-only default activation."""
+    try:
+        import_character_book_for_companion(
+            companion_id,
+            raw,
+            char_name=char_name,
+            asset_names=asset_names,
+            skip_if_linked=True,
+        )
+    except Exception as exc:
+        logger.warning("Failed to import character_book for %s: %s", companion_id, exc)
 
 
 def _read_png_chara_data(png_path: str) -> str:
@@ -283,6 +307,7 @@ def import_json(json_path: str) -> str:
         raw_card_data=_safe_raw_card_dump(raw),
         card_format='json',
     )
+    _import_embedded_character_book(companion_id, raw, char_name=normalized.get('name', ''))
     return companion_id
 
 
@@ -303,13 +328,13 @@ def import_png(png_path: str) -> str:
         raw_card_data=json_str,
         card_format='png',
     )
+    _import_embedded_character_book(companion_id, raw, char_name=normalized.get('name', ''))
     return companion_id
 
 
 def import_charx(charx_path: str) -> str:
     """
-    导入 CHARX（CCv3 ZIP 容器）角色卡，提取文本与多媒体资产（图片、音频等）。
-    不处理任何世界书字段。
+    导入 CHARX（CCv3 ZIP 容器）角色卡，提取文本、多媒体资产与内嵌世界书（仅默认启用媒体资产指令条目）。
     返回: companion_id
     """
     companion_id = f"companion_{uuid.uuid4().hex[:12]}"
@@ -329,6 +354,13 @@ def import_charx(charx_path: str) -> str:
 
     if assets:
         add_companion_assets(companion_id, assets)
+    asset_names = [str(a.get('name') or '').strip() for a in (assets or []) if str(a.get('name') or '').strip()]
+    _import_embedded_character_book(
+        companion_id,
+        raw_card,
+        char_name=normalized.get('name', ''),
+        asset_names=asset_names,
+    )
     return companion_id
 
 
@@ -360,6 +392,7 @@ def import_card_file(file_path: str, file_type: Optional[str] = None) -> str:
             raw_card_data=_safe_raw_card_dump(raw),
             card_format="json",
         )
+        _import_embedded_character_book(companion_id, raw, char_name=normalized.get("name", ""))
         return companion_id
 
     if kind == "png":
@@ -379,6 +412,7 @@ def import_card_file(file_path: str, file_type: Optional[str] = None) -> str:
             raw_card_data=_safe_raw_card_dump(raw),
             card_format="png",
         )
+        _import_embedded_character_book(companion_id, raw, char_name=normalized.get("name", ""))
         return companion_id
 
     raise ValueError(f"Unsupported file_type: {kind or 'unknown'}. Use 'charx', 'png', or 'json'.")
@@ -415,6 +449,7 @@ def import_from_bytes(file_bytes: bytes, file_type: str) -> str:
             raw_card_data=_safe_raw_card_dump(raw),
             card_format='json',
         )
+        _import_embedded_character_book(companion_id, raw, char_name=normalized.get('name', ''))
         return companion_id
     elif file_type == 'png':
         # 验证PNG签名
@@ -440,6 +475,7 @@ def import_from_bytes(file_bytes: bytes, file_type: str) -> str:
             raw_card_data=json_str,
             card_format='png',
         )
+        _import_embedded_character_book(companion_id, raw, char_name=normalized.get('name', ''))
         return companion_id
     else:
         raise ValueError(f"Unsupported file_type: {file_type}. Use 'json', 'png', or 'charx'.")
