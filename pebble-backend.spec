@@ -107,11 +107,12 @@ a = Analysis(
     # torch and kokoro went with the Kokoro engine; soundfile, scipy, openai and
     # aiohttp only ever appeared in audio-cpp/tools scripts or a superseded LLM
     # path. onnxruntime arrived through smart_turn and turn_detector, both since
-    # removed with the semantic turn-taking models. Explicitly excluding numpy
-    # (which openpyxl and tiktoken try to import optionally) plus ML embedding
-    # stacks keeps heavy runtimes out of the bundle for good.
+    # removed with the semantic turn-taking models. Explicitly excluding numpy,
+    # cv2, psd_tools, and ML/Live2D stacks (which belong strictly in the optional
+    # external inochi2d-venv) keeps heavy runtimes out of the bundle for good.
     excludes=[
         'torch',
+        'torchvision',
         'kokoro',
         'soundfile',
         'scipy',
@@ -122,6 +123,17 @@ a = Analysis(
         'pytest',
         'onnxruntime',
         'numpy',
+        'cv2',
+        'psd_tools',
+        'skimage',
+        'kornia',
+        'diffusers',
+        'accelerate',
+        'safetensors',
+        'timm',
+        'einops',
+        'omegaconf',
+        'pycocotools',
         'transformers',
         'sentence_transformers',
         'chromadb',

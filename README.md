@@ -40,10 +40,10 @@ Whether running local GGUF weights, calling cloud LLM APIs, holding live voice c
 
 <p align="center">
   <img src="docs/png1.png" alt="Single chat" width="49%" />
-  <img src="docs/png2.png" alt="Script mode" width="49%" />
+  <img src="docs/png2.png" alt="group room for 2" width="49%" />
 </p>
 <p align="center">
-  <img src="docs/png3grouproom.png" alt="Group room" width="49%" />
+  <img src="docs/png3.png" alt="Single chat" width="49%" />
   <img src="docs/png4grouproom.png" alt="Group room detail" width="49%" />
 </p>
 
