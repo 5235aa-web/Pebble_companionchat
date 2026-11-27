@@ -11,7 +11,8 @@ from fastapi import HTTPException
 
 import _helpers  # noqa: F401 - ensures sys.path & temp PEBBLE_DATA_ROOT
 from backend import api_routes, api_routesV2, paths
-from backend.chat_exporter import export_branch_chat
+from backend.chat_exporter import _next_output_path, export_branch_chat
+from backend.chat_importer import import_jsonl_branch
 from backend.companion_db import (
     add_companion_asset,
     create_branch,
@@ -197,8 +198,10 @@ class ChatExportTest(unittest.TestCase):
     def test_markdown_export_strips_status_html_and_toggles_compacted(self):
         res_full = export_branch_chat(self.cid, self.branch_id, "md", include_compacted=True)
         out_path = Path(res_full["file_path"])
+        expected_dir = paths.OUTPUT_CHAT_DIR / "Luna"
         self.assertTrue(out_path.is_file())
-        self.assertEqual(out_path.parent, paths.OUTPUT_CHAT_DIR)
+        self.assertEqual(out_path.parent, expected_dir)
+        self.assertEqual(res_full["output_dir"], str(expected_dir))
         text_full = out_path.read_text(encoding="utf-8")
         self.assertIn("Hi Luna, check status.", text_full)
         self.assertIn("已压缩", text_full)
@@ -214,6 +217,7 @@ class ChatExportTest(unittest.TestCase):
 
     def test_html_export_restores_status_bar_styles_and_embeds_image(self):
         res = export_branch_chat(self.cid, self.branch_id, "html", include_compacted=True)
+        self.assertEqual(Path(res["file_path"]).parent, paths.OUTPUT_CHAT_DIR / "Luna")
         html_text = Path(res["file_path"]).read_text(encoding="utf-8")
         self.assertIn("<!DOCTYPE html>", html_text)
         self.assertIn('<div class="status-box">', html_text)
@@ -234,6 +238,7 @@ class ChatExportTest(unittest.TestCase):
 
     def test_pebble_json_export_is_lossless(self):
         res = export_branch_chat(self.cid, self.branch_id, "json", include_compacted=True)
+        self.assertEqual(Path(res["file_path"]).parent, paths.OUTPUT_CHAT_DIR / "Luna")
         data = json.loads(Path(res["file_path"]).read_text(encoding="utf-8"))
         self.assertEqual(data["format"], "pebble_chat_export")
         self.assertEqual(data["branch"]["variables"]["hp"], "88")
@@ -244,6 +249,7 @@ class ChatExportTest(unittest.TestCase):
 
     def test_sillytavern_jsonl_export_structure(self):
         res = export_branch_chat(self.cid, self.branch_id, "jsonl", include_compacted=False)
+        self.assertEqual(Path(res["file_path"]).parent, paths.OUTPUT_CHAT_DIR / "Luna")
         raw_lines = Path(res["file_path"]).read_text(encoding="utf-8").strip().splitlines()
         self.assertEqual(len(raw_lines), 4)  # 1 header + 3 visible messages
         header = json.loads(raw_lines[0])
@@ -261,6 +267,98 @@ class ChatExportTest(unittest.TestCase):
         with self.assertRaises(HTTPException) as ctx2:
             asyncio.run(api_routesV2.export_companion_branch(self.cid, "missing_branch", req))
         self.assertEqual(ctx2.exception.status_code, 404)
+
+    def test_character_folder_sanitization_and_reserved_names(self):
+        sanitized = _next_output_path('Alice / "Wonder" .. ', "branch/1", "md")
+        self.assertEqual(sanitized.parent.parent, paths.OUTPUT_CHAT_DIR)
+        self.assertEqual(sanitized.parent.name, "Alice _ _Wonder_")
+        self.assertTrue(sanitized.name.startswith("Alice _ _Wonder__branch_1_"))
+
+        reserved = _next_output_path("CON", "main", "json")
+        self.assertEqual(reserved.parent.parent, paths.OUTPUT_CHAT_DIR)
+        self.assertEqual(reserved.parent.name, "CON_")
+
+        dots_only = _next_output_path("...", "main", "html")
+        self.assertEqual(dots_only.parent, paths.OUTPUT_CHAT_DIR / "companion")
+
+    def test_first_message_greeting_exported_without_duplication(self):
+        gid = "exp_comp_greet"
+        self.assertTrue(
+            create_companion(
+                gid,
+                {
+                    "name": "Iris",
+                    "first_mes": "Welcome, {{user}}. *Iris adjusts her glasses.*",
+                    "alternate_greetings": ["Alt greeting for {{user}}."],
+                },
+            )
+        )
+        try:
+            save_message(gid, "main", "user", "Hello Iris!")
+            save_message(gid, "main", "assistant", "Glad you came.")
+
+            md_res = export_branch_chat(gid, "main", "md", include_compacted=True)
+            self.assertEqual(md_res["message_count"], 3)
+            md_text = Path(md_res["file_path"]).read_text(encoding="utf-8")
+            self.assertIn("开场白", md_text)
+            self.assertLess(
+                md_text.index("Welcome, You."),
+                md_text.index("Hello Iris!"),
+            )
+
+            html_res = export_branch_chat(gid, "main", "html", include_compacted=True)
+            html_text = Path(html_res["file_path"]).read_text(encoding="utf-8")
+            self.assertIn('<span class="badge">开场白</span>', html_text)
+            self.assertLess(
+                html_text.index("Welcome, You."),
+                html_text.index("Hello Iris!"),
+            )
+
+            json_res = export_branch_chat(gid, "main", "json", include_compacted=True)
+            json_data = json.loads(Path(json_res["file_path"]).read_text(encoding="utf-8"))
+            self.assertEqual(len(json_data["messages"]), 3)
+            self.assertEqual(json_data["messages"][0]["id"], 0)
+            self.assertEqual(
+                json_data["messages"][0]["content"],
+                "Welcome, {{user}}. *Iris adjusts her glasses.*",
+            )
+            self.assertEqual(
+                json_data["messages"][0]["swipes"],
+                [
+                    "Welcome, {{user}}. *Iris adjusts her glasses.*",
+                    "Alt greeting for {{user}}.",
+                ],
+            )
+            self.assertTrue(json_data["messages"][0]["metadata"].get("is_greeting"))
+
+            jsonl_res = export_branch_chat(gid, "main", "jsonl", include_compacted=True)
+            jsonl_text = Path(jsonl_res["file_path"]).read_text(encoding="utf-8")
+            jsonl_lines = jsonl_text.strip().splitlines()
+            self.assertEqual(len(jsonl_lines), 4)  # 1 header + greeting + 2 messages
+            greeting_row = json.loads(jsonl_lines[1])
+            self.assertFalse(greeting_row["is_user"])
+            self.assertEqual(greeting_row["extra"]["pebble_message_type"], "greeting")
+
+            # Re-importing the exported JSONL and exporting again must not duplicate the greeting.
+            imp = import_jsonl_branch(gid, jsonl_text, branch_name="Reimported")
+            self.assertEqual(imp["imported_count"], 3)
+            re_export = export_branch_chat(gid, imp["branch_id"], "json", include_compacted=True)
+            re_data = json.loads(Path(re_export["file_path"]).read_text(encoding="utf-8"))
+            self.assertEqual(len(re_data["messages"]), 3)
+
+            # Empty branch with no user turns yet still exports the opening greeting.
+            empty_branch = create_branch(gid, "Fresh Start")
+            empty_res = export_branch_chat(gid, empty_branch, "md", include_compacted=False)
+            self.assertEqual(empty_res["message_count"], 1)
+            self.assertIn("Welcome, You.", Path(empty_res["file_path"]).read_text(encoding="utf-8"))
+        finally:
+            conn = sqlite3.connect(str(paths.DB_PATH))
+            try:
+                conn.execute("PRAGMA foreign_keys=ON")
+                conn.execute("DELETE FROM companions WHERE id = ?", (gid,))
+                conn.commit()
+            finally:
+                conn.close()
 
 
 if __name__ == "__main__":

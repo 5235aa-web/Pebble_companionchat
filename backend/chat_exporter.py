@@ -96,23 +96,38 @@ _HTML_CONTAINER_CLOSE_RE = re.compile(
 )
 
 
+_WINDOWS_RESERVED_FILENAMES = frozenset(
+    {"CON", "PRN", "AUX", "NUL"}
+    | {f"COM{i}" for i in range(1, 10)}
+    | {f"LPT{i}" for i in range(1, 10)}
+)
+
+
 def _sanitize_filename_part(value: str, fallback: str) -> str:
     cleaned = _FILENAME_INVALID_RE.sub("_", (value or "").strip())
     cleaned = re.sub(r"\s+", " ", cleaned).strip(" .")
-    return cleaned[:60] if cleaned else fallback
+    if not cleaned:
+        return fallback
+    cleaned = cleaned[:60].strip(" .")
+    if not cleaned:
+        return fallback
+    if cleaned.upper() in _WINDOWS_RESERVED_FILENAMES:
+        return f"{cleaned}_"
+    return cleaned
 
 
 def _next_output_path(companion_name: str, branch_label: str, fmt: str) -> Path:
-    paths.assert_safe_data_path(paths.OUTPUT_CHAT_DIR)
-    paths.OUTPUT_CHAT_DIR.mkdir(parents=True, exist_ok=True)
-    stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
     safe_char = _sanitize_filename_part(companion_name, "companion")
     safe_branch = _sanitize_filename_part(branch_label, "main")
+    char_dir = paths.OUTPUT_CHAT_DIR / safe_char
+    paths.assert_safe_data_path(char_dir)
+    char_dir.mkdir(parents=True, exist_ok=True)
+    stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
     stem = f"{safe_char}_{safe_branch}_{stamp}"
-    candidate = paths.OUTPUT_CHAT_DIR / f"{stem}.{fmt}"
+    candidate = char_dir / f"{stem}.{fmt}"
     idx = 2
     while candidate.exists():
-        candidate = paths.OUTPUT_CHAT_DIR / f"{stem}_{idx}.{fmt}"
+        candidate = char_dir / f"{stem}_{idx}.{fmt}"
         idx += 1
     return candidate
 
@@ -780,6 +795,8 @@ def _render_markdown_export(
             speaker = char_name
 
         badges: List[str] = []
+        if meta.get("is_greeting"):
+            badges.append("开场白")
         if msg.get("is_important"):
             badges.append("★重要")
         if msg.get("is_compacted"):
@@ -928,6 +945,7 @@ def _render_sillytavern_jsonl_export(ctx: Dict[str, Any]) -> str:
             "swipe_id": swipe_id,
             "extra": {
                 "pebble_message_id": m.get("id"),
+                "pebble_message_type": "greeting" if meta.get("is_greeting") else "chat",
                 "is_compacted": bool(m.get("is_compacted")),
                 "is_important": bool(m.get("is_important")),
             },
@@ -1196,6 +1214,8 @@ def _render_html_export(
             speaker = char_name
 
         badges: List[str] = []
+        if meta.get("is_greeting"):
+            badges.append('<span class="badge">开场白</span>')
         if msg.get("is_important"):
             badges.append('<span class="badge important">★ 重要</span>')
         if msg.get("is_compacted"):
@@ -1310,6 +1330,54 @@ def _load_branch_export_context(
         branch_id,
         include_compacted=include_compacted,
     )
+    all_branch_msgs = (
+        messages
+        if include_compacted
+        else get_branch_export_messages(companion_id, branch_id, include_compacted=True)
+    )
+    raw_first_mes = str(companion.get("first_mes") or "")
+    alt_greetings = [
+        g
+        for g in (companion.get("alternate_greetings") or [])
+        if isinstance(g, str) and g.strip()
+    ]
+    opening_text = (
+        raw_first_mes
+        if raw_first_mes.strip()
+        else (alt_greetings[0] if alt_greetings else "")
+    )
+    has_compacted_rows = any(bool(m.get("is_compacted")) for m in all_branch_msgs)
+    # Pebble renders the card's opening greeting on the empty stage without storing
+    # a companion_messages row, so prepend it unless this branch already begins with it.
+    if opening_text and (include_compacted or not has_compacted_rows):
+        greeting_swipes = [opening_text] + [g for g in alt_greetings if g != opening_text]
+        greeting_candidates = {s.strip() for s in greeting_swipes if s.strip()}
+        first_row = all_branch_msgs[0] if all_branch_msgs else None
+        already_present = bool(
+            first_row
+            and str(first_row.get("role") or "") == "assistant"
+            and (
+                bool((first_row.get("metadata") or {}).get("is_greeting"))
+                or str(first_row.get("content") or "").strip() in greeting_candidates
+            )
+        )
+        if not already_present:
+            messages = [
+                {
+                    "id": 0,
+                    "role": "assistant",
+                    "content": opening_text,
+                    "swipes": greeting_swipes,
+                    "swipe_id": 0,
+                    "created_at": str(branch.get("created_at") or companion.get("created_at") or ""),
+                    "message_type": "chat",
+                    "metadata": {"is_greeting": True},
+                    "is_important": False,
+                    "is_compacted": False,
+                    "compaction_batch_id": "",
+                },
+                *messages,
+            ]
     compaction_history = get_compaction_history(companion_id, branch_id, limit=500)
     scene_summaries = list_scene_summaries(companion_id, branch_id)
     memories = list_memories(companion_id, branch_id)
@@ -1426,7 +1494,7 @@ def export_branch_chat(
         "status": "success",
         "format": normalized_fmt,
         "file_path": str(target),
-        "output_dir": str(paths.OUTPUT_CHAT_DIR),
+        "output_dir": str(target.parent),
         "filename": target.name,
         "companion_id": companion_id,
         "companion_name": ctx["char_name"],

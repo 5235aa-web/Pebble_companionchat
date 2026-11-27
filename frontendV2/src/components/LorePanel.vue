@@ -39,6 +39,9 @@ const translateProgress = ref({ done: 0, total: 0 })
 let translateAbort: AbortController | null = null
 const loading = ref(false)
 const error = ref('')
+const RENDER_BATCH_SIZE = 30
+const visibleCount = ref(RENDER_BATCH_SIZE)
+let renderRafId: number | null = null
 
 const positionOptions = computed<UiOption[]>(() => [
   { value: 'before_char', label: t('lore.posBefore') },
@@ -124,6 +127,50 @@ const filteredEntries = computed(() =>
   categoryFilter.value === 'all'
     ? entries.value
     : entries.value.filter((e) => e.category === categoryFilter.value),
+)
+const isPanelOpen = computed(() => ui.isOpen('lore'))
+const renderedEntries = computed(() =>
+  isPanelOpen.value ? filteredEntries.value.slice(0, visibleCount.value) : [],
+)
+
+function stopProgressiveRender() {
+  if (renderRafId !== null) {
+    cancelAnimationFrame(renderRafId)
+    renderRafId = null
+  }
+}
+
+function scheduleProgressiveRender() {
+  stopProgressiveRender()
+  const total = filteredEntries.value.length
+  if (!isPanelOpen.value) {
+    visibleCount.value = 0
+    return
+  }
+  if (total <= RENDER_BATCH_SIZE) {
+    visibleCount.value = total
+    return
+  }
+  visibleCount.value = RENDER_BATCH_SIZE
+  const step = () => {
+    renderRafId = null
+    if (!isPanelOpen.value) return
+    const currentTotal = filteredEntries.value.length
+    if (visibleCount.value >= currentTotal) return
+    visibleCount.value = Math.min(currentTotal, visibleCount.value + RENDER_BATCH_SIZE)
+    if (visibleCount.value < currentTotal) {
+      renderRafId = requestAnimationFrame(step)
+    }
+  }
+  renderRafId = requestAnimationFrame(step)
+}
+
+watch(
+  [isPanelOpen, () => categoryFilter.value, () => entries.value.length],
+  () => {
+    scheduleProgressiveRender()
+  },
+  { immediate: true },
 )
 
 function categoryLabel(cat: WorldBookEntryCategory): string {
@@ -311,6 +358,7 @@ async function addEntry() {
     const mapped = toLore(created)
     mapped.open = true
     entries.value.push(mapped)
+    visibleCount.value = filteredEntries.value.length
   } catch (e) {
     error.value = e instanceof Error ? e.message : String(e)
   }
@@ -470,6 +518,7 @@ async function runTranslate(
 }
 
 onUnmounted(() => {
+  stopProgressiveRender()
   cancelTranslation()
 })
 </script>
@@ -487,6 +536,7 @@ onUnmounted(() => {
     <div class="d-body">
       <div v-if="error" class="path-err">{{ error }}</div>
 
+      <template v-if="isPanelOpen">
       <div v-if="entries.length" class="lore-bar">
         <div class="lore-bar-top">
           <span class="lore-stat">
@@ -585,7 +635,7 @@ onUnmounted(() => {
         </div>
       </div>
 
-      <div v-for="e in filteredEntries" :key="e.id" class="lore-entry" :class="{ open: e.open }">
+      <div v-for="e in renderedEntries" :key="e.id" class="lore-entry" :class="{ open: e.open }">
         <div class="le-head">
           <button
             type="button"
@@ -606,7 +656,7 @@ onUnmounted(() => {
           </button>
         </div>
 
-        <div class="le-body">
+        <div v-if="e.open" class="le-body">
           <div class="le-inner">
             <div v-if="isTranslationMissing(e)" class="le-miss-note">
               {{ t('lore.translationMissing') }}
@@ -749,6 +799,7 @@ onUnmounted(() => {
         <div class="eb-title">{{ t('empty.noLore') }}</div>
         <div class="eb-hint">{{ t('empty.noLoreHint') }}</div>
       </div>
+      </template>
     </div>
 
     <div class="d-foot">

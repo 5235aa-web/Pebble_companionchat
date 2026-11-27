@@ -338,23 +338,51 @@ function transformParagraphs(root: DocumentFragment): void {
   }
 }
 
+const PRUNABLE_IMAGE_SHELL_TAGS = new Set([
+  'TD',
+  'TH',
+  'TR',
+  'TBODY',
+  'THEAD',
+  'TFOOT',
+  'TABLE',
+  'FIGURE',
+  'P',
+  'DIV',
+  'SPAN',
+])
+const NON_EMPTY_MEDIA_SELECTOR = 'img,svg,video,audio,input,button,hr,iframe'
+
+function removeImgAndEmptyShells(img: Element): void {
+  let cur: Element | null = img.parentElement
+  img.remove()
+  while (cur && PRUNABLE_IMAGE_SHELL_TAGS.has(cur.nodeName)) {
+    const parent: Element | null = cur.parentElement
+    if ((cur.textContent ?? '').trim() !== '' || cur.querySelector(NON_EMPTY_MEDIA_SELECTOR)) {
+      break
+    }
+    cur.remove()
+    cur = parent
+  }
+}
+
 function hardenLinksAndMedia(root: DocumentFragment, assetUrls?: Record<number, string>): void {
   for (const a of root.querySelectorAll('a')) {
     a.setAttribute('target', '_blank')
     a.setAttribute('rel', 'noopener noreferrer')
   }
-  for (const img of root.querySelectorAll('img')) {
+  for (const img of Array.from(root.querySelectorAll('img'))) {
     const src = (img.getAttribute('src') ?? '').trim()
     if (src.startsWith('pebble-asset:')) {
       const id = Number(src.slice('pebble-asset:'.length))
       const resolved = Number.isInteger(id) ? assetUrls?.[id] : undefined
       if (!resolved) {
-        img.remove()
+        removeImgAndEmptyShells(img)
         continue
       }
       img.setAttribute('src', resolved)
     } else if (!src) {
-      img.remove()
+      removeImgAndEmptyShells(img)
       continue
     }
     img.setAttribute('decoding', 'async')

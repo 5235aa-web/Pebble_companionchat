@@ -225,7 +225,9 @@ export function resolveFuzzyAssetName(ref: string, assetNames: string[]): string
 
   const lowMap = new Map<string, string>()
   const compactMap = new Map<string, string | null>()
-  const candidates: Array<[string, string, string]> = []
+  const candidates: Array<[string, string, string, string[]]> = []
+  const primaryCharGroups = new Set<string>()
+  const fallbackCharGroups = new Set<string>()
   for (const name of assetNames) {
     const s = (name || '').trim()
     if (!s) continue
@@ -234,7 +236,13 @@ export function resolveFuzzyAssetName(ref: string, assetNames: string[]): string
     if (!lowMap.has(low)) {
       lowMap.set(low, s)
       const compact = low.replace(COMPACT_SEP_RE, '')
-      candidates.push([low, s, compact])
+      const parts = low.split(/[_-]+/).filter(Boolean)
+      candidates.push([low, s, compact, parts])
+      if (parts.length === 2 && parts[0].length >= 2) {
+        primaryCharGroups.add(parts[0])
+      } else if (parts.length >= 2 && parts[0].length >= 2) {
+        fallbackCharGroups.add(parts[0])
+      }
       if (compact) {
         if (!compactMap.has(compact)) {
           compactMap.set(compact, s)
@@ -255,6 +263,24 @@ export function resolveFuzzyAssetName(ref: string, assetNames: string[]): string
     if (exactCompact) return exactCompact
   }
 
+  // Strip hallucinated leading modifier prefixes (e.g. `cloth on_이벨린_neutral` -> `이벨린_neutral`)
+  // while keeping at least 2 segments (`<character>_<pose>`) to avoid cross-character collisions.
+  const qParts = q.split(/[_-]+/).filter(Boolean)
+  const strippedQueries: string[] = []
+  if (qParts.length >= 3) {
+    for (let start = 1; start < qParts.length - 1; start += 1) {
+      const tail = qParts.slice(start).join('_')
+      const tailLowHit = lowMap.get(tail)
+      if (tailLowHit) return tailLowHit
+      const tailCompact = tail.replace(COMPACT_SEP_RE, '')
+      if (tailCompact.length >= 4) {
+        const tailCompactHit = compactMap.get(tailCompact)
+        if (tailCompactHit) return tailCompactHit
+      }
+      strippedQueries.push(tail)
+    }
+  }
+
   const qSnake = q.replace(SNAKE_SEP_RE, '_').replace(/^_+|_+$/g, '')
   if (qSnake.length >= 4) {
     const suffixHits = candidates
@@ -263,39 +289,56 @@ export function resolveFuzzyAssetName(ref: string, assetNames: string[]): string
     if (suffixHits.length === 1) return suffixHits[0]
   }
 
+  let scopedCandidates = candidates
+  const activeGroupSet = primaryCharGroups.size ? primaryCharGroups : fallbackCharGroups
+  for (let i = 0; i < qParts.length - 1; i += 1) {
+    const seg = qParts[i]
+    if (activeGroupSet.has(seg)) {
+      const groupHits = candidates.filter(([, , , parts]) => parts.slice(0, -1).includes(seg))
+      if (groupHits.length && groupHits.length < candidates.length) {
+        scopedCandidates = groupHits
+        break
+      }
+    }
+  }
+
   let bestScore = 0
   let bestPrefix = -1
   let bestName: string | null = null
   let tied = false
+  const queryVariants = [q, ...strippedQueries]
 
-  for (const [cLow, cOrig, cCompact] of candidates) {
+  for (const [cLow, cOrig, cCompact] of scopedCandidates) {
     if (cLow.length < 4) continue
     let candScore = 0
     let candPrefix = -1
 
-    const maxLen = Math.max(q.length, cLow.length)
-    const maxDist = Math.max(3, Math.floor(cLow.length / 4))
-    if (Math.abs(q.length - cLow.length) <= maxDist) {
-      const dist = editDistance(q, cLow)
-      if (dist <= maxDist) {
-        const sim = 1 - dist / maxLen
-        if (sim >= 0.75) {
-          candScore = sim
-          candPrefix = commonPrefixLen(q, cLow)
+    for (const qv of queryVariants) {
+      const qvCompact = qv.replace(COMPACT_SEP_RE, '')
+      const maxLen = Math.max(qv.length, cLow.length)
+      const maxDist = Math.max(3, Math.floor(cLow.length / 4))
+      if (Math.abs(qv.length - cLow.length) <= maxDist) {
+        const dist = editDistance(qv, cLow)
+        if (dist <= maxDist) {
+          const sim = 1 - dist / maxLen
+          if (sim >= 0.75 && sim > candScore) {
+            candScore = sim
+            candPrefix = commonPrefixLen(qv, cLow)
+          }
         }
       }
-    }
 
-    if (qCompact.length >= 4 && cCompact.length >= 4) {
-      const maxCmpLen = Math.max(qCompact.length, cCompact.length)
-      const maxCmpDist = Math.max(2, Math.floor(cCompact.length / 4))
-      if (Math.abs(qCompact.length - cCompact.length) <= maxCmpDist) {
-        const distCmp = editDistance(qCompact, cCompact)
-        if (distCmp <= maxCmpDist) {
-          const simCmp = 1 - distCmp / maxCmpLen
-          if (simCmp >= 0.78 && simCmp > candScore) {
-            candScore = simCmp
-            candPrefix = commonPrefixLen(qCompact, cCompact)
+      if (qvCompact.length >= 4 && cCompact.length >= 4) {
+        const maxCmpLen = Math.max(qvCompact.length, cCompact.length)
+        const maxCmpDist = Math.max(2, Math.floor(cCompact.length / 4))
+        if (Math.abs(qvCompact.length - cCompact.length) <= maxCmpDist) {
+          const distCmp = editDistance(qvCompact, cCompact)
+          if (distCmp <= maxCmpDist) {
+            const simCmp = 1 - distCmp / maxCmpLen
+            if (simCmp >= 0.78 && simCmp > candScore) {
+              candScore = simCmp
+              candPrefix = commonPrefixLen(qvCompact, cCompact)
+            }
           }
         }
       }

@@ -544,7 +544,9 @@ def resolve_fuzzy_asset_name(ref: str, asset_names: Sequence[str]) -> Optional[s
 
     low_map: Dict[str, str] = {}
     compact_map: Dict[str, Optional[str]] = {}
-    candidates: List[Tuple[str, str, str]] = []
+    candidates: List[Tuple[str, str, str, List[str]]] = []
+    primary_char_groups: Set[str] = set()
+    fallback_char_groups: Set[str] = set()
     for name in asset_names:
         s = str(name or "").strip()
         if not s:
@@ -555,7 +557,12 @@ def resolve_fuzzy_asset_name(ref: str, asset_names: Sequence[str]) -> Optional[s
         if low not in low_map:
             low_map[low] = s
             compact = _COMPACT_SEP_RE.sub("", low)
-            candidates.append((low, s, compact))
+            parts = [p for p in re.split(r"[_-]+", low) if p]
+            candidates.append((low, s, compact, parts))
+            if len(parts) == 2 and len(parts[0]) >= 2:
+                primary_char_groups.add(parts[0])
+            elif len(parts) >= 2 and len(parts[0]) >= 2:
+                fallback_char_groups.add(parts[0])
             if compact:
                 if compact not in compact_map:
                     compact_map[compact] = s
@@ -572,48 +579,78 @@ def resolve_fuzzy_asset_name(ref: str, asset_names: Sequence[str]) -> Optional[s
         if compact_exact:
             return compact_exact
 
+    # Strip hallucinated leading modifier prefixes (e.g. `cloth on_이벨린_neutral` -> `이벨린_neutral`)
+    # while keeping at least `<character>_<pose>` (2+ segments) so cross-character collisions cannot happen.
+    q_parts = [p for p in re.split(r"[_-]+", q) if p]
+    stripped_queries: List[str] = []
+    if len(q_parts) >= 3:
+        for start in range(1, len(q_parts) - 1):
+            tail = "_".join(q_parts[start:])
+            if tail in low_map:
+                return low_map[tail]
+            tail_compact = _COMPACT_SEP_RE.sub("", tail)
+            if len(tail_compact) >= 4:
+                tail_hit = compact_map.get(tail_compact)
+                if tail_hit:
+                    return tail_hit
+            stripped_queries.append(tail)
+
     # Unique suffix match when the model drops a shared card prefix (e.g. `fellatio_penetration` -> `Motoko_fellatio_penetration`).
     q_snake = _SNAKE_SEP_RE.sub("_", q).strip("_")
     if len(q_snake) >= 4:
         suffix_hits = [
             c_orig
-            for c_low, c_orig, _ in candidates
+            for c_low, c_orig, _, _ in candidates
             if c_low.endswith("_" + q_snake) or c_low.endswith("-" + q_snake)
         ]
         if len(suffix_hits) == 1:
             return suffix_hits[0]
 
+    # When the query explicitly names a character group segment, keep edit-distance
+    # matching scoped to that character so typos never cross over to another character.
+    scoped_candidates = candidates
+    active_group_set = primary_char_groups or fallback_char_groups
+    for seg in q_parts[:-1]:
+        if seg in active_group_set:
+            group_hits = [item for item in candidates if seg in item[3][:-1]]
+            if group_hits and len(group_hits) < len(candidates):
+                scoped_candidates = group_hits
+                break
+
     best_score = 0.0
     best_prefix = -1
     best_name: Optional[str] = None
     tied = False
+    query_variants = [q, *stripped_queries]
 
-    for c_low, c_orig, c_compact in candidates:
+    for c_low, c_orig, c_compact, _ in scoped_candidates:
         if len(c_low) < 4:
             continue
         cand_score = 0.0
         cand_prefix = -1
 
-        max_len = max(len(q), len(c_low))
-        max_dist = max(3, len(c_low) // 4)
-        if abs(len(q) - len(c_low)) <= max_dist:
-            dist = _edit_distance(q, c_low)
-            if dist <= max_dist:
-                sim = 1.0 - (dist / max_len)
-                if sim >= 0.75:
-                    cand_score = sim
-                    cand_prefix = _common_prefix_len(q, c_low)
+        for qv in query_variants:
+            qv_compact = _COMPACT_SEP_RE.sub("", qv)
+            max_len = max(len(qv), len(c_low))
+            max_dist = max(3, len(c_low) // 4)
+            if abs(len(qv) - len(c_low)) <= max_dist:
+                dist = _edit_distance(qv, c_low)
+                if dist <= max_dist:
+                    sim = 1.0 - (dist / max_len)
+                    if sim >= 0.75 and sim > cand_score:
+                        cand_score = sim
+                        cand_prefix = _common_prefix_len(qv, c_low)
 
-        if len(q_compact) >= 4 and len(c_compact) >= 4:
-            max_cmp_len = max(len(q_compact), len(c_compact))
-            max_cmp_dist = max(2, len(c_compact) // 4)
-            if abs(len(q_compact) - len(c_compact)) <= max_cmp_dist:
-                dist_cmp = _edit_distance(q_compact, c_compact)
-                if dist_cmp <= max_cmp_dist:
-                    sim_cmp = 1.0 - (dist_cmp / max_cmp_len)
-                    if sim_cmp >= 0.78 and sim_cmp > cand_score:
-                        cand_score = sim_cmp
-                        cand_prefix = _common_prefix_len(q_compact, c_compact)
+            if len(qv_compact) >= 4 and len(c_compact) >= 4:
+                max_cmp_len = max(len(qv_compact), len(c_compact))
+                max_cmp_dist = max(2, len(c_compact) // 4)
+                if abs(len(qv_compact) - len(c_compact)) <= max_cmp_dist:
+                    dist_cmp = _edit_distance(qv_compact, c_compact)
+                    if dist_cmp <= max_cmp_dist:
+                        sim_cmp = 1.0 - (dist_cmp / max_cmp_len)
+                        if sim_cmp >= 0.78 and sim_cmp > cand_score:
+                            cand_score = sim_cmp
+                            cand_prefix = _common_prefix_len(qv_compact, c_compact)
 
         if cand_score <= 0.0:
             continue

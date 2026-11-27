@@ -403,6 +403,29 @@ class BranchVariablesIntegrationTest(unittest.TestCase):
         self.assertIsNone(
             card_presentation.resolve_fuzzy_asset_name('smile', ['Alice_smile', 'Bob_smile'])
         )
+        # Hallucinated leading clothing/state prefix resolves to same character, never crosses characters
+        multi_assets = [
+            'lucian_neutral',
+            'lucian_happy',
+            '이벨린_neutral',
+            '이벨린_happy',
+            'cloth on_이벨린_fainted',
+            'veil off_pikk_standing sex_insertion',
+        ]
+        self.assertEqual(
+            card_presentation.resolve_fuzzy_asset_name('cloth on_이벨린_neutral', multi_assets),
+            '이벨린_neutral',
+        )
+        self.assertEqual(
+            card_presentation.resolve_fuzzy_asset_name('cloth on_이벨린_happpy', multi_assets),
+            '이벨린_happy',
+        )
+        self.assertIsNone(
+            card_presentation.resolve_fuzzy_asset_name(
+                'veil off_이벨린_standing sex_insertion',
+                multi_assets,
+            )
+        )
 
     def test_backticked_unquoted_space_src_and_macro_typo_variants(self):
         assets = ['Motoko_smile', 'Motoko_fellatio_penetration', 'Motoko_touched']

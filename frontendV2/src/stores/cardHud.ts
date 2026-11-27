@@ -177,6 +177,7 @@ export const useCardHudStore = defineStore('cardHud', () => {
   const stageExpressionSeq = ref(0)
   const stageOverrideRelPath = computed(() => stageExpressionRelPath.value)
   let explicitExpressionLocked = false
+  let inlinePortraitLocked = false
   let lastAssistantReplyText = ''
 
   const moodText = computed(() => String(hud.value.mood ?? '').trim())
@@ -246,10 +247,63 @@ export const useCardHudStore = defineStore('cardHud', () => {
     })
   }
 
-  function matchImageAsset(cue: string): CompanionAsset | undefined {
+  function collectCharacterGroups(images: CompanionAsset[]): Set<string> {
+    const counts = new Map<string, number>()
+    for (const a of images) {
+      const t = (a.asset_type || '').toLowerCase()
+      const nameLow = (a.name || '').trim().toLowerCase()
+      if (!nameLow || (t === 'icon' && PLACEHOLDER_ICON_NAMES.has(nameLow))) continue
+      if (GENERIC_SCENE_NAME_RE.test(nameLow)) continue
+      const parts = nameLow.split('_').filter(Boolean)
+      if (parts.length !== 2) continue
+      const prefix = parts[0].trim()
+      if (prefix.length < 2 || GENERIC_SCENE_NAME_RE.test(prefix)) continue
+      counts.set(prefix, (counts.get(prefix) ?? 0) + 1)
+    }
+    const groups = new Set<string>()
+    for (const [k, cnt] of counts.entries()) {
+      if (cnt >= 2) groups.add(k)
+    }
+    return groups
+  }
+
+  function extractCueCharacterGroup(cue: string, groups: Set<string>): string {
+    if (!cue || !groups.size) return ''
+    const tokens = cue
+      .trim()
+      .toLowerCase()
+      .split(/[_\-\s,/|·()[\]]+/)
+      .filter(Boolean)
+    for (let i = tokens.length - 1; i >= 0; i -= 1) {
+      if (groups.has(tokens[i])) return tokens[i]
+    }
+    return ''
+  }
+
+  function inferActiveCharacterGroup(groups: Set<string>): string {
+    if (groups.size === 1) return [...groups][0]
+    if (!groups.size) return ''
+    const inlineRef = extractLastInlineImageRef(lastAssistantReplyText, session.allCardRegexRules)
+    const fromReply = extractCueCharacterGroup(inlineRef, groups)
+    if (fromReply) return fromReply
+    if (inlinePortraitLocked || explicitExpressionLocked) {
+      const fromActive = extractCueCharacterGroup(activeExpressionLabel.value, groups)
+      if (fromActive) return fromActive
+    }
+    const fromCardName = extractCueCharacterGroup(session.act || '', groups)
+    if (fromCardName) return fromCardName
+    const greetingRef = extractLastInlineImageRef(session.emptyLine || '', session.allCardRegexRules)
+    return extractCueCharacterGroup(greetingRef, groups)
+  }
+
+  function matchImageAsset(cue: string, preferredGroup = ''): CompanionAsset | undefined {
     const images = session.imageAssets
     const cleaned = cue.trim().toLowerCase()
     if (!images.length || !cleaned) return undefined
+
+    const groups = collectCharacterGroups(images)
+    const cueGroup = extractCueCharacterGroup(cue, groups)
+    const activeGroup = cueGroup || preferredGroup
 
     const rank = (x: CompanionAsset) => {
       const t = (x.asset_type || '').toLowerCase()
@@ -268,6 +322,8 @@ export const useCardHudStore = defineStore('cardHud', () => {
     }
 
     const terms = expandTerms(cue)
+    const cueParts = cleaned.split(/[_-]+/).filter(Boolean)
+    const cueTail = cueParts.length ? cueParts[cueParts.length - 1] : cleaned
     const charTokens = (session.act || '')
       .toLowerCase()
       .split(/[\s,·/|()[\]<>'"!?！？~_-]+/)
@@ -282,14 +338,27 @@ export const useCardHudStore = defineStore('cardHud', () => {
       if (t === 'icon' && PLACEHOLDER_ICON_NAMES.has(nameLow)) continue
       if (GENERIC_SCENE_NAME_RE.test(nameLow)) continue
 
+      const assetGroup = extractCueCharacterGroup(nameLow, groups)
+      if (groups.size >= 2 && assetGroup) {
+        if (activeGroup && assetGroup !== activeGroup) continue
+        if (!activeGroup) continue
+      }
+
       let score = 0
+      const matchedTerms = new Set<string>()
       for (const term of terms) {
         if (!term || term.length < 2) continue
         if (!nameLow.includes(term)) continue
         const boundaryRe = new RegExp(`(?:^|[_\\-\\s])${escapeRegExp(term)}(?:$|[_\\-\\s])`, 'i')
-        score = Math.max(score, boundaryRe.test(nameLow) ? 40 : 12)
+        const pts = boundaryRe.test(nameLow) ? 40 : 12
+        if (!matchedTerms.has(term)) {
+          matchedTerms.add(term)
+          score += pts
+        }
       }
       if (score <= 0) continue
+      if (cueGroup && nameLow === `${cueGroup}_${cueTail}`) score += 120
+      else if (cueTail.length >= 2 && (nameLow === cueTail || nameLow.endsWith(`_${cueTail}`))) score += 60
       if (t === 'emotion' || t === 'portrait') score += 50
       if (charTokens.some((ct) => nameLow.includes(ct))) score += 80
       if (score > bestScore) {
@@ -301,11 +370,13 @@ export const useCardHudStore = defineStore('cardHud', () => {
   }
 
   function clearExpressionOverride() {
+    inlinePortraitLocked = false
     stageExpressionRelPath.value = ''
     activeExpressionLabel.value = ''
   }
 
   function clearStageOverride() {
+    explicitExpressionLocked = false
     clearExpressionOverride()
   }
 
@@ -326,6 +397,7 @@ export const useCardHudStore = defineStore('cardHud', () => {
         const matched = matchImageAsset(explicitExpr)
         if (matched) {
           explicitExpressionLocked = true
+          inlinePortraitLocked = false
           stageExpressionRelPath.value = matched.rel_path
           activeExpressionLabel.value = matched.name || explicitExpr
           stageExpressionSeq.value += 1
@@ -336,10 +408,12 @@ export const useCardHudStore = defineStore('cardHud', () => {
         explicitExpressionLocked = false
       }
 
-      if (!explicitExpressionLocked) {
+      if (!explicitExpressionLocked && !inlinePortraitLocked) {
         const moodCue = String(hudData.mood ?? '').trim()
         if (moodCue) {
-          const matchedMood = matchImageAsset(moodCue)
+          const groups = collectCharacterGroups(session.imageAssets)
+          const activeGroup = inferActiveCharacterGroup(groups)
+          const matchedMood = matchImageAsset(moodCue, activeGroup)
           if (matchedMood) {
             stageExpressionRelPath.value = matchedMood.rel_path
             activeExpressionLabel.value = matchedMood.name || moodCue
@@ -361,17 +435,27 @@ export const useCardHudStore = defineStore('cardHud', () => {
         activeExpressionLabel.value || String(hud.value.expression ?? ''),
       )
     }
-    if (!replyText || explicitExpressionLocked || !session.imageAssets.length) return
+    if (!replyText || explicitExpressionLocked || !session.imageAssets.length) {
+      if (!replyText) inlinePortraitLocked = false
+      return
+    }
     const ref = extractLastInlineImageRef(replyText, session.allCardRegexRules)
-    if (!ref) return
+    if (!ref) {
+      inlinePortraitLocked = false
+      return
+    }
     const exact = session.findAssetByRef(ref)
     const asset =
       exact && exact.mime_type.startsWith('image/')
         ? exact
         : matchImageAsset(ref)
-    if (!asset) return
+    if (!asset) {
+      inlinePortraitLocked = false
+      return
+    }
     const aType = (asset.asset_type || '').toLowerCase()
     if (aType === 'background') return
+    inlinePortraitLocked = true
     stageExpressionRelPath.value = asset.rel_path
     activeExpressionLabel.value = asset.name || ref
     stageExpressionSeq.value += 1

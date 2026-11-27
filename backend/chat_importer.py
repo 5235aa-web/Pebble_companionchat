@@ -284,6 +284,8 @@ def parse_jsonl_chat(
         swipe_total += len(swipes)
         created_at = _parse_send_date(row.get("send_date"))
         meta = {"imported_from": "jsonl"}
+        if pebble_type == "greeting":
+            meta["is_greeting"] = True
         if row.get("name"):
             meta["st_name"] = str(row.get("name"))
         if row.get("send_date"):

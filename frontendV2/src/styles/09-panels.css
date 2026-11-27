@@ -260,8 +260,7 @@ html[data-theme="day"] .scrim{background:rgb(var(--shadow-rgb) / .32);}
 .le-on.off{background:var(--ink-4);box-shadow:none;opacity:.5;}
 .le-caret{width:11px;height:11px;stroke:var(--ink-4);fill:none;stroke-width:1.7;transition:transform .4s var(--ease);flex:none;}
 .lore-entry.open .le-caret{transform:rotate(180deg);}
-.le-body{max-height:0;overflow:hidden;transition:max-height .55s var(--ease);}
-.lore-entry.open .le-body{max-height:920px;}
+.le-body{animation:fadeUp .22s var(--ease) both;}
 .le-inner{padding:2px 0 20px;}
 .key-chips{display:flex;flex-wrap:wrap;gap:6px;margin-top:2px;}
 .key-chip{
