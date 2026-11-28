@@ -1,0 +1,5 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Quick Start & FAQ / 快速上手与安装说明
+    url: https://github.com/5235aa-web/Pebble_companionchat#readme
+    about: Check the Windows installer guide & API configuration steps (中文说明见仓库 README_zh.md).

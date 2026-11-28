@@ -1,0 +1,28 @@
+name: Question & Feature Request / 使用求助与功能建议
+description: Ask how to configure APIs/cards or suggest a new feature (新手配置、导卡求助或功能建议，欢迎中文)
+title: "[Question / Feature] "
+labels: ["question"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        **完全欢迎新手提问和中文交流！** 不管是 API 怎么填、本地模型怎么连、角色卡怎么导入，还是想要新功能，都可以直接在这里问。
+        Feel free to ask setup questions or suggest new features in **English or Chinese**.
+  - type: dropdown
+    id: topic
+    attributes:
+      label: Topic / 类型
+      options:
+        - Setup & API Configuration / 安装与模型配置求助
+        - Character Card Usage (.png / .charx / .risum) / 角色卡使用问题
+        - Feature Request / 功能建议
+        - Other / 其他
+    validations:
+      required: true
+  - type: textarea
+    id: details
+    attributes:
+      label: Details / 详细说明
+      placeholder: "想问什么或希望加入什么功能？有截图可以直接粘贴进来。"
+    validations:
+      required: true

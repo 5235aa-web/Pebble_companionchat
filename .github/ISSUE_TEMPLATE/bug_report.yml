@@ -1,0 +1,38 @@
+name: Bug Report / 问题反馈
+description: Report a bug, crash, or character card compatibility issue (支持中文反馈，附截图即可)
+title: "[Bug] "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        感谢反馈！**中文或英文描述都可以**，如果不清楚技术细节，直接说明现象并拖入截图即可。
+        Thanks for reporting! Both **English and Chinese** are welcome — screenshots help a lot.
+  - type: dropdown
+    id: install_method
+    attributes:
+      label: Run Mode / 运行方式
+      options:
+        - Windows Installer (Release .exe) / Windows 安装包
+        - Run from Source (Python + Vite) / 源码运行
+        - Tauri Dev / Build
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Version or OS / 版本与系统
+      placeholder: "e.g. v1.0.4 on Windows 11"
+  - type: textarea
+    id: description
+    attributes:
+      label: What happened? / 遇到了什么问题？
+      description: Describe what you did and what went wrong (attach screenshots if helpful).
+      placeholder: "例如：导入某张 .charx 卡后图片未显示 / 配置 DeepSeek API 时报错..."
+    validations:
+      required: true
+  - type: textarea
+    id: card_context
+    attributes:
+      label: Character Card or Model Provider (Optional) / 涉及角色卡格式或模型服务商（选填）
+      placeholder: "e.g. CHARX card, DeepSeek / Ollama / llama.cpp"
